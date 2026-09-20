@@ -29,13 +29,13 @@ namespace t {
         fun new(mut this, mid: Mid) { this.mid = mid; }
     }
     class Point {
-        impl __builtin.ICopy;
+        impl __builtin.IValueType;
         x: mut i64 = 0;
         y: mut i64 = 0;
         fun new(mut this, x: i64, y: i64) { this.x = x; this.y = y; }
     }
     class Holder {
-        impl __builtin.ICopy;
+        impl __builtin.IValueType;
         p: mut Point = new Point(0, 0);
         label: string = "";
         fun new(mut this, p: Point, label: string) { this.p = p; this.label = label; }

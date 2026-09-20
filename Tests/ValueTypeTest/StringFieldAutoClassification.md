@@ -2,31 +2,24 @@
 
 ## Description
 
-Cross-compiler divergence in AUTO value/reference classification: does a
-`string` field make a class value-like?
+Auto value/reference classification: a `string` field must make a class
+REFERENCE-like on every compiler.
 
 A class with no explicit `IValueType`/`IReferenceType` marker is auto-classified
-by walking its fields:
+by walking its fields. `string` is a REFERENCE type that implements ICopy
+(spec table in `docs/en/specifications/03_DataTypes.md`; it lowers to a
+GC-managed `ref<string>`), so `StrBox` auto-implements `__builtin.IReferenceType`
+and assignment aliases — mutating `b.s` is visible through `a` (prints `world`).
 
-- BabyPenguin (`BabyPenguin/SemanticPass/05_InterfaceImplementation.cs`,
-  `IsTypeValueLike`): `string` is NOT value-like ("String: reference type, not
-  value-like") → `StrBox` auto-implements `__builtin.IReferenceType`, and
-  assignment aliases (prints `world`).
-- EmperorPenguin (`EmperorPenguin/src/bound/SemanticClassifyValueTypes.penguin`,
-  `is_type_value_like`): every `PrimitiveKind` — including string — is
-  value-like ("All primitives (including string) are value types") → `StrBox`
-  becomes a value class (`#sizeof(StrBox)` == 16, an inline struct), and
-  assignment copies (prints `hello`).
-
-The spec table in `docs/en/specifications/03_DataTypes.md` lists `string` under
-reference types, which matches BabyPenguin. EmperorPenguin's behavior is a
-deliberate in-code choice (strings are immutable `ref<string>`, so shallow-copy
-of the pointer is observationally safe for the string itself — but the aliasing
-of the CONTAINING object still differs, as this test shows). The two compilers
-must agree; until they do, this test is green on BabyPenguin and red on
-EmperorPenguin Pass1/2/3, and should turn green the day EmperorPenguin either
-excludes string from `is_type_value_like` or the spec is updated to bless the
-value-like reading on both compilers.
+Both compilers now agree: BabyPenguin
+(`BabyPenguin/SemanticPass/05_InterfaceImplementation.cs`, `IsTypeValueLike` —
+string never value-like) and EmperorPenguin
+(`EmperorPenguin/src/bound/SemanticClassifyValueTypes.penguin`,
+`is_type_value_like` — `PrimitiveType.StringType` excluded since 2026-09-20;
+it previously treated every PrimitiveKind as value-like, which made `StrBox`
+an inline struct whose assignment copied). Green on all backends;
+`string`'s own `.copy()` stays identity through the primitive path (strings
+are immutable, sharing is observationally safe).
 
 ## Apply To
 * BabyPenguin

@@ -392,6 +392,15 @@ class LambdaFunctionExpression {
     return_type: mut Option<TypeSpecifier> = new Option<TypeSpecifier>.none();
     body: mut Option<Expression> = new Option<Expression>.none();
     is_async: mut bool = false;
+    // bind_lambda's synthesis cache. An expression can be bound more than
+    // once (bind_member_access's port probes rebind their base); the first
+    // bind rewrites `body` in place (captures -> this.<name>) and registers
+    // the closure class, so a second full synthesis from the rewritten AST
+    // would find no free identifiers and emit a closure with ZERO capture
+    // fields while the body still references them (LambdaCaptureChainedCall).
+    // A rebind returns `new <cached class>(<cached captures>)` instead.
+    bound_class_name: mut Option<string> = new Option<string>.none();
+    bound_capture_names: mut _utils.List<string> = new _utils.List<string>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");

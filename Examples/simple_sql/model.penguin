@@ -1,0 +1,109 @@
+// model.penguin — data model + in-memory tables (Examples/simple_sql).
+//
+// The three row classes and the table globals live in the shared `db`
+// namespace: top-level defs outside an explicit namespace are FILE-LOCAL
+// (C++ static semantics), which would hide them from main.penguin and from
+// the SQL-generated code spliced there. `db.Student` / `db.students` are
+// the qualified names the SQL layer resolves and emits.
+//
+// Row classes are explicit reference types (impl __builtin.IReferenceType)
+// so `let mut r = students.at(i).some; r.field = v;` mutates the stored row
+// in place — that is what makes UPDATE work without re-storing the element.
+// Every field is `mut` (UPDATE assigns them) and every class keeps a
+// zero-arg constructor (INSERT builds a fresh row field-by-field, and
+// `.into<C>()` needs C to be default-constructible).
+
+namespace db {
+
+class Student {
+    impl __builtin.IReferenceType;
+    id: mut i64 = 0;
+    name: mut string = "";
+    class_id: mut i64 = 0;
+
+    fun new(mut this) {}
+}
+
+class Class {
+    impl __builtin.IReferenceType;
+    id: mut i64 = 0;
+    name: mut string = "";
+    teacher: mut string = "";
+
+    fun new(mut this) {}
+}
+
+class Score {
+    impl __builtin.IReferenceType;
+    id: mut i64 = 0;
+    student_id: mut i64 = 0;
+    subject: mut string = "";
+    value: mut i64 = 0;
+
+    fun new(mut this) {}
+}
+
+let students: mut std.Vector<Student> = new std.Vector<Student>();
+let classes: mut std.Vector<Class> = new std.Vector<Class>();
+let scores: mut std.Vector<Score> = new std.Vector<Score>();
+
+// Deterministic seeding. A plain function called explicitly from the demo's
+// single `initial` — multiple initial blocks run in unspecified order, and
+// the demo's stdout must be byte-stable.
+fun seed() {
+    let mut c1 = new Class();
+    c1.id = 1; c1.name = "physics"; c1.teacher = "newton";
+    classes.push(c1);
+    let mut c2 = new Class();
+    c2.id = 2; c2.name = "chemistry"; c2.teacher = "curie";
+    classes.push(c2);
+    let mut c3 = new Class();
+    c3.id = 3; c3.name = "math"; c3.teacher = "gauss";
+    classes.push(c3);
+
+    let mut s1 = new Student();
+    s1.id = 1; s1.name = "aa"; s1.class_id = 1;
+    students.push(s1);
+    let mut s2 = new Student();
+    s2.id = 2; s2.name = "bob"; s2.class_id = 1;
+    students.push(s2);
+    let mut s3 = new Student();
+    s3.id = 3; s3.name = "tom"; s3.class_id = 2;
+    students.push(s3);
+    let mut s4 = new Student();
+    s4.id = 4; s4.name = "lily"; s4.class_id = 2;
+    students.push(s4);
+    let mut s5 = new Student();
+    s5.id = 5; s5.name = "anna"; s5.class_id = 3;
+    students.push(s5);
+    let mut s6 = new Student();
+    s6.id = 6; s6.name = "carl"; s6.class_id = 3;
+    students.push(s6);
+
+    let mut sc1 = new Score();
+    sc1.id = 1; sc1.student_id = 1; sc1.subject = "math"; sc1.value = 95;
+    scores.push(sc1);
+    let mut sc2 = new Score();
+    sc2.id = 2; sc2.student_id = 1; sc2.subject = "physics"; sc2.value = 88;
+    scores.push(sc2);
+    let mut sc3 = new Score();
+    sc3.id = 3; sc3.student_id = 2; sc3.subject = "math"; sc3.value = 72;
+    scores.push(sc3);
+    let mut sc4 = new Score();
+    sc4.id = 4; sc4.student_id = 3; sc4.subject = "math"; sc4.value = 91;
+    scores.push(sc4);
+    let mut sc5 = new Score();
+    sc5.id = 5; sc5.student_id = 3; sc5.subject = "physics"; sc5.value = 79;
+    scores.push(sc5);
+    let mut sc6 = new Score();
+    sc6.id = 6; sc6.student_id = 4; sc6.subject = "chemistry"; sc6.value = 93;
+    scores.push(sc6);
+    let mut sc7 = new Score();
+    sc7.id = 7; sc7.student_id = 5; sc7.subject = "math"; sc7.value = 85;
+    scores.push(sc7);
+    let mut sc8 = new Score();
+    sc8.id = 8; sc8.student_id = 6; sc8.subject = "physics"; sc8.value = 58;
+    scores.push(sc8);
+}
+
+}

@@ -1399,6 +1399,30 @@ class BindExpressionsPass {
         if (lam.return_type.is_some()) {
             ret_bt = m.resolve_type_specifier(lam.return_type.some, scope);
         }
+        // Idempotence: this AST node may be bound more than once (the port
+        // probes in bind_member_access rebind their base expression). The
+        // first bind below rewrites the body in place and registers the
+        // closure class — replay the cached result instead of synthesizing
+        // a second, capture-less closure from the already-rewritten AST.
+        if (lam.bound_class_name.is_some()) {
+            let cached_cls: string = lam.bound_class_name.some;
+            let fun_bt_cached: BoundType = m.type_registry.make_function_type(ret_bt, param_bts, lam.is_async);
+            let cached_new: mut NewExpression = new NewExpression();
+            cached_new.type_name = cached_cls;
+            let ci0: mut i64 = 0;
+            while (ci0 < cast<i64>(lam.bound_capture_names.size())) {
+                cached_new.arguments.push(this.mk_ident_expr(lam.bound_capture_names.at(cast<u64>(ci0)).some));
+                ci0 = ci0 + 1;
+            }
+            let bound_cached: Option<BoundExpression> = this.bind_new_expr(cached_new, scope);
+            if (bound_cached.is_none()) { return new Option<BoundExpression>.none(); }
+            if (bound_cached.some is BoundExpression.new_expr) {
+                let orig_cached: BoundNewExpression = bound_cached.some.new_expr;
+                let re_typed_cached: mut BoundNewExpression = new BoundNewExpression(fun_bt_cached, orig_cached.type_symbol, orig_cached.constructor_symbol, orig_cached.arguments);
+                return new Option<BoundExpression>.some(new BoundExpression.new_expr(re_typed_cached));
+            }
+            return bound_cached;
+        }
         // Capture analysis + in-place body rewrite.
         let a: mut LamAnalysis = new LamAnalysis();
         let si: mut i64 = 0;
@@ -1412,6 +1436,15 @@ class BindExpressionsPass {
         // ---- synthesize the closure class ----
         m.lambda_site_counter = m.lambda_site_counter + 1;
         let cls_name: string = "__lambda_" + cast<string>(m.lambda_site_counter);
+        // Record the synthesis on the AST node so a re-bind of the same
+        // lambda replays this class instead of synthesizing another one
+        // (see the idempotence note above).
+        lam.bound_class_name = new Option<string>.some(cls_name);
+        let cn: mut i64 = 0;
+        while (cn < cast<i64>(a.names.size())) {
+            lam.bound_capture_names.push(a.names.at(cast<u64>(cn)).some);
+            cn = cn + 1;
+        }
         let cls: mut ClassDefinition = new ClassDefinition(cls_name);
         cls.location = loc;
         cls.source_file = "<lambda>";

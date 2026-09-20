@@ -157,6 +157,7 @@ class ClassifyValueTypesPass {
         if (def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = def.class_def;
             this.classify_class(cls, visiting);
+            this.check_bodyless_icopy_ref_fields(cls);
             BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
             return new BoundDefinition.class_def(cls);
         }
@@ -303,6 +304,62 @@ class ClassifyValueTypesPass {
         return false;
     }
 
+    // An explicit `copy` override for the ICopy contract: a `copy` method on
+    // the class itself, or a copy function inside the impl block. The class
+    // method counts because call sites resolve it directly (member lookup
+    // wins over the empty vtable slot — the SourceLocation pattern), while
+    // the impl-block function lands in the vtable slot.
+    fun class_has_explicit_copy(this, cls: BoundClassDefinition) -> bool {
+        _utils.trace_enter("Enter class_has_explicit_copy");
+        for (let md in cls.methods) {
+            if (md is BoundDefinition.function_def) {
+                if (md.function_def.name == "copy") { return true; }
+            }
+        }
+        for (let vt in cls.vtables) {
+            if (vt.interface_type.display_name() == "ICopy") {
+                for (let slot in vt.slots) {
+                    if (slot.interface_method.is_some()
+                        && slot.interface_method.some.name == "copy"
+                        && slot.implementation_method.is_some()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // ICopy contract guard: `impl ICopy<Self>;` WITHOUT an explicit `copy`
+    // makes `.copy()` lower to the runtime's shallow memcpy
+    // (_emperor_ICopy_copy). When the class (transitively) contains
+    // reference-typed fields that memcpy SHARES the references — silently
+    // aliasing mutable state between the original and the copy (the
+    // ICopyExplicitDepth divergence). Reject it at compile time: the user
+    // must either provide `fun copy(this) -> Self` or drop the impl. A class
+    // whose every field is value-like is unaffected — the shallow memcpy is
+    // then a correct full copy.
+    fun check_bodyless_icopy_ref_fields(mut this, cls: mut BoundClassDefinition) {
+        _utils.trace_enter("Enter check_bodyless_icopy_ref_fields");
+        if (!this.class_has_icopy(cls)) { return; }
+        if (this.class_has_explicit_copy(cls)) { return; }
+        let visiting: mut _utils.List<string> = new _utils.List<string>();
+        for (let field_def in cls.fields) {
+            if (field_def is BoundDefinition.class_field) {
+                let ft: BoundType = field_def.class_field.bound_type;
+                if (!this.is_type_value_like(ft, visiting)) {
+                    this.model.some.report_error(new ErrorCode.E_INTERFACE_IMPL(),
+                        "Class '" + cls.full_name + "' implements ICopy without providing a 'copy' function, but field '"
+                        + field_def.class_field.name + "' has reference type '" + ft.display_name()
+                        + "': the auto-generated copy would shallow-copy the shared reference. "
+                        + "Provide an explicit 'fun copy(this) -> " + cls.name + "', or remove the ICopy impl.",
+                        this.model.some.type_sym_loc(cls.type_symbol));
+                    return;
+                }
+            }
+        }
+    }
+
     // True when a type's `.copy()` should lower to the base expression itself
     // (value semantics — the value copies on assignment anyway): primitives
     // (all implement ICopy<self>) and auto-classified value classes / enums.
@@ -353,7 +410,17 @@ class ClassifyValueTypesPass {
     fun is_type_value_like(mut this, bt: BoundType, visiting: mut _utils.List<string>) -> bool {
         _utils.trace_enter("Enter is_type_value_like");
         if (bt.kind is TypeKind.PrimitiveKind) {
-            return true; // All primitives (including string) are value types
+            // string is a REFERENCE type that implements ICopy (mirrors the
+            // spec table and BabyPenguin's IsTypeValueLike): it lowers to a
+            // GC-managed ref<string>, so a class with a string field is NOT
+            // auto-classified as a value class — assignment aliases (the
+            // StringFieldAutoClassification test locks this in). Its `.copy()`
+            // stays identity through base_type_has_icopy (strings are
+            // immutable, sharing is observationally safe).
+            if (bt.primitive is PrimitiveType.StringType) {
+                return false;
+            }
+            return true; // Every other primitive is a value type
         }
         if (bt.kind is TypeKind.EnumKind) {
             // An enum (e.g. Option<T>) is value-like only if every payload

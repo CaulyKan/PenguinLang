@@ -24,6 +24,16 @@ namespace BabyPenguin.SemanticPass
             {
                 AutoAddICopy(cls);
             }
+            // Step 3: an EXPLICIT `impl ICopy<T> for T` without a user-provided
+            // `copy` is backed by the runtime clone, whose depth differs across
+            // backends (VM: recursive clone; CS backend / EmperorPenguin: shallow
+            // memcpy). When the class contains reference-typed fields that clone
+            // would silently share mutable state — reject it and require an
+            // explicit `fun copy(this) -> T`.
+            foreach (var cls in items.OfType<IClassNode>())
+            {
+                ValidateExplicitICopyCopy(cls);
+            }
             foreach (var obj in items)
             {
                 MergeVTables(obj);
@@ -283,6 +293,62 @@ namespace BabyPenguin.SemanticPass
             var vtable = new VTable(Model, cls, interfaceNode);
             Model.CatchUp(vtable);
             cls.VTables.Add(vtable);
+        }
+
+        /// <summary>
+        /// Rejects an explicit user-written `impl ICopy&lt;T&gt; for T` that provides no
+        /// `copy` function when the class contains reference-typed fields: the
+        /// auto-generated copy is only a shallow clone (CS backend / EmperorPenguin
+        /// memcpy), which would silently share the referenced objects between the
+        /// original and the copy. An explicit `copy` — inside the impl block or as a
+        /// class method (the SourceLocation pattern) — is accepted as-is.
+        /// </summary>
+        void ValidateExplicitICopyCopy(IClassNode cls)
+        {
+            if (cls.IsGeneric && !cls.IsSpecialized)
+                return;
+
+            List<IInterfaceImplementation> impls = [];
+            if (cls.SyntaxNode is ClassDefinition classSyntax)
+                impls.AddRange(classSyntax.InterfaceImplementations.Cast<IInterfaceImplementation>());
+            impls.AddRange(CollectInterfaceForImplementation(cls));
+
+            bool hasExplicitICopy = false;
+            foreach (var impl in impls)
+            {
+                var text = impl.InterfaceType?.Text;
+                if (text == null || !text.Contains("ICopy"))
+                    continue;
+                var resolved = Model.ResolveTypeNode(text, s => s is IInterfaceNode, cls)
+                    ?? Model.ResolveTypeNode(text, s => s is IInterfaceNode);
+                if (resolved is not IInterfaceNode intf || !intf.FullName().Contains("ICopy"))
+                    continue;
+                hasExplicitICopy = true;
+                if (impl.Functions.Any(f => f.Name == "copy"))
+                    return; // explicit copy inside the impl block
+            }
+            if (!hasExplicitICopy)
+                return;
+            // A class-level `fun copy(...)` method is also an explicit override:
+            // call sites resolve it through member lookup, ahead of the vtable.
+            if ((cls as IRoutineContainer)!.Functions.Any(f => f.Name == "copy"))
+                return;
+
+            var visiting = new HashSet<string>();
+            foreach (var symbol in cls.Symbols)
+            {
+                if (!symbol.IsClassMember || !symbol.IsVariable)
+                    continue;
+                var fieldType = symbol.TypeInfo;
+                if (fieldType != null && !IsTypeValueLike(fieldType, visiting))
+                {
+                    throw new BabyPenguinException(
+                        $"Class '{cls.FullName()}' implements ICopy without providing a 'copy' function, but field '{symbol.Name}' "
+                        + $"has reference type '{fieldType.TypeNode!.FullName()}': the auto-generated copy would shallow-copy the shared reference. "
+                        + $"Provide an explicit 'fun copy(this) -> {cls.Name}', or remove the ICopy impl.",
+                        symbol.SourceLocation, code: ErrorCode.E_INTERFACE_IMPL);
+                }
+            }
         }
 
         /// <summary>

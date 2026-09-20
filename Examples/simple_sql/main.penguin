@@ -1,0 +1,79 @@
+// main.penguin — the simple_sql demo (Examples/simple_sql).
+//
+// Seeds the in-memory db tables, then exercises the compile-time SQL layer
+// (sql.penguin): SELECT with WHERE/AND/OR (one placeholder bound to a
+// runtime variable, one SQL-inline string literal), UPDATE by id with a
+// verify re-select, INSERT, and DELETE with the remaining table size.
+// The stdout of this file is pinned byte-exact by Tests/ExampleTest/SimpleSql.md.
+
+using db;
+
+fun print_students(vs: std.Vector<Student>) {
+    let n: i64 = cast<i64>(vs.size());
+    println("count=" + cast<string>(n));
+    for (let s : Student in vs.iter()) {
+        println(cast<string>(s.id) + ":" + s.name + ":class" + cast<string>(s.class_id));
+    }
+}
+
+fun print_scores(vs: std.Vector<Score>) {
+    let n: i64 = cast<i64>(vs.size());
+    println("count=" + cast<string>(n));
+    for (let s : Score in vs.iter()) {
+        println(cast<string>(s.id) + ":" + s.subject + ":" + cast<string>(s.value));
+    }
+}
+
+initial {
+    db.seed();
+    println("== seed ==");
+    println("classes=" + cast<string>(db.classes.size())
+        + " students=" + cast<string>(db.students.size())
+        + " scores=" + cast<string>(db.scores.size()));
+
+    // SELECT * FROM STUDENT WHERE name={nm} — the SQL string is parsed at
+    // compile time; nm is a runtime variable snapshot-captured by the
+    // generated predicate.
+    let nm: string = "aa";
+    let r1: std.Vector<Student> = #sql_query("SELECT * FROM STUDENT WHERE name={}"){ nm }.into<std.Vector<Student>>();
+    println("== select name={nm} ==");
+    print_students(r1);
+
+    // SELECT * FROM STUDENT WHERE class_id=2 AND name='tom'
+    let r2: std.Vector<Student> = #sql_query("SELECT * FROM STUDENT WHERE class_id=2 AND name='tom'"){ }.into<std.Vector<Student>>();
+    println("== select class_id=2 AND name='tom' ==");
+    print_students(r2);
+
+    // SELECT * FROM SCORE WHERE value>=90 OR subject='math'
+    let r3: std.Vector<Score> = #sql_query("SELECT * FROM SCORE WHERE value>=90 OR subject='math'"){ }.into<std.Vector<Score>>();
+    println("== select value>=90 OR subject='math' ==");
+    print_scores(r3);
+
+    // UPDATE STUDENT SET name={} WHERE id={} — block expression at let-init
+    // position; the generated loop mutates the stored rows in place (rows
+    // are reference types).
+    let up: i64 = #sql_execute("UPDATE STUDENT SET name={} WHERE id={}") { "bobby", 2 };
+    println("== update id=2 set name='bobby' ==");
+    println("affected=" + cast<string>(up));
+
+    // verify
+    let rv: std.Vector<Student> = #sql_query("SELECT * FROM STUDENT WHERE id={}"){ 2 }.into<std.Vector<Student>>();
+    println("== verify ==");
+    print_students(rv);
+
+    // INSERT INTO STUDENT (id, name, class_id) VALUES ({}, {}, {})
+    let ins: i64 = #sql_execute("INSERT INTO STUDENT (id, name, class_id) VALUES ({}, {}, {})") { 7, "newkid", 3 };
+    println("== insert (7,'newkid',3) ==");
+    println("affected=" + cast<string>(ins));
+
+    let rvi: std.Vector<Student> = #sql_query("SELECT * FROM STUDENT WHERE id={}"){ 7 }.into<std.Vector<Student>>();
+    println("== verify insert ==");
+    print_students(rvi);
+
+    // DELETE FROM STUDENT WHERE class_id={} — kept rows rebuilt into a
+    // fresh Vector and assigned back to the table global.
+    let del: i64 = #sql_execute("DELETE FROM STUDENT WHERE class_id={}") { 2 };
+    println("== delete class_id=2 ==");
+    println("affected=" + cast<string>(del)
+        + " remaining=" + cast<string>(db.students.size()));
+}

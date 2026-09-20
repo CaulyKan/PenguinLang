@@ -2452,6 +2452,11 @@ public static class SummaryReporter
     {
         var sb = new StringBuilder();
         var first = items.First();
+        if (spec != null && !string.IsNullOrWhiteSpace(spec.Description))
+        {
+            sb.Append("<h3 class='blk'>Description</h3>");
+            sb.Append($"<div class='desc'>{HE(spec.Description)}</div>");
+        }
         sb.Append("<h3 class='blk'>Source</h3>");
         sb.Append(Pre(ReadSource(first.WorkDir)));
         sb.Append(ExpectationsHtml(spec));
@@ -2659,6 +2664,7 @@ h1{font-size:20px;margin:0;font-weight:650}
 .card h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 h3.blk{margin:18px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 h3.blk:first-child{margin-top:0}
+.desc{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
 .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .controls input{width:200px;flex:0 0 auto;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);font-size:13px}
 .badges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}

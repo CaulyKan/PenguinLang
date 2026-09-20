@@ -1,0 +1,678 @@
+// sql.penguin — compile-time SQL parser for the in-memory db tables
+// (Examples/simple_sql).
+//
+//   #sql_query("SELECT * FROM T [WHERE cond]") { args }  -> row iterator
+//   #sql_execute("UPDATE | INSERT | DELETE ...") { args } -> affected i64
+//
+// The SQL statement is parsed AT COMPILE TIME (these are #fun meta calls,
+// JIT-executed by native Pass2/Pass3). Tables and columns are verified
+// against the real bound types via reflection, then PenguinLang code is
+// generated as text and spliced back at the call site. The {...} trailing
+// block's expressions fill the {} placeholders verbatim, so runtime values
+// (locals like `nm`) work — the generated predicate snapshot-captures them.
+//
+// Conventions (see model.penguin):
+//   * row types and table globals live in namespace `db`; the table variable
+//     for `STUDENT` is probed as db.students / db.studentes / db.student
+//     (lower + "s", lower + "es", bare lower)
+//   * table name -> type name by Title-casing (STUDENT -> Student)
+//   * column names match class fields case-insensitively; the canonical
+//     field spelling is emitted (`STUDENT.NAME` -> `r.name`)
+//
+// WHERE grammar (recursive descent, precedence low -> high):
+//   or := and (OR and)*          -> ||
+//   and := not (AND not)*        -> &&
+//   not := NOT not | primary
+//   primary := ( or ) | col cmp value
+//   cmp ∈ =, ==, !=, <>, <, <=, >, >=   (SQL = -> ==, <> -> !=)
+//   value ∈ {} | number | 'string' | "string" | true | false
+//
+// The predicate lambda is bound to a local BEFORE being passed to filter():
+// an inline capturing lambda whose call result is chained loses its capture
+// fields on EmperorPenguin (Tests/LambdaTest/LambdaCaptureChainedCall.md).
+
+// ---------------------------------------------------------------------------
+// parse state — (generated expression text, next token index, next
+// placeholder-argument index), threaded through the recursive descent.
+// #class is dual-unit; fields stay primitive so the unit-A copy compiles
+// without _utils in scope.
+#class _SqlCond {
+    text: mut string = "";
+    next: mut i64 = 0;
+    argi: mut i64 = 0;
+
+    fun new(mut this) {}
+}
+
+#fun _sql_mkcond(text: string, next: i64, argi: i64) -> _SqlCond {
+    let c: mut _SqlCond = new _SqlCond();
+    c.text = text;
+    c.next = next;
+    c.argi = argi;
+    return c;
+}
+
+// ---------------------------------------------------------------------------
+// string helpers (unit B has no to-lower/to-upper builtins; index into the
+// alphabet instead — there is no code->char conversion builtin either)
+
+#fun _sql_lower(s: string) -> string {
+    let lower_az: string = "abcdefghijklmnopqrstuvwxyz";
+    let sb: mut StringBuilder = new StringBuilder();
+    let i: mut i64 = 0;
+    while (i < string_length(s)) {
+        let ch: string = string_char_at(s, i);
+        let cc: i64 = string_char_code(ch);
+        if (cc >= 65 && cc <= 90) {
+            sb.append(string_substring(lower_az, cc - 65, 1));
+        } else {
+            sb.append(ch);
+        }
+        i = i + 1;
+    }
+    return sb.to_string();
+}
+
+#fun _sql_title(s: string) -> string {
+    let low: string = _sql_lower(s);
+    if (string_length(low) == 0) { return low; }
+    let upper_az: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let cc: i64 = string_char_code(string_char_at(low, 0));
+    if (cc >= 97 && cc <= 122) {
+        return string_substring(upper_az, cc - 97, 1) + string_substring(low, 1, string_length(low) - 1);
+    }
+    return low;
+}
+
+// ---------------------------------------------------------------------------
+// tokenizer — split on whitespace; '(' ')' ',' '*' are single tokens;
+// two-char operators (==, !=, <>, <=, >=) before single ones; quoted strings
+// stay one token INCLUDING their quotes; {} is the placeholder token;
+// identifiers/numbers keep dots (STUDENT.name, 1.5) inside one token.
+
+#fun _sql_tokenize(sql: string) -> _utils.List<string> {
+    let toks: mut _utils.List<string> = new _utils.List<string>();
+    let len: i64 = string_length(sql);
+    let i: mut i64 = 0;
+    while (i < len) {
+        let ch: string = string_char_at(sql, i);
+        let cc: i64 = string_char_code(ch);
+        if (cc == 32 || cc == 9 || cc == 10 || cc == 13) {
+            i = i + 1;
+        } else if (ch == "'" || ch == "\"") {
+            let j: mut i64 = i + 1;
+            while (j < len && string_char_at(sql, j) != ch) {
+                j = j + 1;
+            }
+            if (j >= len) {
+                compiler().error("simple_sql: unterminated string literal in: " + sql);
+                toks.push(string_substring(sql, i, len - i));
+                i = len;
+            } else {
+                toks.push(string_substring(sql, i, j - i + 1));
+                i = j + 1;
+            }
+        } else if (ch == "{") {
+            if (i + 1 < len && string_char_at(sql, i + 1) == "}") {
+                toks.push("{}");
+                i = i + 2;
+            } else {
+                compiler().error("simple_sql: '{' must be followed by '}' (parameter placeholder) in: " + sql);
+                i = i + 1;
+            }
+        } else if (ch == "(" || ch == ")" || ch == "," || ch == "*") {
+            toks.push(ch);
+            i = i + 1;
+        } else if (ch == "=") {
+            if (i + 1 < len && string_char_at(sql, i + 1) == "=") {
+                toks.push("==");
+                i = i + 2;
+            } else {
+                toks.push("=");
+                i = i + 1;
+            }
+        } else if (ch == "!") {
+            if (i + 1 < len && string_char_at(sql, i + 1) == "=") {
+                toks.push("!=");
+                i = i + 2;
+            } else {
+                compiler().error("simple_sql: lone '!' in: " + sql);
+                toks.push("!=");
+                i = i + 1;
+            }
+        } else if (ch == "<") {
+            if (i + 1 < len && string_char_at(sql, i + 1) == "=") {
+                toks.push("<=");
+                i = i + 2;
+            } else if (i + 1 < len && string_char_at(sql, i + 1) == ">") {
+                toks.push("<>");
+                i = i + 2;
+            } else {
+                toks.push("<");
+                i = i + 1;
+            }
+        } else if (ch == ">") {
+            if (i + 1 < len && string_char_at(sql, i + 1) == "=") {
+                toks.push(">=");
+                i = i + 2;
+            } else {
+                toks.push(">");
+                i = i + 1;
+            }
+        } else {
+            let j: mut i64 = i;
+            while (j < len) {
+                let cjc: i64 = string_char_code(string_char_at(sql, j));
+                let is_word: bool = (cjc >= 97 && cjc <= 122) || (cjc >= 65 && cjc <= 90)
+                    || (cjc >= 48 && cjc <= 57) || cjc == 95 || cjc == 46;
+                if (!is_word) { break; }
+                j = j + 1;
+            }
+            toks.push(string_substring(sql, i, j - i));
+            i = j;
+        }
+    }
+    return toks;
+}
+
+// ---------------------------------------------------------------------------
+// {...} block -> verbatim argument texts (the MetaPrintf recipe: the raw
+// block text arrives as a string, parse_arguments turns it into a real
+// FunctionCallArguments node, each item's build_text() is the expression).
+
+#fun _sql_arg_texts(params: unstructured_ast) -> _utils.List<string> {
+    let result: mut _utils.List<string> = new _utils.List<string>();
+    let token: i64 = compiler().parse_arguments(params);
+    let expr: emperor.Expression = compiler().get_ast(token);
+    if (expr is emperor.Expression.function_call_arguments) {
+        let args = expr.function_call_arguments;
+        let n: i64 = cast<i64>(args.size());
+        let i: mut i64 = 0;
+        while (i < n) {
+            result.push(args.at(cast<u64>(i)).some.build_text());
+            i = i + 1;
+        }
+    }
+    return result;
+}
+
+// The {} placeholder count across the whole statement must equal the block
+// argument count (placeholders are consumed left-to-right, textually).
+#fun _sql_check_placeholders(toks: _utils.List<string>, args: _utils.List<string>, sql: string) {
+    let n: i64 = cast<i64>(toks.size());
+    let nph: mut i64 = 0;
+    let i: mut i64 = 0;
+    while (i < n) {
+        if (toks.at(cast<u64>(i)).some == "{}") { nph = nph + 1; }
+        i = i + 1;
+    }
+    if (nph != cast<i64>(args.size())) {
+        compiler().error("simple_sql: " + cast<string>(nph) + " {} placeholder(s) but "
+            + cast<string>(args.size()) + " {...} block argument(s) in: " + sql);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// name resolution
+
+// TABLE.col / col -> col
+#fun _sql_col_tail(col: string) -> string {
+    let dot: i64 = string_find(col, ".");
+    if (dot < 0) { return col; }
+    return string_substring(col, dot + 1, string_length(col) - dot - 1);
+}
+
+// canonical field name for a column (case-insensitive), "" when unknown
+#fun _sql_field_canonical(row_type: type, col: string) -> string {
+    let fs = row_type.fields();
+    let n: i64 = cast<i64>(fs.size());
+    let i: mut i64 = 0;
+    while (i < n) {
+        let fname: string = fs.at(cast<u64>(i)).some.name;
+        if (_sql_lower(fname) == _sql_lower(col)) {
+            return fname;
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// validated canonical field, compiler().error on unknown columns
+#fun _sql_field_checked(row_type: type, col: string, table: string) -> string {
+    let f: string = _sql_field_canonical(row_type, _sql_col_tail(col));
+    if (string_length(f) == 0) {
+        compiler().error("simple_sql: table " + table + " has no column '" + col + "'");
+        return _sql_col_tail(col);
+    }
+    return f;
+}
+
+// STUDENT -> db.Student (the row type this example's tables live under)
+#fun _sql_type_name(table: string) -> string {
+    return "db." + _sql_title(table);
+}
+
+// STUDENT -> db.students (probe db.<lower+s> / db.<lower+es> / db.<lower>)
+#fun _sql_table_var(table: string) -> string {
+    let low: string = _sql_lower(table);
+    if (compiler().resolve_symbol("db." + low + "s").is_some()) { return "db." + low + "s"; }
+    if (compiler().resolve_symbol("db." + low + "es").is_some()) { return "db." + low + "es"; }
+    if (compiler().resolve_symbol("db." + low).is_some()) { return "db." + low; }
+    compiler().error("simple_sql: no table variable for " + table
+        + " (probed db." + low + "s / db." + low + "es / db." + low + ")");
+    return "db." + low + "s";
+}
+
+// ---------------------------------------------------------------------------
+// WHERE expression parser
+
+// value token -> penguin expression text ({} consumes one block argument)
+#fun _sql_value(toks: _utils.List<string>, pos: i64, argi: i64, args: _utils.List<string>) -> _SqlCond {
+    let tok: string = toks.at(cast<u64>(pos)).some;
+    if (tok == "{}") {
+        if (argi >= cast<i64>(args.size())) {
+            compiler().error("simple_sql: not enough {...} block arguments for the {} placeholders");
+            return _sql_mkcond("0", pos + 1, argi);
+        }
+        return _sql_mkcond(args.at(cast<u64>(argi)).some, pos + 1, argi + 1);
+    }
+    let c0: string = string_char_at(tok, 0);
+    if (c0 == "'" && string_length(tok) >= 2) {
+        // SQL 'str' -> penguin "str"
+        return _sql_mkcond("\"" + string_substring(tok, 1, string_length(tok) - 2) + "\"", pos + 1, argi);
+    }
+    // already-quoted penguin string, number, true/false: verbatim
+    return _sql_mkcond(tok, pos + 1, argi);
+}
+
+// SQL comparison operator -> penguin operator
+#fun _sql_cmp_op(op: string, sql: string) -> string {
+    if (op == "=" || op == "==") { return "=="; }
+    if (op == "!=" || op == "<>") { return "!="; }
+    if (op == "<" || op == "<=" || op == ">" || op == ">=") { return op; }
+    compiler().error("simple_sql: '" + op + "' is not a comparison operator in: " + sql);
+    return "==";
+}
+
+// col cmp value (the primary of the WHERE grammar)
+#fun _sql_parse_cmp(toks: _utils.List<string>, pos: i64, argi: i64, args: _utils.List<string>, row_type: type, table: string, sql: string) -> _SqlCond {
+    let n: i64 = cast<i64>(toks.size());
+    if (pos + 2 >= n) {
+        compiler().error("simple_sql: incomplete comparison (col op value) in: " + sql);
+        return _sql_mkcond("true", n, argi);
+    }
+    let col: string = toks.at(cast<u64>(pos)).some;
+    let op: string = toks.at(cast<u64>(pos + 1)).some;
+    let val: _SqlCond = _sql_value(toks, pos + 2, argi, args);
+    let field: string = _sql_field_checked(row_type, col, table);
+    return _sql_mkcond("r." + field + " " + _sql_cmp_op(op, sql) + " " + val.text, val.next, val.argi);
+}
+
+#fun _sql_parse_not(toks: _utils.List<string>, pos: i64, argi: i64, args: _utils.List<string>, row_type: type, table: string, sql: string) -> _SqlCond {
+    let n: i64 = cast<i64>(toks.size());
+    if (pos >= n) {
+        compiler().error("simple_sql: WHERE expression ends unexpectedly in: " + sql);
+        return _sql_mkcond("true", pos, argi);
+    }
+    if (_sql_lower(toks.at(cast<u64>(pos)).some) == "not") {
+        let inner: _SqlCond = _sql_parse_not(toks, pos + 1, argi, args, row_type, table, sql);
+        return _sql_mkcond("!(" + inner.text + ")", inner.next, inner.argi);
+    }
+    if (toks.at(cast<u64>(pos)).some == "(") {
+        let inner: _SqlCond = _sql_parse_or(toks, pos + 1, argi, args, row_type, table, sql);
+        let p: i64 = inner.next;
+        if (p < n && toks.at(cast<u64>(p)).some == ")") {
+            return _sql_mkcond("(" + inner.text + ")", p + 1, inner.argi);
+        }
+        compiler().error("simple_sql: missing ')' in WHERE expression of: " + sql);
+        return _sql_mkcond("(" + inner.text + ")", p, inner.argi);
+    }
+    return _sql_parse_cmp(toks, pos, argi, args, row_type, table, sql);
+}
+
+#fun _sql_parse_and(toks: _utils.List<string>, pos: i64, argi: i64, args: _utils.List<string>, row_type: type, table: string, sql: string) -> _SqlCond {
+    let left: _SqlCond = _sql_parse_not(toks, pos, argi, args, row_type, table, sql);
+    let text: mut string = left.text;
+    let p: mut i64 = left.next;
+    let a: mut i64 = left.argi;
+    let n: i64 = cast<i64>(toks.size());
+    while (p < n && _sql_lower(toks.at(cast<u64>(p)).some) == "and") {
+        let right: _SqlCond = _sql_parse_not(toks, p + 1, a, args, row_type, table, sql);
+        text = "(" + text + ") && (" + right.text + ")";
+        p = right.next;
+        a = right.argi;
+    }
+    return _sql_mkcond(text, p, a);
+}
+
+#fun _sql_parse_or(toks: _utils.List<string>, pos: i64, argi: i64, args: _utils.List<string>, row_type: type, table: string, sql: string) -> _SqlCond {
+    let left: _SqlCond = _sql_parse_and(toks, pos, argi, args, row_type, table, sql);
+    let text: mut string = left.text;
+    let p: mut i64 = left.next;
+    let a: mut i64 = left.argi;
+    let n: i64 = cast<i64>(toks.size());
+    while (p < n && _sql_lower(toks.at(cast<u64>(p)).some) == "or") {
+        let right: _SqlCond = _sql_parse_and(toks, p + 1, a, args, row_type, table, sql);
+        text = "(" + text + ") || (" + right.text + ")";
+        p = right.next;
+        a = right.argi;
+    }
+    return _sql_mkcond(text, p, a);
+}
+
+// entry: parse the WHERE clause starting at token index `pos` (just after
+// the WHERE keyword); returns the penguin bool-expression + end position.
+#fun _sql_parse_where(toks: _utils.List<string>, pos: i64, argi: i64, args: _utils.List<string>, row_type: type, table: string, sql: string) -> _SqlCond {
+    return _sql_parse_or(toks, pos, argi, args, row_type, table, sql);
+}
+
+// ---------------------------------------------------------------------------
+// SELECT — the entry meta call. Returns a row iterator expression; the
+// caller materializes with .into<std.Vector<db.T>>() (the established
+// Vector idiom). With a WHERE clause the iterator pipeline is wrapped in a
+// block that pre-binds the predicate lambda (see the file header note).
+
+#fun sql_query(sql: string, params: unstructured_ast) -> ast {
+    let toks = _sql_tokenize(sql);
+    let n: i64 = cast<i64>(toks.size());
+    let args = _sql_arg_texts(params);
+    _sql_check_placeholders(toks, args, sql);
+    if (n < 4
+        || _sql_lower(toks.at(cast<u64>(0)).some) != "select"
+        || toks.at(cast<u64>(1)).some != "*"
+        || _sql_lower(toks.at(cast<u64>(2)).some) != "from") {
+        compiler().error("simple_sql: only 'SELECT * FROM T [WHERE cond]' is supported: " + sql);
+        return compiler().create_expression("0");
+    }
+    let table: string = toks.at(cast<u64>(3)).some;
+    let row_type_opt = compiler().resolve_type(_sql_title(table));
+    if (row_type_opt.is_none()) {
+        compiler().error("simple_sql: unknown table " + table + " (no type '" + _sql_title(table) + "' is visible)");
+        return compiler().create_expression("0");
+    }
+    let row_type = row_type_opt.some;
+    let table_var: string = _sql_table_var(table);
+    let type_name: string = _sql_type_name(table);
+    if (n > 4 && _sql_lower(toks.at(cast<u64>(4)).some) == "where") {
+        let c: _SqlCond = _sql_parse_where(toks, 5, 0, args, row_type, table, sql);
+        if (c.next != n) {
+            compiler().error("simple_sql: trailing tokens after the WHERE clause in: " + sql);
+        }
+        let code: string = "{ let __pred: mut fun<bool, " + type_name + "> = fun (r: " + type_name
+            + ") -> bool { return " + c.text + "; }; "
+            + table_var + ".iter().filter(__pred) }";
+        return compiler().create_expression(code);
+    }
+    if (n != 4) {
+        compiler().error("simple_sql: trailing tokens after the table name in: " + sql);
+    }
+    return compiler().create_expression(table_var + ".iter()");
+}
+
+// ---------------------------------------------------------------------------
+// UPDATE — #sql_execute("UPDATE T SET a=v[, b=v] [WHERE cond]") { args }
+// (shorthand: "UPDATE T.a=v [WHERE cond]"). Returns the affected row count.
+// Rows are reference types, so the generated loop mutates the stored rows
+// in place through at().some.
+
+#fun _sql_gen_update(toks: _utils.List<string>, args: _utils.List<string>, sql: string) -> ast {
+    let n: i64 = cast<i64>(toks.size());
+    if (n < 3) {
+        compiler().error("simple_sql: too short for UPDATE: " + sql);
+        return compiler().create_expression("0");
+    }
+    let table: mut string = "";
+    let cols: mut _utils.List<string> = new _utils.List<string>();
+    let vals: mut _utils.List<string> = new _utils.List<string>();
+    let argi: mut i64 = 0;
+    let pos: mut i64 = 0;
+    if (_sql_lower(toks.at(cast<u64>(2)).some) == "set") {
+        // UPDATE T SET a=v, b=v [WHERE ...]
+        table = toks.at(cast<u64>(1)).some;
+        pos = 3;
+        let more: mut bool = true;
+        while (more) {
+            if (pos + 2 > n - 1) {
+                compiler().error("simple_sql: incomplete 'col=value' in SET clause of: " + sql);
+                more = false;
+            } else {
+                let op: string = toks.at(cast<u64>(pos + 1)).some;
+                if (op != "=" && op != "==") {
+                    compiler().error("simple_sql: expected '=' in SET clause of: " + sql);
+                    more = false;
+                } else {
+                    let val: _SqlCond = _sql_value(toks, pos + 2, argi, args);
+                    cols.push(toks.at(cast<u64>(pos)).some);
+                    vals.push(val.text);
+                    pos = val.next;
+                    argi = val.argi;
+                    if (pos < n && toks.at(cast<u64>(pos)).some == ",") {
+                        pos = pos + 1;
+                    } else {
+                        more = false;
+                    }
+                }
+            }
+        }
+    } else {
+        // shorthand: UPDATE T.col=v [WHERE ...]
+        let t1: string = toks.at(cast<u64>(1)).some;
+        let dot: i64 = string_find(t1, ".");
+        if (dot <= 0) {
+            compiler().error("simple_sql: expected 'UPDATE T SET col=value' or 'UPDATE T.col=value': " + sql);
+            return compiler().create_expression("0");
+        }
+        table = string_substring(t1, 0, dot);
+        let op: string = toks.at(cast<u64>(2)).some;
+        if (op != "=" && op != "==") {
+            compiler().error("simple_sql: expected '=' in: " + sql);
+            return compiler().create_expression("0");
+        }
+        let val: _SqlCond = _sql_value(toks, 3, 0, args);
+        cols.push(string_substring(t1, dot + 1, string_length(t1) - dot - 1));
+        vals.push(val.text);
+        pos = val.next;
+        argi = val.argi;
+    }
+    let row_type_opt = compiler().resolve_type(_sql_title(table));
+    if (row_type_opt.is_none()) {
+        compiler().error("simple_sql: unknown table " + table + " (no type '" + _sql_title(table) + "' is visible)");
+        return compiler().create_expression("0");
+    }
+    let row_type = row_type_opt.some;
+    let table_var: string = _sql_table_var(table);
+    let cond: mut string = "true";
+    if (pos < n && _sql_lower(toks.at(cast<u64>(pos)).some) == "where") {
+        let c: _SqlCond = _sql_parse_where(toks, pos + 1, argi, args, row_type, table, sql);
+        cond = c.text;
+        pos = c.next;
+    }
+    if (pos != n) {
+        compiler().error("simple_sql: trailing tokens in: " + sql);
+    }
+    let code: mut StringBuilder = new StringBuilder();
+    code.append("{ let __affected: mut i64 = 0; let __i: mut i64 = 0; while (__i < cast<i64>(");
+    code.append(table_var);
+    code.append(".size())) { let mut r = ");
+    code.append(table_var);
+    code.append(".at(cast<u64>(__i)).some; if (");
+    code.append(cond);
+    code.append(") { ");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(cols.size())) {
+        let f: string = _sql_field_checked(row_type, cols.at(cast<u64>(i)).some, table);
+        code.append("r." + f + " = " + vals.at(cast<u64>(i)).some + "; ");
+        i = i + 1;
+    }
+    code.append("__affected = __affected + 1; } __i = __i + 1; } __affected }");
+    return compiler().create_expression(code.to_string());
+}
+
+// ---------------------------------------------------------------------------
+// INSERT — #sql_execute("INSERT INTO T (a, b) VALUES (v, v)") { args }.
+// Column names are required (INSERT never depends on constructor argument
+// order). Returns 1 (the inserted row count).
+
+#fun _sql_gen_insert(toks: _utils.List<string>, args: _utils.List<string>, sql: string) -> ast {
+    let n: i64 = cast<i64>(toks.size());
+    if (n < 5 || _sql_lower(toks.at(cast<u64>(1)).some) != "into") {
+        compiler().error("simple_sql: expected 'INSERT INTO T (cols) VALUES (values)': " + sql);
+        return compiler().create_expression("0");
+    }
+    let table: string = toks.at(cast<u64>(2)).some;
+    let row_type_opt = compiler().resolve_type(_sql_title(table));
+    if (row_type_opt.is_none()) {
+        compiler().error("simple_sql: unknown table " + table + " (no type '" + _sql_title(table) + "' is visible)");
+        return compiler().create_expression("0");
+    }
+    let row_type = row_type_opt.some;
+    let table_var: string = _sql_table_var(table);
+    let cols: mut _utils.List<string> = new _utils.List<string>();
+    let vals: mut _utils.List<string> = new _utils.List<string>();
+    let pos: mut i64 = 3;
+    if (toks.at(cast<u64>(pos)).some != "(") {
+        compiler().error("simple_sql: expected '(' after the table name in: " + sql);
+        return compiler().create_expression("0");
+    }
+    pos = pos + 1;
+    let more: mut bool = true;
+    while (more) {
+        if (pos >= n) {
+            compiler().error("simple_sql: unterminated column list in: " + sql);
+            more = false;
+        } else {
+            cols.push(toks.at(cast<u64>(pos)).some);
+            pos = pos + 1;
+            if (pos < n && toks.at(cast<u64>(pos)).some == ",") {
+                pos = pos + 1;
+            } else {
+                more = false;
+            }
+        }
+    }
+    if (pos >= n || toks.at(cast<u64>(pos)).some != ")") {
+        compiler().error("simple_sql: expected ')' after the column list in: " + sql);
+        return compiler().create_expression("0");
+    }
+    pos = pos + 1;
+    if (pos >= n || _sql_lower(toks.at(cast<u64>(pos)).some) != "values") {
+        compiler().error("simple_sql: expected VALUES in: " + sql);
+        return compiler().create_expression("0");
+    }
+    pos = pos + 1;
+    if (pos >= n || toks.at(cast<u64>(pos)).some != "(") {
+        compiler().error("simple_sql: expected '(' after VALUES in: " + sql);
+        return compiler().create_expression("0");
+    }
+    pos = pos + 1;
+    let argi: mut i64 = 0;
+    more = true;
+    while (more) {
+        if (pos >= n) {
+            compiler().error("simple_sql: unterminated VALUES list in: " + sql);
+            more = false;
+        } else {
+            let val: _SqlCond = _sql_value(toks, pos, argi, args);
+            vals.push(val.text);
+            pos = val.next;
+            argi = val.argi;
+            if (pos < n && toks.at(cast<u64>(pos)).some == ",") {
+                pos = pos + 1;
+            } else {
+                more = false;
+            }
+        }
+    }
+    if (pos >= n || toks.at(cast<u64>(pos)).some != ")") {
+        compiler().error("simple_sql: expected ')' after the VALUES list in: " + sql);
+        return compiler().create_expression("0");
+    }
+    pos = pos + 1;
+    if (pos != n) {
+        compiler().error("simple_sql: trailing tokens in: " + sql);
+    }
+    if (cast<i64>(cols.size()) != cast<i64>(vals.size())) {
+        compiler().error("simple_sql: " + cast<string>(cols.size()) + " column(s) but "
+            + cast<string>(vals.size()) + " value(s) in: " + sql);
+    }
+    let code: mut StringBuilder = new StringBuilder();
+    code.append("{ let mut r = new ");
+    code.append(_sql_type_name(table));
+    code.append("(); ");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(cols.size())) {
+        let f: string = _sql_field_checked(row_type, cols.at(cast<u64>(i)).some, table);
+        code.append("r." + f + " = " + vals.at(cast<u64>(i)).some + "; ");
+        i = i + 1;
+    }
+    code.append(table_var);
+    code.append(".push(r); 1 }");
+    return compiler().create_expression(code.to_string());
+}
+
+// ---------------------------------------------------------------------------
+// DELETE — #sql_execute("DELETE FROM T [WHERE cond]") { args }. The kept
+// rows are rebuilt into a fresh Vector and assigned back to the table
+// global. Returns the deleted row count.
+
+#fun _sql_gen_delete(toks: _utils.List<string>, args: _utils.List<string>, sql: string) -> ast {
+    let n: i64 = cast<i64>(toks.size());
+    if (n < 3 || _sql_lower(toks.at(cast<u64>(1)).some) != "from") {
+        compiler().error("simple_sql: expected 'DELETE FROM T [WHERE cond]': " + sql);
+        return compiler().create_expression("0");
+    }
+    let table: string = toks.at(cast<u64>(2)).some;
+    let row_type_opt = compiler().resolve_type(_sql_title(table));
+    if (row_type_opt.is_none()) {
+        compiler().error("simple_sql: unknown table " + table + " (no type '" + _sql_title(table) + "' is visible)");
+        return compiler().create_expression("0");
+    }
+    let row_type = row_type_opt.some;
+    let table_var: string = _sql_table_var(table);
+    let pos: mut i64 = 3;
+    let cond: mut string = "true";
+    if (pos < n && _sql_lower(toks.at(cast<u64>(pos)).some) == "where") {
+        let c: _SqlCond = _sql_parse_where(toks, pos + 1, 0, args, row_type, table, sql);
+        cond = c.text;
+        pos = c.next;
+    }
+    if (pos != n) {
+        compiler().error("simple_sql: trailing tokens in: " + sql);
+    }
+    let code: mut StringBuilder = new StringBuilder();
+    code.append("{ let __affected: mut i64 = 0; let __kept: mut std.Vector<");
+    code.append(_sql_type_name(table));
+    code.append("> = new std.Vector<");
+    code.append(_sql_type_name(table));
+    code.append(">(); let __i: mut i64 = 0; while (__i < cast<i64>(");
+    code.append(table_var);
+    code.append(".size())) { let mut r = ");
+    code.append(table_var);
+    code.append(".at(cast<u64>(__i)).some; if (");
+    code.append(cond);
+    code.append(") { __affected = __affected + 1; } else { __kept.push(r); } __i = __i + 1; } ");
+    code.append(table_var);
+    code.append(" = __kept; __affected }");
+    return compiler().create_expression(code.to_string());
+}
+
+// ---------------------------------------------------------------------------
+// the execute entry meta call — dispatches UPDATE / INSERT / DELETE and
+// returns the affected-row-count expression.
+
+#fun sql_execute(sql: string, params: unstructured_ast) -> ast {
+    let toks = _sql_tokenize(sql);
+    let n: i64 = cast<i64>(toks.size());
+    let args = _sql_arg_texts(params);
+    _sql_check_placeholders(toks, args, sql);
+    if (n < 1) {
+        compiler().error("simple_sql: empty statement");
+        return compiler().create_expression("0");
+    }
+    let kw: string = _sql_lower(toks.at(cast<u64>(0)).some);
+    if (kw == "update") { return _sql_gen_update(toks, args, sql); }
+    if (kw == "insert") { return _sql_gen_insert(toks, args, sql); }
+    if (kw == "delete") { return _sql_gen_delete(toks, args, sql); }
+    compiler().error("simple_sql: #sql_execute supports UPDATE / INSERT / DELETE, got: " + sql);
+    return compiler().create_expression("0");
+}

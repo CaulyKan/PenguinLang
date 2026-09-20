@@ -1,0 +1,17 @@
+; simple_sql.penguins — project file for the compile-time SQL example
+; (Examples/simple_sql). Build & run (from the repo root):
+;
+;   # released emitter + repo driver (auto-std provides std.Vector from
+;   # the std dynlib beside the emitter):
+;   EmperorPenguin/emperor_penguin --emitter build/linux/emperor_penguin_llvm_emitter \
+;       Examples/simple_sql/simple_sql.penguins -o /tmp/simple_sql
+;   /tmp/simple_sql
+;
+;   # bootstrap pass3 (no auto-std: pass vector.penguin explicitly):
+;   build/bootstrap/pass3 Examples/simple_sql/main.penguin \
+;       Examples/simple_sql/model.penguin Examples/simple_sql/sql.penguin \
+;       EmperorPenguin/std/penguin/vector.penguin -o /tmp/simple_sql
+;   EmperorPenguin/emperor_penguin link /tmp/simple_sql.ll -o /tmp/simple_sql && /tmp/simple_sql
+
+[Project]
+sources=["model.penguin", "sql.penguin", "main.penguin"]

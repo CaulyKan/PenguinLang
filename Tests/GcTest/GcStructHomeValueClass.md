@@ -9,7 +9,7 @@ GC v2 cover-retirement smoke: immutable value-class / Option<string> registers (
 ## Test Code
 ```
 namespace t {
-    class Rec { impl __builtin.ICopy<Rec>; a: i32; b: string;
+    class Rec { impl __builtin.IValueType; a: i32; b: string;
         fun new(mut this, a: i32, b: string) { this.a = a; this.b = b; } }
     class Holder { impl __builtin.IReferenceType; r: Rec; name: string;
         fun new(mut this, r: Rec, name: string) { this.r = r; this.name = name; } }
