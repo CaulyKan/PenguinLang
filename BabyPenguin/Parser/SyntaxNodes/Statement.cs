@@ -1,0 +1,167 @@
+namespace BabyPenguin.Parser.SyntaxNodes
+{
+    public class Statement : SyntaxNode
+    {
+        public enum Type
+        {
+            Empty,
+            SubBlock,
+            ExpressionStatement,
+            IfStatement,
+            WhileStatement,
+            ForStatement,
+            JumpStatement,
+            AssignmentStatement,
+            ReturnStatement,
+            YieldStatement,
+            SignalStatement,
+            TryStatement,
+            ConnectStatement,
+        }
+
+        public override void Build(SyntaxWalker walker, ParserRuleContext ctx)
+        {
+            base.Build(walker, ctx);
+
+            if (ctx is StatementContext context)
+            {
+                if (context.expressionStatement() is not null)
+                {
+                    StatementType = Type.ExpressionStatement;
+                    ExpressionStatement = Build<ExpressionStatement>(walker, context.expressionStatement());
+                }
+                else if (context.ifStatement() is not null)
+                {
+                    StatementType = Type.IfStatement;
+                    IfStatement = Build<IfStatement>(walker, context.ifStatement());
+                }
+                else if (context.whileStatement() is not null)
+                {
+                    StatementType = Type.WhileStatement;
+                    WhileStatement = Build<WhileStatement>(walker, context.whileStatement());
+                }
+                else if (context.forStatement() is not null)
+                {
+                    StatementType = Type.ForStatement;
+                    ForStatement = Build<ForStatement>(walker, context.forStatement());
+                }
+                else if (context.jumpStatement() is not null)
+                {
+                    StatementType = Type.JumpStatement;
+                    JumpStatement = Build<JumpStatement>(walker, context.jumpStatement());
+                }
+                else if (context.assignmentStatement() is not null)
+                {
+                    StatementType = Type.AssignmentStatement;
+                    AssignmentStatement = Build<AssignmentStatement>(walker, context.assignmentStatement());
+                }
+                else if (context.returnStatement() is not null)
+                {
+                    StatementType = Type.ReturnStatement;
+                    ReturnStatement = Build<ReturnStatement>(walker, context.returnStatement());
+                }
+                else if (context.yieldStatement() is not null)
+                {
+                    StatementType = Type.YieldStatement;
+                    YieldStatement = Build<YieldStatement>(walker, context.yieldStatement());
+                }
+                else if (context.signalStatement() is not null)
+                {
+                    StatementType = Type.SignalStatement;
+                    SignalStatement = Build<SignalStatement>(walker, context.signalStatement());
+                }
+                else if (context.tryStatement() is not null)
+                {
+                    StatementType = Type.TryStatement;
+                    TryStatement = Build<TryStatement>(walker, context.tryStatement());
+                }
+                else if (context.connectStatement() is not null)
+                {
+                    StatementType = Type.ConnectStatement;
+                    ConnectStatement = Build<ConnectStatement>(walker, context.connectStatement());
+                }
+                else if (context.codeBlockExpression() is not null)
+                {
+                    StatementType = Type.SubBlock;
+                    CodeBlockExpression = Build<CodeBlockExpression>(walker, context.codeBlockExpression());
+                }
+                else if (context.GetText() == ";")
+                {
+                    StatementType = Type.Empty;
+                }
+                else throw new NotImplementedException();
+
+            }
+            else throw new NotImplementedException();
+        }
+
+        public override void FromString(string source, ErrorReporter reporter)
+        {
+            var syntaxNode = PenguinParser.Parse(source, "annoymous", p => p.statement(), reporter);
+            var walker = new SyntaxWalker("annoymous", reporter);
+            Build(walker, syntaxNode);
+        }
+
+        [SexpValue]
+        public Type StatementType { get; set; }
+
+        [ChildrenNode]
+        public CodeBlockExpression? CodeBlockExpression { get; set; }
+
+        [ChildrenNode]
+        public ExpressionStatement? ExpressionStatement { get; set; }
+
+        [ChildrenNode]
+        public IfStatement? IfStatement { get; set; }
+
+        [ChildrenNode]
+        public ForStatement? ForStatement { get; set; }
+
+        [ChildrenNode]
+        public WhileStatement? WhileStatement { get; set; }
+
+        [ChildrenNode]
+        public JumpStatement? JumpStatement { get; set; }
+
+        [ChildrenNode]
+        public AssignmentStatement? AssignmentStatement { get; set; }
+
+        [ChildrenNode]
+        public ReturnStatement? ReturnStatement { get; set; }
+
+        [ChildrenNode]
+        public YieldStatement? YieldStatement { get; set; }
+
+        [ChildrenNode]
+        public SignalStatement? SignalStatement { get; set; }
+
+        [ChildrenNode]
+        public TryStatement? TryStatement { get; set; }
+
+        [ChildrenNode]
+        public ConnectStatement? ConnectStatement { get; set; }
+
+        public override string ToShortString() => "";
+
+        public override string BuildText()
+        {
+            return StatementType switch
+            {
+                Type.Empty => ";",
+                Type.SubBlock => CodeBlockExpression!.BuildText(),
+                Type.ExpressionStatement => ExpressionStatement!.BuildText(),
+                Type.IfStatement => IfStatement!.BuildText(),
+                Type.WhileStatement => WhileStatement!.BuildText(),
+                Type.ForStatement => ForStatement!.BuildText(),
+                Type.JumpStatement => JumpStatement!.BuildText(),
+                Type.AssignmentStatement => AssignmentStatement!.BuildText(),
+                Type.ReturnStatement => ReturnStatement!.BuildText(),
+                Type.YieldStatement => YieldStatement!.BuildText(),
+                Type.SignalStatement => SignalStatement!.BuildText(),
+                Type.TryStatement => TryStatement!.BuildText(),
+                Type.ConnectStatement => ConnectStatement!.BuildText(),
+                _ => throw new NotImplementedException($"Unsupported StatementType: {StatementType}")
+            };
+        }
+    }
+}

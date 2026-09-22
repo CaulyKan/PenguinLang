@@ -161,8 +161,8 @@ ifeq ($(HOST),win)
   C_RT += EmperorPenguin/emperor_penguin.bat
 endif
 
-BABY_CS := $(shell find BabyPenguin PenguinLangParser -name '*.cs' -not -path '*/bin/*' -not -path '*/obj/*' 2>/dev/null) \
-           BabyPenguin/BabyPenguin.csproj PenguinLangParser/PenguinLangParser.csproj
+BABY_CS := $(shell find BabyPenguin -name '*.cs' -not -path '*/bin/*' -not -path '*/obj/*' 2>/dev/null) \
+           BabyPenguin/BabyPenguin.csproj
 
 EP1_SRC := EmperorPenguin/EmperorPenguinPass1.penguins \
            $(addprefix EmperorPenguin/,$(call proj_sources,EmperorPenguin/EmperorPenguinPass1.penguins)) \

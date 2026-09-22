@@ -1,5 +1,5 @@
 using BabyPenguin.SemanticInterface;
-using PenguinLangParser;
+using BabyPenguin.Parser;
 
 namespace BabyPenguin.VirtualMachine
 {

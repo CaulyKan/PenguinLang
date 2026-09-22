@@ -21,7 +21,7 @@ Before writing ANY `.penguin` code, identify which target you are writing for. T
 | **Namespaces** | flat only (`emperor`, `_utils`) | flat + nested, `using`, `export` |
 | **Concurrency** | ❌ none | ✅ `Event<T>`, channels, ports, `wait`, `async` |
 
-**Why the restriction exists**: the compiler bootstraps — pass1 compiles the compiler source set (`EmperorPenguinPass1.penguins`) with BabyPenguin, whose ANTLR grammar (`PenguinLangParser/PenguinLang.g4`) only understands `#template` as a `#`-directive, has no `using`/`export`/`unsafe_cast`/`#fun`/`#if`, and cannot resolve nested-namespace member access. Every later pass can only digest what the previous pass compiles. Full details in the [EmperorPenguin Compiler Subset](#emperorpenguin-compiler-subset-restricted) section below.
+**Why the restriction exists**: the compiler bootstraps — pass1 compiles the compiler source set (`EmperorPenguinPass1.penguins`) with BabyPenguin, whose ANTLR grammar (`BabyPenguin/Parser/PenguinLang.g4`) only understands `#template` as a `#`-directive, has no `using`/`export`/`unsafe_cast`/`#fun`/`#if`, and cannot resolve nested-namespace member access. Every later pass can only digest what the previous pass compiles. Full details in the [EmperorPenguin Compiler Subset](#emperorpenguin-compiler-subset-restricted) section below.
 
 When a compiler source needs a feature outside the subset, the established pattern is a **stub** (see `MetaConfigStub.penguin` / `DynlibStub.penguin`): keep the public API identical, hide the feature behind it, and swap in the real implementation at a later pass.
 
@@ -32,7 +32,7 @@ When uncertain about syntax or language features, consult these authoritative so
 1. `Tests/<Category>/*.md` — the cross-compiler test suite is the most up-to-date syntax reference; find a test in the relevant category and copy its style
 2. `EmperorPenguin/std/penguin/core_builtin.penguin` — canonical, current real-world penguin code (stdlib)
 3. `docs/` — `specifications/01_Overview` … `06_Interface`, `09_NamespaceAndProject`, `specifications/10_MetaProgramming` (most recent), `specifications/11_PortsChannelsEvents` (current concurrency model)
-4. `PenguinLangParser/PenguinLang.g4` — ANTLR grammar (BabyPenguin front-end; a SUBSET of the EmperorPenguin front-end)
+4. `BabyPenguin/Parser/PenguinLang.g4` — ANTLR grammar (BabyPenguin front-end; a SUBSET of the EmperorPenguin front-end)
 5. `EmperorPenguin/src/ast/Lexer.penguin` + `Parser.penguin` — the leading-edge front-end (has `using`, `export`, `unsafe_cast`, `#`-meta)
 
 **IMPORTANT**: Some `docs/**/*.md` snippets are STALE (they show `match/case`, printf-style `println("{}", x)`, `const` fields, `on` routines — none of these exist). When docs and `Tests/` disagree, trust `Tests/` and the grammar. If unsure about any syntax, READ the sources before writing code. Do not guess syntax.

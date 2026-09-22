@@ -5,8 +5,8 @@ using Mono.Cecil;
 using BabyPenguin.Type;
 using BabyPenguin.SemanticInterface;
 using System.Collections;
-using PenguinLangParser;
-using PenguinLangParser.SyntaxNodes;
+using BabyPenguin.Parser;
+using BabyPenguin.Parser.SyntaxNodes;
 
 namespace BabyPenguin.VirtualMachine
 {

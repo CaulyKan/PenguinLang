@@ -6,8 +6,7 @@ This page describes the PenguinLang toolchain: what the components are, how to s
 
 | Component | Language | Role |
 |---|---|---|
-| **BabyPenguin** | C# | Reference compiler and interpreter (VM). Runs `.penguin` directly; also lowers to C# (`--backend=cs`). Builds EmperorPenguin. |
-| **PenguinLangParser** | C#/ANTLR4 | Grammar and parser library used by BabyPenguin. |
+| **BabyPenguin** | C# | Reference compiler and interpreter (VM). Runs `.penguin` directly; also lowers to C# (`--backend=cs`). Builds EmperorPenguin. Hosts the ANTLR4 grammar and parser under `BabyPenguin/Parser/` (namespace `BabyPenguin.Parser`). |
 | **EmperorPenguin** | PenguinLang | Self-hosting compiler. Written in PenguinLang, compiles itself, emits LLVM IR (`.ll`); linking to native executables is driven by the `emperor_penguin` script. |
 | **MagellanicPenguin** | PenguinLang/C#/TypeScript | Language server (LSP), debug adapter (DAP), and the VSCode extension. |
 | **penguin-tools** | PenguinLang | CLI utilities: `demangle` / `mangle` / `meta` / `format`. |

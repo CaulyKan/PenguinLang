@@ -8,14 +8,24 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Antlr4 Include="Parser\PenguinLang.g4">
+      <Package>BabyPenguin.Parser</Package>
+    </Antlr4>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Antlr4.Runtime.Standard" Version="4.13.1" />
+    <PackageReference Include="Antlr4BuildTasks" Version="12.14.0" PrivateAssets="all" />
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
     <PackageReference Include="ConsoleTables" Version="2.7.0" />
     <PackageReference Include="Mono.Cecil" Version="0.11.6" />
     <PackageReference Include="Microsoft.VisualStudio.Shared.VSCodeDebugProtocol" Version="18.0.10427.1" />
     <PackageReference Include="Samboy063.Tomlet" Version="6.2.0" />
-    <ProjectReference Include="..\PenguinLangParser\PenguinLangParser.csproj" />
   </ItemGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <NoWarn>3021;1701;1702</NoWarn>
+  </PropertyGroup>
   <ItemGroup>
     <None Include="Builtin.penguin">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

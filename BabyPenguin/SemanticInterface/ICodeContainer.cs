@@ -2102,7 +2102,7 @@ namespace BabyPenguin.SemanticInterface
         /// Resolve the type of an if-statement that was parsed as a statement (due to grammar ambiguity)
         /// but is intended as a value-returning if-expression. Both branches must be code blocks.
         /// </summary>
-        IType ResolveIfStatementType(PenguinLangParser.SyntaxNodes.IfStatement ifStmt)
+        IType ResolveIfStatementType(BabyPenguin.Parser.SyntaxNodes.IfStatement ifStmt)
         {
             // Main branch type
             var mainType = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
@@ -3157,7 +3157,7 @@ namespace BabyPenguin.SemanticInterface
         /// Generate code for an if-statement that should be treated as a value-returning if-expression.
         /// Used when the grammar parses an if-expression as an if-statement in code blocks.
         /// </summary>
-        void AddIfStatementAsExpression(PenguinLangParser.SyntaxNodes.IfStatement ifStmt, bool isVariableInitialize, ISymbol to)
+        void AddIfStatementAsExpression(BabyPenguin.Parser.SyntaxNodes.IfStatement ifStmt, bool isVariableInitialize, ISymbol to)
         {
             var conditionVar = AddExpression(ifStmt.Condition!, false);
             if (!conditionVar.TypeInfo.IsBoolType)

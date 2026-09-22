@@ -41,7 +41,7 @@ namespace BabyPenguin
             int separatorIndex = Array.IndexOf(args, "--");
             string[] parserArgs = separatorIndex >= 0 ? args.Take(separatorIndex).ToArray() : args;
 
-            return Parser.Default.ParseArguments<Options>(parserArgs).MapResult(
+            return CommandLine.Parser.Default.ParseArguments<Options>(parserArgs).MapResult(
                 (options) => Run(options, args),
                 _ => 1
             );

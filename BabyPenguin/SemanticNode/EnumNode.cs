@@ -1,5 +1,5 @@
 using BabyPenguin.SemanticPass;
-using PenguinLangParser;
+using BabyPenguin.Parser;
 
 namespace BabyPenguin.SemanticNode
 {
@@ -126,7 +126,7 @@ namespace BabyPenguin.SemanticNode
             TypeInfo = typeInfo ?? model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
-        public EnumDeclaration(SemanticModel model, IEnumNode enum_, PenguinLangParser.SyntaxNodes.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
+        public EnumDeclaration(SemanticModel model, IEnumNode enum_, BabyPenguin.Parser.SyntaxNodes.EnumDeclaration syntaxNode, int value) : base(model, syntaxNode)
         {
             Name = syntaxNode.Name;
             EnumNode = enum_;

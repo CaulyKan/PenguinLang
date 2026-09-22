@@ -80,13 +80,13 @@ namespace BabyPenguin
 
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DriverRecord> _drivers = new();
 
-        public static void AddBodyDriver(string classFullName, string portName, string functionName, PenguinLangParser.SourceLocation location)
+        public static void AddBodyDriver(string classFullName, string portName, string functionName, BabyPenguin.Parser.SourceLocation location)
         {
             var record = _drivers.GetOrAdd($"{classFullName}.{portName}", _ => new DriverRecord());
             lock (record) { record.BodyFunctions.Add(functionName); record.BodyLocations.Add($"{functionName} ({location})"); }
         }
 
-        public static void AddWireDriver(string classFullName, string portName, PenguinLangParser.SourceLocation location)
+        public static void AddWireDriver(string classFullName, string portName, BabyPenguin.Parser.SourceLocation location)
         {
             var record = _drivers.GetOrAdd($"{classFullName}.{portName}", _ => new DriverRecord());
             lock (record) { record.WireLocation ??= location.ToString(); }
@@ -121,11 +121,11 @@ namespace BabyPenguin
                 if (record.WireLocation != null && hasBody)
                     throw new BabyPenguinException(
                         $"Output port '{key}' has two drivers: module body code ({string.Join(", ", record.BodyLocations)}) and a construct wire ({record.WireLocation}) — drive it from exactly one (body XOR connect line); merge multiple streams through a channel",
-                        null, code: PenguinLangParser.ErrorCode.E_WIRING);
+                        null, code: BabyPenguin.Parser.ErrorCode.E_WIRING);
                 if (record.BodyFunctions.Count > 1)
                     throw new BabyPenguinException(
                         $"Output port '{key}' is driven by {record.BodyFunctions.Count} different routines ({string.Join(", ", record.BodyFunctions)}) — an output has exactly one driving routine; merge multiple streams through a channel",
-                        null, code: PenguinLangParser.ErrorCode.E_WIRING);
+                        null, code: BabyPenguin.Parser.ErrorCode.E_WIRING);
             }
 
             // ---- 1+2. pool construct functions, audit sinks & instantiations ----
@@ -155,7 +155,7 @@ namespace BabyPenguin
                         if (sinkCounts.TryGetValue(sinkKey, out var firstAt))
                             throw new BabyPenguinException(
                                 $"Input port '{sinkKey}' is connected twice (first at {firstAt}, again at {location}) — an input has exactly one driver",
-                                location, code: PenguinLangParser.ErrorCode.E_WIRING);
+                                location, code: BabyPenguin.Parser.ErrorCode.E_WIRING);
                         sinkCounts[sinkKey] = location.ToString();
                     }
                 }
@@ -173,7 +173,7 @@ namespace BabyPenguin
                             if (!sinkCounts.ContainsKey(sinkKey))
                                 throw new BabyPenguinException(
                                     $"Input port '{port.PortName}' of module '{symbol.Name}' ({classFullName}) is never connected — connect it in a construct block or declare a default ('input {port.PortName} : {port.PayloadType.FullName()} = <default>')",
-                                    location, code: PenguinLangParser.ErrorCode.E_WIRING);
+                                    location, code: BabyPenguin.Parser.ErrorCode.E_WIRING);
                         }
                     }
                 }

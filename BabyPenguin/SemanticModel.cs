@@ -1,5 +1,5 @@
 using System.Reflection;
-using PenguinLangParser;
+using BabyPenguin.Parser;
 
 namespace BabyPenguin
 {

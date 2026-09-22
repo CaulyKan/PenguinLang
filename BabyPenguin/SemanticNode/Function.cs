@@ -1,5 +1,5 @@
 using BabyPenguin.SemanticPass;
-using PenguinLangParser;
+using BabyPenguin.Parser;
 
 namespace BabyPenguin.SemanticNode
 {

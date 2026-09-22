@@ -6,8 +6,7 @@
 
 | 组件 | 语言 | 职责 |
 |---|---|---|
-| **BabyPenguin** | C# | 参考编译器与解释器（VM）。直接运行 `.penguin`；也可输出 C#（`--backend=cs`）。用来构建 EmperorPenguin。 |
-| **PenguinLangParser** | C#/ANTLR4 | BabyPenguin 使用的语法与解析器库。 |
+| **BabyPenguin** | C# | 参考编译器与解释器（VM）。直接运行 `.penguin`；也可输出 C#（`--backend=cs`）。用来构建 EmperorPenguin。内含 ANTLR4 语法与解析器（`BabyPenguin/Parser/`，命名空间 `BabyPenguin.Parser`）。 |
 | **EmperorPenguin** | PenguinLang | 自举编译器。用 PenguinLang 编写、编译自身，输出 LLVM IR（`.ll`）；链接由 `emperor_penguin` 脚本驱动。 |
 | **MagellanicPenguin** | PenguinLang/C#/TypeScript | 语言服务器（LSP）、调试适配器（DAP）与 VSCode 扩展。 |
 | **penguin-tools** | PenguinLang | 命令行工具：`demangle` / `mangle` / `meta` / `format`。 |

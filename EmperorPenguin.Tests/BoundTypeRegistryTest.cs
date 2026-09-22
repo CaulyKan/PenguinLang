@@ -18,7 +18,7 @@ public class BoundTypeRegistryTest
 
     private static readonly Lazy<SemanticModel> CachedModel = new(() =>
     {
-        var reporter = new ErrorReporter(new StringWriter(), PenguinLangParser.DiagnosticLevel.Debug);
+        var reporter = new ErrorReporter(new StringWriter(), BabyPenguin.Parser.DiagnosticLevel.Debug);
         var compiler = new SemanticCompiler(reporter);
         compiler.AddProject(ProjectPath);
         return compiler.Compile();

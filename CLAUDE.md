@@ -7,8 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Penguin-lang is a concurrent-friendly programming language with C#-like syntax, inspired by C (syntax), C#/Java (garbage collection), Rust (type system), Go (coroutines), and Verilog/SystemC (concurrency).
 
 **Main Components:**
-- **BabyPenguin**: C# implementation of Penguin-lang compiler & VM, emits BabyPenguinIR (actively developed)
-- **PenguinLangParser**: ANTLR4 grammar and parser for the language
+- **BabyPenguin**: C# implementation of Penguin-lang compiler & VM, emits BabyPenguinIR (actively developed); hosts the ANTLR4 grammar & parser under `BabyPenguin/Parser/` (namespace `BabyPenguin.Parser`)
 - **MagellanicPenguin**: Language Server Protocol & Debug Adapter Protocol implementation
 - **EmperorPenguin**: Penguin-lang compiler build from BabyPenguin, emits LLVM IR
 

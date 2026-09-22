@@ -10,7 +10,6 @@
     <PackageReference Include="LanguageServerProtocol" Version="7.0.1" />
     <PackageReference Include="Samboy063.Tomlet" Version="6.2.0" />
     <!-- <ProjectReference Include="..\ThirdParty\LanguageServerProtocol\LanguageServer\LanguageServer.csproj" /> -->
-    <ProjectReference Include="..\..\PenguinLangParser\PenguinLangParser.csproj" />
     <ProjectReference Include="..\..\BabyPenguin\BabyPenguin.csproj" />
   </ItemGroup>
 

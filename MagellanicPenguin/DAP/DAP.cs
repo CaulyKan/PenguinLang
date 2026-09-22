@@ -3,7 +3,7 @@ using BabyPenguin.VirtualMachine;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Messages;
 using Microsoft.VisualStudio.Shared.VSCodeDebugProtocol.Utilities;
-using PenguinLangParser;
+using BabyPenguin.Parser;
 
 namespace MagellanicPenguin
 {
