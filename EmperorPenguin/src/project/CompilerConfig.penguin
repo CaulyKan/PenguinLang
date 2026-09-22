@@ -91,6 +91,11 @@ export class CompilerConfig {
     // lives in the emperor_penguin driver script; this is the bare-emitter
     // form so a stray --help is never treated as a source file name).
     help_requested: bool = false;
+    // -g / --debug / --debug-info: emit DWARF debug metadata in the .ll
+    // (compile unit, per-function DISubprogram, line info, local variables).
+    // The .ll stays platform-independent; the linked binary carries the DWARF
+    // so gdb maps penguin functions/lines/locals to their source.
+    debug_info: bool = false;
     // --meta-src <path> (repeatable, like --lib) / meta-sources=[...] in a
     // .penguins project: the EXPLICIT list of source files compiled into the
     // meta engine's unit B, so a #fun body can call ORDINARY USER FUNCTIONS
@@ -181,6 +186,8 @@ export class CompilerConfig {
                 this.std_enabled = false;
             } else if (arg == "--help" || arg == "-help" || arg == "-h") {
                 this.help_requested = true;
+            } else if (arg == "-g" || arg == "--debug" || arg == "--debug-info") {
+                this.debug_info = true;
             } else if (arg == "--meta-src" || arg == "-meta-src") {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {

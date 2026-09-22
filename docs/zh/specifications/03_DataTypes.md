@@ -85,7 +85,7 @@ class RefClass {
 
 若类**没有**显式实现 `IValueType` 或 `IReferenceType`，编译器自动判定：
 
-- 若类的**所有**字段都是值类型（基元、枚举、实现 `IValueType` 的类），自动实现 `IValueType`
+- 若类的**所有**字段都是值类型（值类型的基元——除 `string` 外的全部基元、枚举、实现 `IValueType` 的类），自动实现 `IValueType`
 - 否则自动实现 `IReferenceType`
 
 ```penguin
@@ -99,7 +99,13 @@ class Node {
 	data: i32;
 	next: Node;  // 引用类型字段 → 自动 IReferenceType（引用类型）
 }
+
+class StrBox {
+	s: string;  // string 是引用类型的基元 → 自动 IReferenceType
+}
 ```
+
+含 `string` 字段的类按引用语义分类：赋值 `StrBox` 共享对象，经一个绑定写入会经另一个绑定可见。
 
 ### `ICopy<T>`——复制机制
 

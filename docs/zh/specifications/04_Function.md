@@ -117,6 +117,8 @@ fun foo() {
 
 `fun { ... }` 是无参简写；`async_fun(params) -> ret { ... }` 是可挂起变体。
 
+内联 lambda 可以直接作为调用实参传递，调用结果还可以继续链式调用——对返回值做成员调用（`names.pick(fun (x: string) -> bool { return x == target; }, "aa").size()`）；这些位置上捕获同样生效。
+
 ## 函数值
 
 `fun<R, P1, P2, ...>` 是一等函数值类型。**第一个**类型参数是**返回**类型，其余是参数类型（`fun<i32, i32>` = 接收一个 `i32`、返回 `i32`；`fun<void>` = 无参数、无返回）。`async_fun<R, P...>` 是可挂起变体；签名相同的 `fun` 与 `async_fun` 可互换（调用任一都在当前协程栈上内联运行——被调方的 `wait` 挂起调用方）。函数类型可嵌套于泛型（`Option<fun<void>>`、`List<fun<i32, i32>>`）。

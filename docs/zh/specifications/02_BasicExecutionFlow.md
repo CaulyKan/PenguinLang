@@ -87,7 +87,7 @@ initial {
 }
 ```
 
-允许可选类型标注：`if (let v : i32 := a.some)`。值不可读（`none` 情形）时运行 `else` 分支。
+允许可选类型标注：`if (let v : i32 := a.some)`。值不可读（`none` 情形）时运行 `else` 分支。绑定的表达式既可以读取局部变量，也可以读取全局 `Option`——模块级 `let a = new Option<i32>.some(42);` 之后 `if (let v := a.some)` 同样打印出载荷。
 
 ## try / catch
 

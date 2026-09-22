@@ -103,3 +103,13 @@ exe 侧携带 C 运行时 + 可选的 JIT；库的 `_emperor_*`/`__builtin.*` �
 ## 构建库
 
 `-o X.penguin-lib` 触发库模式：发射器写出 `X.ll`，`link-lib` 构建 `.so`，`serialize_symbols` 附加元数据 + 尾部标记。构建编译器库需要具备 JIT 能力的构建（`-enable-meta`）。库依赖递归解析（`deps[]`，经 `visited` 防环）。
+
+## std 动态库
+
+标准库模块以独立的动态库 `libemperorpenguin-std.penguin-lib` 分发，由自举的 pass3 阶段从 `EmperorPenguin/EmperorPenguinStd.penguins` 构建。`#template`/`#fun` 文件（utils/json/vector/hashmap/array/argparse）按上文保留集规则以**逐字源码**交付；metaconfig 以 export 标记的符号表条目交付。`dynlib.penguin` 本身不在其中——libmeta 构建器/注入器操作编译器的 bound 树，属于编译器模块，仍留在 `EmperorPenguinLib.penguins`。编译器库在 `deps[]` 中登记 std 库，因此每个编译器库的消费方都传递地拉入它。
+
+`main.penguin` 在 `--lib` 链之前自动加载 std 库：当 `std_enabled && dl_enabled && dynlib_available()`（`--enable-std`，默认开；`--disable-std` 关闭）时，探测 `<compiler_exe_dir()>/libemperorpenguin-std.penguin-lib`，若没有 `--lib` 条目已指名该文件则压入库链。文件不存在时（自举各 pass、BabyPenguin VM、Windows 单体构建——`.penguin-lib` 机制仅限 ELF，std 编进单体）探测静默跳过。
+
+`load_lib_recursive` 按**库名**去重（`state.lib_names`），而非按路径：同一个库既可以经显式 `--lib` 路径到达，也可以经 `deps[]` 从引用方库所在目录解析到达，不去重的话双重注入会是重复定义错误。
+
+std 库的 libmeta 把每个程序都会用到的 core_builtin 泛型实例（`Option`、迭代器……）作为已发布实例携带，因此 auto-std 下连 hello-world 都会得到对它的 `DT_NEEDED` 项。为此 `link_exe` 以 `-Wl,--as-needed` 链接（符号全部未被使用的库退出依赖），链接后再对产物执行 `readelf -d`，把每个 `DT_NEEDED` 的 `.penguin-lib` 复制到其旁边——可执行文件 + 复制出的库配对即可原地运行。

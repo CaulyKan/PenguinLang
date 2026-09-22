@@ -99,4 +99,4 @@ impl IBook for Shelf<i32> {
 }
 ```
 
-实现也可以由 `#specializing` 块按实例化注入（见[元编程](./11_MetaProgramming.md)）。把特化泛型值类型装箱为接口值当前在 EmperorPenguin 上产出无效代码——由 `Tests/InterfaceTest/GenericValueClassBoxing.md` 跟踪。
+实现也可以由 `#specializing` 块按实例化注入（见[元编程](./11_MetaProgramming.md)）。对特化泛型值类型，装箱遵循同样的规则：当值的类型是泛型类的某个实例化（例如 `Pair<i32>`）时，`cast<I>(value)` 把特化实例复制进箱子，箱子的布局就是该特化类的布局。

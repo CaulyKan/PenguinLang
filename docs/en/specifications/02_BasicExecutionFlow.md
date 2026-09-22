@@ -87,7 +87,7 @@ initial {
 }
 ```
 
-An optional type annotation is allowed: `if (let v : i32 := a.some)`. The `else` branch runs when the value is not readable (the `none` case).
+An optional type annotation is allowed: `if (let v : i32 := a.some)`. The `else` branch runs when the value is not readable (the `none` case). The bound expression may read a global `Option` as well as a local — a module-level `let a = new Option<i32>.some(42);` followed by `if (let v := a.some)` prints the payload the same way.
 
 ## try / catch
 

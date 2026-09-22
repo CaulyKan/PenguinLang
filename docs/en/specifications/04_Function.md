@@ -117,6 +117,8 @@ fun foo() {
 
 `fun { ... }` is the no-parameter shorthand; `async_fun(params) -> ret { ... }` is the suspending variant.
 
+An inline lambda can be passed directly as a call argument, and the call's result can be chained further — a member call on the returned value (`names.pick(fun (x: string) -> bool { return x == target; }, "aa").size()`); captures work in these positions like anywhere else.
+
 ## Function Values
 
 `fun<R, P1, P2, ...>` is a first-class function value type. The FIRST type argument is the RETURN type, the rest are the parameter types (`fun<i32, i32>` = takes one `i32`, returns `i32`; `fun<void>` = no params, returns nothing). `async_fun<R, P...>` is the suspending variant; `fun` and `async_fun` with equal signatures are interchangeable (calling either runs it inline on the current coroutine stack — the callee's `wait` suspends the caller). Function types nest inside generics (`Option<fun<void>>`, `List<fun<i32, i32>>`).

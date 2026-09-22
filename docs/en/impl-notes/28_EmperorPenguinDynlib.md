@@ -156,3 +156,37 @@ The exe side carries the C runtime + optional JIT; the lib's
 builds the `.so`, `serialize_symbols` appends the metadata + footer. Building
 a compiler lib requires a JIT-capable build (`-enable-meta`). Lib deps resolve
 recursively (`deps[]`, cycle-safe via `visited`).
+
+## The std dyn-lib
+
+The standard-library modules ship as their own dyn-lib,
+`libemperorpenguin-std.penguin-lib`, built by the bootstrap's pass3 stage from
+`EmperorPenguin/EmperorPenguinStd.penguins`. The `#template`/`#fun` files
+(utils/json/vector/hashmap/array/argparse) ship as VERBATIM SOURCE per the
+keep-set rules above; metaconfig ships as an export-marked symbol-table entry.
+`dynlib.penguin` itself stays out — the libmeta builder/injector operates on
+the compiler's bound tree, so it is a compiler module and remains in
+`EmperorPenguinLib.penguins`. The compiler lib lists the std lib in `deps[]`,
+so every consumer of the compiler lib pulls it transitively.
+
+`main.penguin` loads the std lib automatically before the `--lib` chain: when
+`std_enabled && dl_enabled && dynlib_available()` (`--enable-std`, the
+default; `--disable-std` opts out), it probes
+`<compiler_exe_dir()>/libemperorpenguin-std.penguin-lib` and pushes it into
+the lib chain unless a `--lib` entry already names that file. When the file
+is absent (bootstrap passes, the BabyPenguin VM, Windows monolith builds —
+the `.penguin-lib` mechanism is ELF-only, std is compiled into the monolith)
+the probe silently does nothing.
+
+`load_lib_recursive` dedups by library NAME (`state.lib_names`), not by path:
+the same lib can be reached both through an explicit `--lib` path and through
+`deps[]` resolution from the referencing lib's directory, and the double
+injection would otherwise be a duplicate-definition error.
+
+The std lib's libmeta carries the core_builtin generic instances every
+program uses (`Option`, the iterators, …) as published instances, so even a
+hello-world compiled with auto-std gets a `DT_NEEDED` entry for it. `link_exe`
+therefore links with `-Wl,--as-needed` (a lib whose symbols are all unused
+drops out) and afterwards walks `readelf -d` on the produced executable,
+copying every `DT_NEEDED` `.penguin-lib` beside it — the executable +
+copied-lib pair runs in place.

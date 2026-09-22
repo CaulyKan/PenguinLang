@@ -29,6 +29,7 @@ initial {
         __builtin.eprintln("  --lib <file.penguin-lib>                   consume a dyn-lib (repeatable; deps resolved recursively)");
         __builtin.eprintln("  --libmeta=text|direct                      libmeta ingestion mode (default: direct)");
         __builtin.eprintln("  --define A=B / --meta-src <file>           compile-time option store / explicit unit-B meta sources");
+        __builtin.eprintln("  -g / --debug                               emit DWARF debug info (function/line/variable) into the .ll");
         __builtin.eprintln("  --enable-meta, -target=, -llvm-win=        link-time flags (parsed here, honored by the external driver)");
         __builtin.eprintln("Emits LLVM IR only: -o X -> X.ll (+ X.def/.libs); -o X.penguin-lib -> X.ll + X.libmeta.");
         __builtin.eprintln("Linking is external (emperor_penguin / emperor_penguin.bat; see their --help).");
@@ -322,6 +323,7 @@ initial {
 
     let lc: mut LLVMCompiler = new LLVMCompiler();
     lc.verbose = config.verbose;
+    lc.debug_info = config.debug_info;
     if (config.is_lib_mode()) {
         // A lib may not emit @main / initialized globals.
         if (!validate_lib_defs(result)) {

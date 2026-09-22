@@ -20,6 +20,7 @@
 * **LLVM/clang 22 及以上**——`clang`、`llvm-ar`、`llvm-config` 需在 `PATH` 上。EmperorPenguin 输出 LLVM 22 IR（其调试记录形式要求 clang ≥ 22）；带 `-enable-meta`（JIT 运行时）链接时需要 `llvm-config`。
 * **make + bash**——C 运行时构建与 `emperor_penguin` 驱动脚本。
 * 可选：`make docs-site` 需要 **mdbook 0.4.52**；VSCode 扩展打包需要 **npm**；Linux 上的 Windows 发布冒烟测试需要 **wine**；交叉编译 Windows 二进制需要 **llvm-mingw** 工具链（默认 `/opt/llvm-mingw`）。
+* 在其他机器上运行**已发布**的 Linux 二进制：`EmperorPenguin/scripts/install-deps-ubuntu.sh`（或 `install-deps-arch.sh`；加 `--with-toolchain` 会一并安装 `emperor_penguin` 驱动所需的 `clang` + `make`）安装这些二进制链接的共享库（`llvm-libs` 22.1.x、`gcc-libs`……），并在事后用 `ldd` 校验。
 
 ## 用 BabyPenguin（解释器）运行程序
 
@@ -43,7 +44,7 @@ make bootstrap
 
 1. **pass1**——不保留为二进制；BabyPenguin 的 C# 后端把 `EmperorPenguinPass1.penguins`（标准库中不含 `#` 元构造的 EmperorPenguin）直接编译为 LLVM IR。
 2. **pass2**——该 IR 经 `-enable-meta`（支持 JIT）链接为原生编译器。
-3. **pass3**——pass2 编译 `EmperorPenguinPass2.penguins`（带元编程的完整编译器），得到第一个完整能力的原生编译器。pass3 随后构建**标准库动态库**（`libemperorpenguin-std.penguin-lib`——utils/json/vector/hashmap/array/dynlib/argparse）——这是最后一个直接编译 std 源码的阶段。
+3. **pass3**——pass2 编译 `EmperorPenguinPass2.penguins`（带元编程的完整编译器），得到第一个完整能力的原生编译器。pass3 随后构建**标准库动态库**（`libemperorpenguin-std.penguin-lib`——utils/metaconfig/json/vector/hashmap/array/argparse）——这是最后一个直接编译 std 源码的阶段。
 4. **pass4 / pass5**——pass3 把编译器重建为共享库（`libemperorpenguin.penguin-lib`，经 `--lib` 消费 std 库）加一个小可执行文件；pass5 重复构建，Makefile 校验 **pass4 与 pass5 的 md5 收敛**——编译器逐字节复现自身。
 
 Makefile 的每个阶段都是带文件级依赖的文件目标，因此未变化的目录树不会重编——重复 `make bootstrap` 只重新校验 md5。直接使用产出的编译器：
@@ -72,7 +73,7 @@ build/bootstrap/pass3 hello.penguin -o hello.ll-out
 ./build/linux/emperor_penguin link-lib foo.ll foo.libmeta -o foo.penguin-lib
 ```
 
-常用 flag：`-enable-meta` 链接 LLVM ORC JIT 运行时（由含 `#fun` 源码构建的编译器需要）；`--disable-coroutine` 关闭 async/wait 支持（默认开启）；`-target=win64` 交叉链接 Windows 二进制（Linux 宿主，经 llvm-mingw）；`--lib <dir>/x.penguin-lib` 以共享库为编译目标；`--emitter <path>` 覆盖编译器二进制。`--help` 打印完整选项表（模式、脚本 flag、全部转发的语义 flag、环境变量）。环境变量：`EMPEROR_EMITTER`、`CLANG`、`LLVM_CONFIG`、`OPT`、`MINGW_PREFIX`。
+常用 flag：`-enable-meta` 链接 LLVM ORC JIT 运行时（由含 `#fun` 源码构建的编译器需要）；`--disable-coroutine` 关闭 async/wait 支持（默认开启）；`-g`（或 `--debug`）在 `.ll` 中输出 DWARF 调试信息，链接后的二进制可在 gdb 中映射回 `.penguin` 源码——`break <函数名>`、`file.penguin:<行号>` 断点、`info args` / `info locals`、`print obj->field` 都能解析到 penguin 源码；在完整模式下传入（`emperor_penguin -g hello.penguin -o hello`），或传给裸 emitter 后再链接；`-target=win64` 交叉链接 Windows 二进制（Linux 宿主，经 llvm-mingw）；`--lib <dir>/x.penguin-lib` 以共享库为编译目标；`--emitter <path>` 覆盖编译器二进制。`--help` 打印完整选项表（模式、脚本 flag、全部转发的语义 flag、环境变量）。环境变量：`EMPEROR_EMITTER`、`CLANG`、`LLVM_CONFIG`、`OPT`、`MINGW_PREFIX`。
 
 ### std 动态库（`--enable-std`，默认开）
 
@@ -95,6 +96,7 @@ fun main() -> i64 {
 | 目标 | 产物 |
 |---|---|
 | `make release` | `build/linux/emperor_penguin_llvm_emitter`（薄编译器 exe）、`build/linux/libemperorpenguin.penguin-lib`（库形态的编译器）+ `build/linux/libemperorpenguin-std.penguin-lib`（std 动态库）、`build/linux/emperor_penguin`（驱动脚本）。`make release_win` 交叉构建 Windows 单体 emitter + `.bat` 一对。 |
+| `make release_babypenguin` | `build/linux/baby_penguin`——BabyPenguin 本身以自包含单文件二进制发布（运行无需安装 .NET）。 |
 | `make lsp` | `build/linux/penguin-lsp`——语言服务器，与 release 库链接。 |
 | `make tools` | `build/linux/penguin-tools`——`demangle` / `mangle` / `meta` / `format`。`make tools-test` 跑其金测试。 |
 | `make test` | 跨编译器 markdown 测试套件（`Tests/*.md`，约 600 例）。快速循环：`dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin`。 |

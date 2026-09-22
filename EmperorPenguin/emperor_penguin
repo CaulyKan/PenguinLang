@@ -64,6 +64,10 @@ SCRIPT OPTIONS (all modes)
 
 FORWARDED SEMANTIC FLAGS (full mode only — passed to the emitter verbatim)
   -v / -vv / -vvv                     verbosity
+  -g / --debug                        emit DWARF debug info into the .ll, so
+                                      the linked binary is debuggable in gdb
+                                      (breakpoints/lines/locals map to .penguin
+                                      sources)
   --enable-coroutine / --disable-coroutine
                                       concurrency syntax + scheduler stdlib
                                       (default: on)

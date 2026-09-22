@@ -85,7 +85,7 @@ class RefClass {
 
 If a class does NOT explicitly implement `IValueType` or `IReferenceType`, the compiler automatically determines its type:
 
-- If **all** fields of the class are value types (primitives, enums, or classes implementing `IValueType`), the class auto-implements `IValueType`
+- If **all** fields of the class are value types (value-type primitives — every primitive except `string` —, enums, or classes implementing `IValueType`), the class auto-implements `IValueType`
 - Otherwise, the class auto-implements `IReferenceType`
 
 ```penguin
@@ -99,7 +99,13 @@ class Node {
     data: i32;
     next: Node;  // reference type field → auto IReferenceType (reference type)
 }
+
+class StrBox {
+    s: string;  // string is a reference-type primitive → auto IReferenceType
+}
 ```
+
+A `string` field makes the class reference-like: assigning a `StrBox` shares the object, so writes through one binding are visible through the other.
 
 ### `ICopy<T>` — Copy Mechanics
 

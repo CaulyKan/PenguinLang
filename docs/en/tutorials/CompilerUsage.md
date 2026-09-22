@@ -20,6 +20,7 @@ The bootstrap relationship is the key idea: BabyPenguin (C#) compiles EmperorPen
 * **LLVM/clang 22 or newer** — `clang`, `llvm-ar`, and `llvm-config` on `PATH`. EmperorPenguin emits LLVM 22 IR (the debug-record form requires clang ≥ 22); `llvm-config` is needed when linking with `-enable-meta` (the JIT runtime).
 * **make + bash** — the C runtime build and the `emperor_penguin` driver script.
 * Optional: **mdbook 0.4.52** for `make docs-site`, **npm** for the VSCode extension package, **wine** for the Windows publish smoke test on Linux, and an **llvm-mingw** toolchain (default `/opt/llvm-mingw`) for cross-compiling Windows binaries.
+* To run the **released** Linux binaries on another machine: `EmperorPenguin/scripts/install-deps-ubuntu.sh` (or `install-deps-arch.sh`; add `--with-toolchain` to also install `clang` + `make`, which the `emperor_penguin` driver needs) installs the shared libraries the binaries link (`llvm-libs` 22.1.x, `gcc-libs`, …) and `ldd`-verifies them afterwards.
 
 ## Running a Program with BabyPenguin (interpreter)
 
@@ -43,7 +44,7 @@ This produces the self-hosting chain under `build/bootstrap/`:
 
 1. **pass1** — not kept as a binary; the C# backend of BabyPenguin compiles `EmperorPenguinPass1.penguins` (EmperorPenguin without `#` meta constructs in its stdlib) straight to LLVM IR.
 2. **pass2** — that IR linked into a native compiler with `-enable-meta` (JIT-capable).
-3. **pass3** — pass2 compiles `EmperorPenguinPass2.penguins` (the full compiler with metaprogramming) into the first fully-capable native compiler. pass3 then builds the **standard library dyn-lib** (`libemperorpenguin-std.penguin-lib` — utils/json/vector/hashmap/array/dynlib/argparse) — the last stage that compiles the std sources directly.
+3. **pass3** — pass2 compiles `EmperorPenguinPass2.penguins` (the full compiler with metaprogramming) into the first fully-capable native compiler. pass3 then builds the **standard library dyn-lib** (`libemperorpenguin-std.penguin-lib` — utils/metaconfig/json/vector/hashmap/array/argparse) — the last stage that compiles the std sources directly.
 4. **pass4 / pass5** — pass3 rebuilds the compiler as a shared library (`libemperorpenguin.penguin-lib`, consuming the std lib via `--lib`) plus a small executable; pass5 repeats the build and the Makefile checks that **md5 hashes of pass4 and pass5 converge** — the compiler reproduces itself byte-for-byte.
 
 Every Makefile stage is a file target with file-level dependencies, so an unchanged tree rebuilds nothing — a repeated `make bootstrap` only re-verifies the md5s. Use the resulting compilers directly:
@@ -72,7 +73,7 @@ build/bootstrap/pass3 hello.penguin -o hello.ll-out
 ./build/linux/emperor_penguin link-lib foo.ll foo.libmeta -o foo.penguin-lib
 ```
 
-Useful flags: `-enable-meta` links the LLVM ORC JIT runtime (required for compilers built from `#fun`-using sources), `--disable-coroutine` turns OFF async/wait support (it is ON by default), `-target=win64` cross-links a Windows binary (Linux host, via llvm-mingw), `--lib <dir>/x.penguin-lib` compiles against a shared library, and `--emitter <path>` overrides the compiler binary. `--help` prints the full option table (modes, script flags, every forwarded semantic flag, environment overrides). Environment overrides: `EMPEROR_EMITTER`, `CLANG`, `LLVM_CONFIG`, `OPT`, `MINGW_PREFIX`.
+Useful flags: `-enable-meta` links the LLVM ORC JIT runtime (required for compilers built from `#fun`-using sources), `--disable-coroutine` turns OFF async/wait support (it is ON by default), `-g` (or `--debug`) emits DWARF debug info into the `.ll`, so the linked binary maps back to `.penguin` sources in gdb — `break <function>`, `file.penguin:<line>` breakpoints, `info args` / `info locals`, and `print obj->field` all resolve to penguin source; pass it in full mode (`emperor_penguin -g hello.penguin -o hello`) or to the bare emitter before linking, `-target=win64` cross-links a Windows binary (Linux host, via llvm-mingw), `--lib <dir>/x.penguin-lib` compiles against a shared library, and `--emitter <path>` overrides the compiler binary. `--help` prints the full option table (modes, script flags, every forwarded semantic flag, environment overrides). Environment overrides: `EMPEROR_EMITTER`, `CLANG`, `LLVM_CONFIG`, `OPT`, `MINGW_PREFIX`.
 
 ### The std dyn-lib (`--enable-std`, default on)
 
@@ -95,6 +96,7 @@ The emitted `.ll` is platform-independent: one emission can be linked for Linux,
 | Target | Product |
 |---|---|
 | `make release` | `build/linux/emperor_penguin_llvm_emitter` (thin compiler exe), `build/linux/libemperorpenguin.penguin-lib` (compiler as a library) + `build/linux/libemperorpenguin-std.penguin-lib` (std dyn-lib), `build/linux/emperor_penguin` (driver script). `make release_win` cross-builds the Windows monolith emitter + `.bat` pair. |
+| `make release_babypenguin` | `build/linux/baby_penguin` — BabyPenguin itself published as a self-contained single-file binary (runs without a .NET install). |
 | `make lsp` | `build/linux/penguin-lsp` — the language server, linked against the release library. |
 | `make tools` | `build/linux/penguin-tools` — `demangle` / `mangle` / `meta` / `format` CLI. `make tools-test` runs its golden tests. |
 | `make test` | The cross-compiler markdown suite (`Tests/*.md`, ~600 cases). Fast loop: `dotnet run --project Tests/PenguinTestRunner -- --compilers babypenguin`. |

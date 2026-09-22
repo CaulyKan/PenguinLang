@@ -7,6 +7,9 @@ namespace emperor {
 // target (linux native, linux->win cross, native windows).
 export class LLVMCompiler {
     verbose: mut i64 = 0;
+    // -g/--debug: emit DWARF debug metadata (compile unit, DISubprogram per
+    // function, line info, local variables) into the .ll.
+    debug_info: bool = false;
 
     fun new(mut this) {}
 
@@ -19,6 +22,7 @@ export class LLVMCompiler {
 
         let mut emitter = new LLVMEmitter();
         emitter.verbose = this.verbose;
+        emitter.debug_enabled = this.debug_info;
         let llvm_ir: string = emitter.lower(module, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] LLVM IR generation done"); }
 

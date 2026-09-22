@@ -78,6 +78,7 @@ echo   --lib ^<file.penguin-lib^>   dyn-lib consumed by the emitter AND linked a
 echo. >&2
 echo FORWARDED SEMANTIC FLAGS (full mode only - passed to the emitter verbatim) >&2
 echo   -v / -vv / -vvv                       verbosity >&2
+echo   -g / --debug                          emit DWARF debug info into the .ll (gdb-debuggable binary) >&2
 echo   --enable-coroutine / --disable-coroutine   concurrency syntax + scheduler stdlib (default: on) >&2
 echo   --enable-dl / --disable-dl            dyn-lib build/consume (default: on) >&2
 echo   --enable-std / --disable-std          auto-load libemperorpenguin-std.penguin-lib beside the compiler (default: on; no-op on windows monoliths) >&2

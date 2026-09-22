@@ -99,4 +99,4 @@ impl IBook for Shelf<i32> {
 }
 ```
 
-Implementations can also be injected per instantiation by `#specializing` blocks (see [Meta Programming](./11_MetaProgramming.md)). Boxing a specialized generic value class into an interface value currently produces invalid code on EmperorPenguin — tracked by `Tests/InterfaceTest/GenericValueClassBoxing.md`.
+Implementations can also be injected per instantiation by `#specializing` blocks (see [Meta Programming](./11_MetaProgramming.md)). Boxing follows the same rules for specialized generic value classes: `cast<I>(value)` where the value's type is a generic class instantiation (e.g. `Pair<i32>`) copies the specialized instance into the box, and the box layout is the specialized class's layout.

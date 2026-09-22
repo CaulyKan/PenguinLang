@@ -142,7 +142,7 @@ initial {
 }
 ```
 
-标准库的 JSON 序列化（`json.penguin` 的 `#impl_json_serializable()`）就是这样写的：反射字段、拼装 impl 源码文本、注入、照常编译。
+标准库的 JSON 序列化（`json.penguin` 的 `#impl_json_serializable()`）就是这样写的：反射字段、拼装 impl 源码文本、注入、照常编译。一个更完整的示例是 `Examples/simple_sql`：嵌入语言的 SQL `SELECT`/`UPDATE`/`INSERT`/`DELETE`——`#fun` 元调用在编译期读取 SQL 字符串字面量，做词法分析、解析 `WHERE` 子句、反射表类的字段，再把带类型的谓词拼回调用点。
 
 ## 什么在哪里运行
 

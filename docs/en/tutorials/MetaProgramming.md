@@ -142,7 +142,7 @@ initial {
 }
 ```
 
-The standard library's JSON serialization (`#impl_json_serializable()` in `json.penguin`) is written this way: reflect over fields, assemble impl source text, inject, compile normally.
+The standard library's JSON serialization (`#impl_json_serializable()` in `json.penguin`) is written this way: reflect over fields, assemble impl source text, inject, compile normally. A larger worked example is `Examples/simple_sql`: SQL `SELECT`/`UPDATE`/`INSERT`/`DELETE` embedded in the language — a `#fun` meta call reads the SQL string literal at compile time, tokenizes it, parses the `WHERE` clause, reflects over the table class's fields, and splices a typed predicate back into the call site.
 
 ## What Runs Where
 
