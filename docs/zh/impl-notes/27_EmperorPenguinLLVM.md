@@ -1342,7 +1342,57 @@ LLVM Module 文本（.ll）
 
 ---
 
-## 11. 实现状态
+## 11. DWARF 调试信息发射（`-g`）
+
+`-g`（也可写作 `--debug` / `--debug-info`）让发射器在 `.ll` 中附加 DWARF 调试元数据，链接出的二进制即可在 gdb 中调试：`break <函数名>`、`file.penguin:<行号>` 断点、`info args` / `info locals`、`print obj->field` 都能解析到 penguin 源码。该 flag 经 `CompilerConfig.debug_info` → `LLVMCompiler.debug_info` → `LLVMEmitter.debug_enabled` 传递；关闭时不发射任何元数据节点，也不附加任何 `!dbg`。`.ll` 保持平台无关——DWARF 位于模块的 metadata 段，同一份发射在任何平台链接出的都是可调试二进制。
+
+### 11.1 编译单元与元数据管线
+
+`debug_init_compile_unit(filename)` 按固定顺序分配元数据 id：文件 0、编译单元 1、子程序类型 2、空类型列表 3、模块 flag 4–5（Dwarf Version 4、Debug Info Version 3）。整个模块共用一个 `distinct !DICompileUnit(language: DW_LANG_C, ..., emissionKind: FullDebug)`。每个节点都是压入扁平列表 `debug_metadata` 的字符串；`debug_emit_metadata` 在模块末尾追加 `!llvm.dbg.cu`、`!llvm.module.flags` 和全部编号节点。id 来自单一递增计数器（`next_debug_id`），因此节点必须在被引用的节点之后创建。
+
+### 11.2 按函数归属源文件
+
+`debug_begin_function(func_name, loc)` 经 `debug_file_cache`（`debug_get_file(loc.filename)`）解析函数自己的源文件，每个 `!DISubprogram` 指向函数定义所在的文件，而不是开启编译单元的那个文件。
+
+`debug_push_di_file` 总是给 `!DIFile` 一个非空 directory：绝对路径在最后一个 `/` 处切成（目录, 文件名）；相对路径取编译时的工作目录（`_utils.getenv("PWD")`）。gdb 不索引文件条目 directory 为空的编译单元——按地址查行号仍然可用，但按名字下断点（`break fib`）会找不到任何东西。
+
+### 11.3 源码级函数名，不带 linkageName
+
+`debug_display_name(func_name)` 剥掉 `<global>.` 前缀和 `_ns_<文件名>_<哈希>.` 逐文件命名空间前缀（哈希是第一个 `.` 前最后一个 `_` 之后的纯数字段），于是 DW_AT_name 携带 `fib`、`Point.magnitude_squared` 这样的源码级名字，而非混淆后的 IR 名。`!DISubprogram` 刻意不带 `linkageName`：一旦存在 DW_AT_linkage_name，gdb 的 cooked index 会把自然名从查找中剔除，`break fib` / `info functions fib` 随之失效。混淆后的 ELF 符号仍可经 ELF 符号表到达。
+
+### 11.4 行号信息
+
+`debug_loc(loc)` 为每条指令返回 `!dbg` 后缀——LLVM 要求带 DISubprogram 的函数中所有指令都携带 `!dbg`。有源码位置的指令各得一个 `!DILocation(line, column, scope)`；没有源码位置的指令（行号为 0）复用 `debug_begin_function` 中一次性创建的函数 scope 位置节点。
+
+### 11.5 局部变量
+
+三条绑定路径，全部使用 LLVM 22 的 record 形式（`#dbg_declare` / `#dbg_value`——工具链要求 clang ≥ 22 的原因）：
+
+- **参数**：entry block 中每个参数一条 `#dbg_value(<ty> %name, !var, !DIExpression(), !loc)`，`arg:` 从 1 开始编号。
+- **不可变命名局部**（单定义 SSA 寄存器）：`maybe_emit_imm_dbg` 在定义之后紧跟着发射 `#dbg_value`。编译器临时量（`%tN`）、参数、可变寄存器都跳过。值解析到全局常量的局部改用专门的 entry-block 调试 alloca + store + `#dbg_declare`——操作数为全局的 `#dbg_value` 会被 DWARF 丢弃。
+- **可变寄存器**（多处定义，由 entry-block alloca 承载）：发射 alloca 的同时附加 `#dbg_declare(ptr %slot, ...)`，把槽位绑定到变量。
+
+聚合值（按值传递的 class/enum struct）不能作为 `#dbg_value` 的操作数，只能经其 alloca 上的 `#dbg_declare` 到达。
+
+### 11.6 调试类型
+
+`get_debug_type(ir_type)`（按 IR 类型字符串缓存在 `debug_type_cache`）把 IR 类型映射为 DI 类型：
+
+| IR 类型 | DI 类型 |
+|---|---|
+| 整数 / 浮点 / bool 基元 | `!DIBasicType`，带符号 / 无符号 / 浮点 / 布尔编码 |
+| `char` | `!DIBasicType` 32 位 `DW_ATE_unsigned` |
+| `ref<string>` | 指向 `char` 的指针——gdb 直接打印 C 字符串 |
+| `ref<Name>` | 指向该 class `!DICompositeType` 的 `!DIDerivedType` 指针 |
+| `enum<Name>` / 值类型 class struct | `!DICompositeType`（含字段；enum 带 tag + payload 成员） |
+
+### 11.7 行为保证
+
+调试元数据不改变代码生成：`Tests/DebugInfoTest/DebugInfoSmoke.md` 在全部四个编译器上以 `-g` 编译同一程序并断言 stdout 逐字节一致——DWARF 只是增加元数据。
+
+---
+
+## 12. 实现状态
 
 ### 已实现
 
@@ -1370,6 +1420,7 @@ LLVM Module 文本（.ll）
 | 完整 ClassMetadata | — | `@<Type>_metadata`（9 字段） | 所有 class 与 enum；含 interface_map + field_offsets + field_is_ptr + destructor |
 | 接口默认方法分派 | CALL | vtable slot 指向特化后的默认实现 | 空 impl 继承默认实现 |
 | 确定性分派 | CALL | call @func_name | 具体类型方法调用 |
+| DWARF 调试信息 | — | `debug_*` 元数据（`-g`/`--debug`） | 编译单元、逐函数 DISubprogram + DIFile、行号、局部变量 |
 
 `IRInstruction` 的全部 29 种变体在 `emit_instruction` 分发器中均有对应的 `emit_*` lowering。
 
