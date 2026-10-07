@@ -821,6 +821,35 @@ namespace BabyPenguin.VirtualMachine
                 result!.AssignFrom(timerWaitObj);
             });
 
+            // M0 scheduler alignment: the park-kind notes and the kicks (the
+            // C# twin of the mt kernel's _co_yield/_co_park/_mt_kick_futures
+            // and scheduler_mt's _sched_deferred_kick). A note extern runs
+            // immediately before the `wait` that parks the coroutine; the
+            // SimScheduler consumes it when filing the parked job.
+            vm.Global.RegisterExternFunction("__builtin._sched_yield", (result, args) =>
+            {
+                vm.Global.Scheduler.PendingParkNote = SchedParkNote.PureYield;
+            });
+
+            vm.Global.RegisterExternFunction("__builtin._sched_future_park", (result, args) =>
+            {
+                vm.Global.Scheduler.PendingParkNote = SchedParkNote.FuturePark;
+            });
+
+            // A transaction flowed that waiters observe in the NEXT delta
+            // (channel deliver/emit/consume/close): the boundary's kick.
+            vm.Global.RegisterExternFunction("__builtin._sched_defer_kick", (result, args) =>
+            {
+                vm.Global.Scheduler.RequestDeferredKick();
+            });
+
+            // Immediate wake of every condition parker (do_wait resolves a
+            // ready_finished; the mt do_wait does the same).
+            vm.Global.RegisterExternFunction("__builtin._sched_kick_futures", (result, args) =>
+            {
+                vm.Global.Scheduler.KickFutures();
+            });
+
             // __builtin._run() : drive the simulation scheduler to completion
             vm.Global.RegisterExternFunction("__builtin._run", (frame, result, args) =>
             {

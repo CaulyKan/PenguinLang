@@ -10,7 +10,7 @@ Capacity-1 backpressuring Fifo: the producer parks between writes, the consumer 
 ```
 let q : mut __builtin.Fifo<i64> = new __builtin.Fifo<i64>(1, new __builtin.FifoPolicy.backpressure());
 initial { for (let i : i64 in range(0, 3)) { q.write(i); } }
-initial { wait 2 tick; let a : i64 = wait q; let b : i64 = wait q; let c : i64 = wait q; println(cast<string>(a) + cast<string>(b) + cast<string>(c)); exit(0); }
+initial { wait 2; let a : i64 = wait q; let b : i64 = wait q; let c : i64 = wait q; println(cast<string>(a) + cast<string>(b) + cast<string>(c)); exit(0); }
 ```
 
 ## Compile

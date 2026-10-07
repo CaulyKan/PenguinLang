@@ -173,6 +173,10 @@ class BindBodiesPass {
                     ast_body = ast_func.body;
                 }
                 if (ast_body.is_some()) {
+                    // Escape-analysis context: the Ownership freshness check
+                    // walks THIS body when judging a linearly-held local.
+                    this.model.some.current_fn_ast_body = new Option<Expression>.some(ast_body.some);
+                    this.model.some.current_fn_name = bound_func.full_name;
                     // Generator function: `-> IGenerator<T>` — rewrite the body
                     // onto a synthesized coroutine ctx class (yield publishes +
                     // parks, return delivers the final value) before binding;
@@ -191,6 +195,8 @@ class BindBodiesPass {
                     }
                 }
             }
+            this.model.some.current_fn_ast_body = new Option<Expression>.none();
+            this.model.some.current_fn_name = "";
             BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
             return new BoundDefinition.function_def(bound_func);
         }
@@ -212,8 +218,14 @@ class BindBodiesPass {
                             if (bf.scope.is_some() && ast_func_def.function_def.body.is_some()) {
                                 let func_scope: mut BoundScope = bf.scope.some;
                                 this.ensure_params_in_scope(bf);
+                                // Escape-analysis context (same as the
+                                // function branch).
+                                this.model.some.current_fn_ast_body = ast_func_def.function_def.body;
+                                this.model.some.current_fn_name = bf.full_name;
                                 let bound_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_func_def.function_def.body.some, func_scope);
                                 bf.body = bound_body;
+                                this.model.some.current_fn_ast_body = new Option<Expression>.none();
+                                this.model.some.current_fn_name = "";
                             }
                             bound_impl.methods.set(cast<u64>(fi), new BoundDefinition.function_def(bf));
                         }
@@ -229,8 +241,13 @@ class BindBodiesPass {
             if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding initial routine"); }
             if (bound_init.scope.is_some() && ast_init.body.is_some()) {
                 let init_scope: mut BoundScope = bound_init.scope.some;
+                // Escape-analysis context (same as the function branch).
+                this.model.some.current_fn_ast_body = new Option<Expression>.some(ast_init.body.some);
+                this.model.some.current_fn_name = "<initial>";
                 let bound_init_body: mut Option<BoundExpression> = m.bind_expressions_pass.bind_expression(ast_init.body.some, init_scope);
                 bound_init.body = bound_init_body;
+                this.model.some.current_fn_ast_body = new Option<Expression>.none();
+                this.model.some.current_fn_name = "";
             }
             BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
             return new BoundDefinition.initial_routine(bound_init);

@@ -12,6 +12,7 @@ namespace tinyriscv {
 
     class Execute {
         impl __builtin.IReferenceType;
+        impl __builtin.ISync;
 
         input clk : i64;
         input id_in : DecPacket;

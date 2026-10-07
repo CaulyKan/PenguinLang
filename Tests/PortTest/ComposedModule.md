@@ -46,6 +46,7 @@ initial {
     top.write(10);
     let out : i64 = wait c.y;
     println(cast<string>(out));
+    exit(0);
 }
 ```
 

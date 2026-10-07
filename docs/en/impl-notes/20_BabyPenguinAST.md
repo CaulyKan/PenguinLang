@@ -4,9 +4,9 @@ BabyPenguin's front end is a generated ANTLR4 parser wrapped by a hand-written s
 
 ## Grammar
 
-**`BabyPenguin/Parser/PenguinLang.g4`** — a 455-line combined grammar (`grammar PenguinLang;`). Notable structure:
+**`BabyPenguin/Parser/PenguinLang.g4`** — a 454-line combined grammar (`grammar PenguinLang;`). Notable structure:
 
-- **Precedence ladder** (lines 3–88): `primaryExpression` → `postfixExpression` (member access, calls, `new`, `async`, `wait expr [tick]`, `wait`) → unary → multiplicative → additive → relational → equality (`== != is`) → bitwise and/xor/or → logical and/or.
+- **Precedence ladder** (lines 3–88): `primaryExpression` → `postfixExpression` (member access, calls, `new`, `async`, `wait expr`, `wait`) → unary → multiplicative → additive → relational → equality (`== != is`) → bitwise and/xor/or → logical and/or.
 - **Statements** (~line 209): if/while/for/assignment/jump (`continue` / `break expr?`) / `return` / `yield` / `__signal` / try-catch / `connect(a, b)` (RTL wiring, legal only in `construct` blocks).
 - **Definitions**: `namespaceDefinition`, `classDefinition` (with `portDeclaration` `input`/`output`, `initialRoutine`, `constructBlock`, `#template(...)` parameters), `enumDefinition`, `interfaceDefinition`, `interfaceImplementation` (`impl T;`), `interfaceForImplementation` (`impl I for T;`), `functionDefinition` with specifiers `pure/!pure/extern/async/!async`, `lambdaFunctionExpression`, try-bind (`let a [: T] := b`).
 - `compilationUnit: namespaceDeclaration* EOF` (~line 300) — every top-level declaration is an optional-`export`-prefixed `namespaceDeclaration` entry.

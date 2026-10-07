@@ -1,0 +1,907 @@
+namespace emperor {
+
+// Pass 10 (lite): the CONFINEMENT ANALYSIS of the multi-thread scheduler
+// design (docs/zh/wip/concurrent_scheduler.md §4). It computes
+//
+//   Shareable(T) = Sync(T) ∨ Imm(T) ∨ ValueShare(T)
+//
+// at the type level and judges every `async f(args)` spawn site:
+//
+//   Stealable(site) ⇔ args ∧ result Shareable ∧ Effects(f) clean
+//
+// so M4b's distribution/stealing can move a never-run coroutine to another
+// thread without breaking INV1-INV3. Conservative v1 rules (each lifts in
+// its own later step):
+//   - Imm: primitives + string only (no user class is deeply immutable in
+//     practice — fields default to Auto, i.e. mutable under `mut this`);
+//     enums are conservatively unshareable in v1;
+//   - Sync: the marker interface ISync (core_builtin.penguin) — the
+//     atomics implement it; channels do NOT yet (M6's conditional ISync);
+//   - ValueShare: T is a value class AND every field's type is Shareable
+//     (the pass walks the fields itself — the classifier's explicit
+//     `impl IValueType` hole is skipping fields, §2.4/4.2);
+//   - Effects(f) walks the static call closure of f's bound body and pins
+//     on any global/static-field reference, extern call, virtual call,
+//     meta call or unresolvable call. Unions over interface impls are NOT
+//     computed in v1 — a virtual call pins.
+// The stealable spawn-context registry: Pass 10 fills it, IRGenerator's
+// call lowering consults it (a `_co_spawn_entry(<ctx>)` whose ctx class is
+// listed emits `_co_spawn_entry_stealable`, the runtime extern that sets
+// the coroutine's stealable bit). Module-level so the IR layer can read it
+// without a model reference.
+let concurrency_stealable_ctx: mut _utils.List<string> = new _utils.List<string>();
+
+// Peel the binder's implicit interface casts off a spawn argument: the
+// expression binds to the parameter's interface type; the identifier under
+// the casts still names the ctx class via its local's type.
+fun concurrency_unwrap_cast(e: BoundExpression) -> BoundExpression {
+    if (e is BoundExpression.cast_expr) {
+        if (e.cast_expr.inner.is_some()) {
+            return concurrency_unwrap_cast(e.cast_expr.inner.some);
+        }
+    }
+    return e;
+}
+
+fun concurrency_ctx_stealable(full_name: string) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(concurrency_stealable_ctx.size())) {
+        if (concurrency_stealable_ctx.at(cast<u64>(i)).some == full_name) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Display-name fallback: local bindings may carry a BoundType whose
+// type_definition is unset; their display name still identifies the ctx
+// class ("[mut ]__SpawnCtx_<n>").
+fun concurrency_ctx_stealable_bt(bt: BoundType) -> bool {
+    if (bt.type_definition.is_none()) {
+        return false;
+    }
+    let d: BoundDefinition = bt.type_definition.some;
+    if (!(d is BoundDefinition.class_def)) {
+        return false;
+    }
+    return concurrency_ctx_stealable(d.class_def.full_name);
+}
+
+export class ConcurrencyAnalysisPass {
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    // full_name -> def over every function in the unit (free functions,
+    // class/interface methods, synthesized spawn ctx __enter impls).
+    fn_names: mut _utils.List<string> = new _utils.List<string>();
+    fn_defs: mut _utils.List<BoundFunctionDefinition> = new _utils.List<BoundFunctionDefinition>();
+    // effects memo, index-parallel: 0 unvisited, 2 visiting (cycle edge),
+    // 1 dirty, -1 clean.
+    fn_state: mut _utils.List<i64> = new _utils.List<i64>();
+    // whole-program class table (index_one fills it): the closed-world
+    // view the virtual-call relaxation consults — a virtual call is clean
+    // when EVERY class implementing the target interface is shareable.
+    cls_defs: mut _utils.List<BoundClassDefinition> = new _utils.List<BoundClassDefinition>();
+    // stealable spawn-context class names — consumed by the LLVM emitter
+    // (`_co_spawn_entry` on such a ctx emits `_co_spawn_entry_stealable`,
+    // which sets the runtime's stealable bit; distribution reads it).
+    stealable_ctx: mut _utils.List<string> = new _utils.List<string>();
+    // -Wconcurrency: per-site diagnostics + a program summary.
+    warn: mut bool = false;
+    stealable_sites: mut i64 = 0;
+    pinned_sites: mut i64 = 0;
+
+    // per-site scratch (judge_site)
+    site_callee: mut Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
+    // -Wconcurrency deep diagnosis: the most recent dirty verdict's
+    // specific cause (filled by walk_expr at each pin site).
+    debug_why: mut string = "";
+    site_result: mut Option<BoundType> = new Option<BoundType>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // ---- pass entry (SemanticModel.bind, after pass 9, mt flag only) ----
+    fun run(mut this, result: mut BoundCompilationUnit) {
+        this.index_functions(result.definitions);
+        this.scan_spawn_sites(result.definitions);
+        if (this.warn) {
+            __builtin.eprintln("[concurrency] " + cast<string>(this.stealable_sites)
+                + " stealable spawn site(s), " + cast<string>(this.pinned_sites) + " pinned");
+        }
+    }
+
+
+
+    // ---- function table ----
+    fun index_functions(mut this, defs: _utils.List<BoundDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            this.index_one(defs.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+    }
+
+    fun index_one(mut this, d: BoundDefinition) {
+        if (d is BoundDefinition.function_def) {
+            this.fn_names.push(d.function_def.full_name);
+            this.fn_defs.push(d.function_def);
+            this.fn_state.push(0);
+            return;
+        }
+        if (d is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = d.class_def;
+            this.cls_defs.push(cls);
+            this.index_functions(cls.methods);
+            this.index_functions(cls.constructors);
+            let m: mut i64 = 0;
+            while (m < cast<i64>(cls.interface_impls.size())) {
+                let impld: BoundDefinition = cls.interface_impls.at(cast<u64>(m)).some;
+                if (impld is BoundDefinition.impl_def) {
+                    this.index_functions(impld.impl_def.methods);
+                }
+                m = m + 1;
+            }
+            return;
+        }
+        if (d is BoundDefinition.enum_def) {
+            this.index_functions(d.enum_def.methods);
+            return;
+        }
+        if (d is BoundDefinition.interface_def) {
+            this.index_functions(d.interface_def.methods);
+            return;
+        }
+        if (d is BoundDefinition.namespace_def) {
+            this.index_functions(d.namespace_def.children);
+            return;
+        }
+        if (d is BoundDefinition.impl_def) {
+            this.index_functions(d.impl_def.methods);
+            return;
+        }
+    }
+
+    // string.rfind('.') via repeated string_find_from (no find_last extern).
+    fun fn_last_dot(mut this, s: string) -> i64 {
+        let best: mut i64 = -1;
+        let pos: mut i64 = string_find(s, ".");
+        while (pos >= 0) {
+            best = pos;
+            pos = string_find_from(s, ".", pos + 1);
+        }
+        return best;
+    }
+
+    fun find_fn(mut this, full_name: string) -> i64 {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.fn_names.size())) {
+            if (this.fn_names.at(cast<u64>(i)).some == full_name) {
+                return i;
+            }
+            i = i + 1;
+        }
+        // Monomorphization fallback: a GENERIC callee resolves to its
+        // template symbol, but only the SPECIALIZED (mangled) defs are in
+        // the table — `__builtin.Option.is_none` lives as
+        // `Option$2FibnjNpwi...is_none`. Match on the method segment plus
+        // the template type name anchored at a dot.
+        let last_dot: i64 = this.fn_last_dot(full_name);
+        if (last_dot < 0) {
+            return -1;
+        }
+        let method: string = string_substring(full_name, last_dot + 1, string_length(full_name) - last_dot - 1);
+        let owner_path: string = string_substring(full_name, 0, last_dot);
+        let owner_dot: i64 = this.fn_last_dot(owner_path);
+        let owner: mut string = owner_path;
+        if (owner_dot >= 0) {
+            owner = string_substring(owner_path, owner_dot + 1, string_length(owner_path) - owner_dot - 1);
+        }
+        if (string_length(owner) == 0) {
+            return -1;
+        }
+        let anchor: string = "." + owner;
+        let j: mut i64 = 0;
+        while (j < cast<i64>(this.fn_names.size())) {
+            let cand: string = this.fn_names.at(cast<u64>(j)).some;
+            let cand_dot: i64 = this.fn_last_dot(cand);
+            if (cand_dot < 0) {
+                j = j + 1;
+                continue;
+            }
+            let cand_method: string = string_substring(cand, cand_dot + 1, string_length(cand) - cand_dot - 1);
+            if (cand_method != method) {
+                j = j + 1;
+                continue;
+            }
+            if (string_find(cand, anchor) >= 0) {
+                return j;
+            }
+            j = j + 1;
+        }
+        return -1;
+    }
+
+    // ---- spawn sites: the synthesized ctx classes implement
+    // __builtin.__ICoroutineEntry (the per-site FUTURE class implements
+    // IFuture and is excluded here) ----
+    fun scan_spawn_sites(mut this, defs: _utils.List<BoundDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            this.scan_one(defs.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+    }
+
+    fun scan_one(mut this, d: BoundDefinition) {
+        if (d is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = d.class_def;
+            if (this.class_is_spawn_ctx(cls)) {
+                this.judge_site(cls);
+            }
+            this.scan_spawn_sites(cls.methods);
+            return;
+        }
+        if (d is BoundDefinition.namespace_def) {
+            this.scan_spawn_sites(d.namespace_def.children);
+            return;
+        }
+    }
+
+    fun class_is_spawn_ctx(mut this, cls: BoundClassDefinition) -> bool {
+        let m: mut i64 = 0;
+        while (m < cast<i64>(cls.interface_impls.size())) {
+            let impld: BoundDefinition = cls.interface_impls.at(cast<u64>(m)).some;
+            if (impld is BoundDefinition.impl_def) {
+                if (this.ends_with(impld.impl_def.interface_type.display_name(), "__ICoroutineEntry")) {
+                    return true;
+                }
+            }
+            m = m + 1;
+        }
+        return false;
+    }
+
+    fun judge_site(mut this, cls: BoundClassDefinition) {
+        // 1. args: every ctx field except the future.
+        let args_ok: mut bool = true;
+        let arg_note: mut string = "";
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cls.fields.size())) {
+            let f: BoundDefinition = cls.fields.at(cast<u64>(i)).some;
+            if (f is BoundDefinition.class_field) {
+                if (f.class_field.name != "fut") {
+                    if (!this.type_shareable(f.class_field.bound_type)) {
+                        args_ok = false;
+                        if (string_length(arg_note) == 0) {
+                            arg_note = "arg '" + f.class_field.name + "' : "
+                                + f.class_field.bound_type.display_name() + " not shareable";
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        // 2. the callee + its result type: walk __enter's body — the
+        // synthesis wraps `f(...)` in `fut.complete(...)`; the interesting
+        // call is the one that is neither extern nor complete/complete_unit.
+        this.site_callee = new Option<BoundFunctionSymbol>.none();
+        this.site_result = new Option<BoundType>.none();
+        let loc: mut string = cls.name;
+        let callee_dirty: mut bool = false;
+        let callee_note: mut string = "";
+        i = 0;
+        while (i < cast<i64>(cls.interface_impls.size())) {
+            let impld: BoundDefinition = cls.interface_impls.at(cast<u64>(i)).some;
+            if (impld is BoundDefinition.impl_def) {
+                let n: mut i64 = 0;
+                while (n < cast<i64>(impld.impl_def.methods.size())) {
+                    let md: BoundDefinition = impld.impl_def.methods.at(cast<u64>(n)).some;
+                    if (md is BoundDefinition.function_def) {
+                        if (md.function_def.name == "__enter") {
+                            if (md.function_def.body.is_some()) {
+                                this.walk_expr(md.function_def.body.some);
+                            }
+                            if (md.function_def.symbol.is_some()) {
+                                let cl: SourceLocation = md.function_def.symbol.some.location;
+                                loc = cl.filename + ":" + cast<string>(cl.line);
+                            }
+                        }
+                    }
+                    n = n + 1;
+                }
+            }
+            i = i + 1;
+        }
+
+        let result_ok: mut bool = true;
+        let result_note: mut string = "";
+        if (this.site_result.is_some()) {
+            if (!this.type_shareable(this.site_result.some)) {
+                result_ok = false;
+                result_note = "result : " + this.site_result.some.display_name() + " not shareable";
+            }
+        }
+        if (this.site_callee.is_some()) {
+            let fi: i64 = this.find_fn(this.site_callee.some.full_name);
+            if (fi < 0) {
+                callee_dirty = true;
+                callee_note = "callee '" + this.site_callee.some.full_name + "' unresolvable";
+            } else {
+                let why: mut string = "";
+                if (this.effects_dirty(fi, why)) {
+                    callee_dirty = true;
+                    callee_note = "callee '" + this.site_callee.some.name + "' " + why;
+                }
+            }
+        } else {
+            callee_dirty = true;
+            callee_note = "callee not found in spawn context";
+        }
+
+        let verdict: bool = args_ok && result_ok && !callee_dirty;
+        if (verdict) {
+            this.stealable_ctx.push(cls.full_name);
+            concurrency_stealable_ctx.push(cls.full_name);
+            this.stealable_sites = this.stealable_sites + 1;
+            if (this.warn) {
+                __builtin.eprintln("[concurrency] " + loc + " spawn STEALABLE (ctx " + cls.name + ")");
+            }
+        } else {
+            this.pinned_sites = this.pinned_sites + 1;
+            if (this.warn) {
+                let why: mut string = "unknown";
+                if (!args_ok) {
+                    why = arg_note;
+                } else if (callee_dirty) {
+                    why = callee_note;
+                } else {
+                    why = result_note;
+                }
+                __builtin.eprintln("[concurrency] " + loc + " spawn PINNED (ctx " + cls.name + "): " + why);
+            }
+        }
+    }
+
+    // The interesting spawn-site call: not extern, not the future's
+    // complete/complete_unit wrapper.
+    fun note_call(mut this, fc: BoundFunctionCallExpression) {
+        if (this.site_callee.is_some()) {
+            return;
+        }
+        if (fc.is_virtual) {
+            return;
+        }
+        if (fc.callee_symbol.is_none()) {
+            return;
+        }
+        let sym: BoundFunctionSymbol = fc.callee_symbol.some.function_sym;
+        if (sym.is_extern) {
+            return;
+        }
+        if (sym.name == "complete" || sym.name == "complete_unit") {
+            this.site_result = new Option<BoundType>.some(fc.arguments.at(cast<u64>(0)).some.get_bound_type());
+            return;
+        }
+        this.site_callee = new Option<BoundFunctionSymbol>.some(sym);
+        this.site_result = new Option<BoundType>.some(fc.get_bound_type());
+    }
+
+    // ---- Shareable(T) ----
+    fun type_shareable(mut this, bt: BoundType) -> bool {
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            // All primitives including string (Imm — audited: no in-place
+            // string mutation anywhere in the runtime).
+            return true;
+        }
+        if (bt.kind is TypeKind.ClassKind) {
+            if (bt.type_definition.is_none()) {
+                return false;
+            }
+            let d: BoundDefinition = bt.type_definition.some;
+            if (d is BoundDefinition.class_def) {
+                return this.class_shareable(d.class_def);
+            }
+            return false;
+        }
+        // Enums (v1: payloads unanalyzed), interfaces (boxed refs), fun
+        // values, type references: conservatively unshareable.
+        return false;
+    }
+
+    fun class_shareable(mut this, cls: BoundClassDefinition) -> bool {
+        // Own: the explicit-transfer wrapper — Shareable for ANY payload
+        // (the binder's construction check guarantees the wrapped graph
+        // has no aliases; design doc §4.1/§9).
+        if (cls.name == "Ownership") {
+            return true;
+        }
+        // Sync: the class implements the ISync marker.
+        let m: mut i64 = 0;
+        while (m < cast<i64>(cls.interface_impls.size())) {
+            let impld: BoundDefinition = cls.interface_impls.at(cast<u64>(m)).some;
+            if (impld is BoundDefinition.impl_def) {
+                if (this.ends_with(impld.impl_def.interface_type.display_name(), "ISync")) {
+                    return true;
+                }
+            }
+            m = m + 1;
+        }
+        // ValueShare: value class with all fields shareable. The pass
+        // trusts ONLY its own field walk — not the classifier (whose
+        // explicit impl IValueType skips fields).
+        let vc: Option<bool> = cls.is_value_class;
+        if (vc.is_none()) {
+            return false;
+        }
+        if (!vc.some) {
+            return false;
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cls.fields.size())) {
+            let f: BoundDefinition = cls.fields.at(cast<u64>(i)).some;
+            if (f is BoundDefinition.class_field) {
+                if (!this.type_shareable(f.class_field.bound_type)) {
+                    return false;
+                }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // ---- Virtual-call relaxation (closed world) ----
+    // A virtual call pins because the callee is statically unknown. This
+    // compiler is whole-program: when EVERY class implementing the target
+    // interface is shareable, every possible callee's receiver discipline
+    // is asserted (ISync or value semantics) — the call is clean. This is
+    // what lets ESL's IBusSlave dispatch (Rom/Ram/Uart, all ISync) stop
+    // pinning every module evaluate that goes through the Bus.
+    // Externs with provably-safe effects (core_builtin.c / scheduler.c):
+    // the integer bit helpers are pure; the scheduler parking/kick
+    // protocol is the C kernel's own locked machinery (every wait site
+    // funnels through them — pinning them would pin every coroutine).
+    fun extern_is_pure(mut this, name: string) -> bool {
+        if (name == "bits" || name == "lshift" || name == "rshift") {
+            return true;
+        }
+        if (name == "_mt_future_park" || name == "_mt_kick_futures" ||
+            name == "_co_yield" || name == "_co_wait" ||
+            name == "_mt_park_begin" || name == "_mt_switch_away" ||
+            name == "_mt_wake" || name == "_mt_next_id" ||
+            name == "_sim_now" || name == "_sim_delta") {
+            return true;
+        }
+        return false;
+    }
+
+    // Display name up to the generic-argument bracket: an INSTANTIATED
+    // interface (IFuture<i64>) and the template's impl edge (IFuture<T>)
+    // must compare equal for the closed-world lookup.
+    fun iface_base_name(mut this, display: string) -> string {
+        let lt: i64 = string_find(display, "<");
+        if (lt <= 0) {
+            return display;
+        }
+        return string_substring(display, 0, lt);
+    }
+
+    // The receiver type a virtual call dispatches through: arguments[0]
+    // is `this` in the calling convention; its bound type is the
+    // interface. Defensive: no receiver -> cannot judge -> dirty.
+    fun virtual_call_clean(mut this, fc: BoundFunctionCallExpression) -> bool {
+        if (fc.arguments.size() == 0) {
+            return false;
+        }
+        let recv_t: BoundType = fc.arguments.at(cast<u64>(0)).some.get_bound_type();
+        // A CLASS-typed virtual receiver (port sugar lowers port ops to
+        // calls whose static receiver prints as the payload class): judge
+        // the class itself. A PRIMITIVE receiver (cast/bit-op sugar) is a
+        // value — always clean.
+        if (recv_t.type_definition.is_some() &&
+            recv_t.type_definition.some is BoundDefinition.class_def) {
+            return this.class_shareable(recv_t.type_definition.some.class_def);
+        }
+        if (recv_t.kind is TypeKind.PrimitiveKind) {
+            return true;
+        }
+        let want: string = this.iface_base_name(recv_t.display_name());
+        let i: mut i64 = 0;
+        let found: mut bool = false;
+        while (i < cast<i64>(this.cls_defs.size())) {
+            let cls: BoundClassDefinition = this.cls_defs.at(cast<u64>(i)).some;
+            let m: mut i64 = 0;
+            while (m < cast<i64>(cls.interface_impls.size())) {
+                let impld: BoundDefinition = cls.interface_impls.at(cast<u64>(m)).some;
+                if (impld is BoundDefinition.impl_def) {
+                    let have: string = this.iface_base_name(impld.impl_def.interface_type.display_name());
+                    if (have == want) {
+                        found = true;
+                        if (!this.class_shareable(cls)) {
+                            return false;
+                        }
+                    }
+                }
+                m = m + 1;
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+
+    // ---- Effects: dirty ⇔ the static closure touches global state, an
+    // extern, a virtual or meta call, or something unresolvable ----
+    fun effects_dirty(mut this, fi: i64, why: mut string) -> bool {
+        let st: i64 = this.fn_state.at(cast<u64>(fi)).some;
+        if (st == 1) {
+            why = "has global/extern/virtual/meta effects";
+            return true;
+        }
+        if (st == -1) {
+            return false;
+        }
+        if (st == 2) {
+            // Cycle edge: the ancestor's own verdict decides this path.
+            return false;
+        }
+        this.fn_state.set(cast<u64>(fi), 2);
+        let fd: BoundFunctionDefinition = this.fn_defs.at(cast<u64>(fi)).some;
+        let dirty: mut bool = false;
+        if (fd.body.is_some()) {
+            dirty = this.walk_expr(fd.body.some);
+        }
+        if (dirty) {
+            this.fn_state.set(cast<u64>(fi), 1);
+        } else {
+            this.fn_state.set(cast<u64>(fi), -1);
+        }
+        if (dirty) {
+            why = "has global/extern/virtual/meta effects";
+            if (this.warn && string_length(this.debug_why) > 0) {
+                __builtin.eprintln("[concurrency]   ... dirty via " + this.debug_why
+                    + " (in " + fd.full_name + ")");
+                this.debug_why = "";
+            }
+        }
+        return dirty;
+    }
+
+    fun walk_expr(mut this, e: BoundExpression) -> bool {
+        if (e is BoundExpression.identifier) {
+            let sym: Option<BoundSymbol> = e.identifier.symbol;
+            if (sym.is_some()) {
+                if (sym.some is BoundSymbol.variable) {
+                    let kind: VariableSymbolKind = sym.some.variable.variable_kind;
+                    if (kind is VariableSymbolKind.Global ||
+                        kind is VariableSymbolKind.StaticField) {
+                        // Design §4.3/§10.3: accessing a global whose type
+                        // is Shareable is a sanctioned handoff (the sync
+                        // discipline claim covers it) — e.g. the scheduler
+                        // registries under _sched_sync. Everything else
+                        // keeps the blanket pin.
+                        if (!this.type_shareable(e.get_bound_type())) {
+                            this.debug_why = "global '" + sym.some.variable.name + "' (type not shareable)";
+                        }
+                        return !this.type_shareable(e.get_bound_type());
+                    }
+                }
+            }
+            return false;
+        }
+        if (e is BoundExpression.binary) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.binary.operands.size())) {
+                if (this.walk_expr(e.binary.operands.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            return false;
+        }
+        if (e is BoundExpression.unary) {
+            if (e.unary.operand.is_some()) {
+                return this.walk_expr(e.unary.operand.some);
+            }
+            return false;
+        }
+        if (e is BoundExpression.member_access) {
+            let dirty_base: bool = e.member_access.base_expr.is_some()
+                && this.walk_expr(e.member_access.base_expr.some);
+            if (dirty_base) {
+                return true;
+            }
+            let sym: Option<BoundSymbol> = e.member_access.member_symbol;
+            if (sym.is_some()) {
+                if (sym.some is BoundSymbol.variable) {
+                    let kind: VariableSymbolKind = sym.some.variable.variable_kind;
+                    if (kind is VariableSymbolKind.Global ||
+                        kind is VariableSymbolKind.StaticField) {
+                        // Design §4.3/§10.3: writing to a global whose type
+                        // is Shareable is a SANCTIONED handoff (the sync
+                        // discipline claim covers the access). The blanket
+                        // global pin stays for everything else.
+                        return !this.type_shareable(e.member_access.bound_type);
+                    }
+                }
+            }
+            return false;
+        }
+        if (e is BoundExpression.function_call) {
+            let fc: BoundFunctionCallExpression = e.function_call;
+            // Arguments first (side effects live there too).
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fc.arguments.size())) {
+                if (this.walk_expr(fc.arguments.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            if (fc.callee.is_some()) {
+                if (this.walk_expr(fc.callee.some)) {
+                    return true;
+                }
+            }
+            this.note_call(fc);
+            if (fc.is_virtual) {
+                if (!this.virtual_call_clean(fc)) {
+                    let recv_name: mut string = "?";
+                    if (fc.arguments.size() > 0) {
+                        recv_name = fc.arguments.at(cast<u64>(0)).some.get_bound_type().display_name();
+                    }
+                    this.debug_why = "virtual call on " + recv_name + " (unshareable implementors)";
+                    return true;
+                }
+                return false;
+            }
+            if (fc.callee_symbol.is_none()) {
+                this.debug_why = "unresolved call";
+                return true;
+            }
+            let sym: BoundFunctionSymbol = fc.callee_symbol.some.function_sym;
+            if (sym.is_meta) {
+                this.debug_why = "meta call '" + sym.name + "'";
+                return true;
+            }
+            if (sym.is_extern) {
+                // The pure integer helpers (bits/lshift/rshift) are the
+                // one extern family with provably no memory effects.
+                if (!this.extern_is_pure(sym.name)) {
+                    this.debug_why = "extern '" + sym.name + "'";
+                    return true;
+                }
+                return false;
+            }
+            let fi: i64 = this.find_fn(sym.full_name);
+            if (fi < 0) {
+                this.debug_why = "no body for '" + sym.full_name + "' (unresolvable)";
+                if (this.warn) {
+                    let last_dot2: i64 = this.fn_last_dot(sym.full_name);
+                    if (last_dot2 >= 0) {
+                        let m2: string = string_substring(sym.full_name, last_dot2 + 1,
+                            string_length(sym.full_name) - last_dot2 - 1);
+                        let shown: mut i64 = 0;
+                        let k: mut i64 = 0;
+                        while (k < cast<i64>(this.fn_names.size()) && shown < 3) {
+                            let cand2: string = this.fn_names.at(cast<u64>(k)).some;
+                            let cd2: i64 = this.fn_last_dot(cand2);
+                            if (cd2 >= 0) {
+                                let cm2: string = string_substring(cand2, cd2 + 1,
+                                    string_length(cand2) - cd2 - 1);
+                                if (cm2 == m2) {
+                                    __builtin.eprintln("[concurrency]   ... candidate: " + cand2);
+                                    shown = shown + 1;
+                                }
+                            }
+                            k = k + 1;
+                        }
+                    }
+                }
+                return true;
+            }
+            let why: mut string = "";
+            return this.effects_dirty(fi, why);
+        }
+        if (e is BoundExpression.if_expr) {
+            let dirty: bool = e.if_expr.condition.is_some()
+                && this.walk_expr(e.if_expr.condition.some);
+            if (dirty) {
+                return true;
+            }
+            if (e.if_expr.then_block.is_some()) {
+                if (this.walk_expr(e.if_expr.then_block.some)) {
+                    return true;
+                }
+            }
+            if (e.if_expr.else_block.is_some()) {
+                if (this.walk_expr(e.if_expr.else_block.some)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (e is BoundExpression.while_expr) {
+            let dirty: bool = e.while_expr.condition.is_some()
+                && this.walk_expr(e.while_expr.condition.some);
+            if (dirty) {
+                return true;
+            }
+            if (e.while_expr.body.is_some()) {
+                return this.walk_expr(e.while_expr.body.some);
+            }
+            return false;
+        }
+        if (e is BoundExpression.code_block) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.code_block.statements.size())) {
+                if (this.walk_stmt(e.code_block.statements.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            if (e.code_block.trailing_expr.is_some()) {
+                return this.walk_expr(e.code_block.trailing_expr.some);
+            }
+            return false;
+        }
+        if (e is BoundExpression.cast_expr) {
+            if (e.cast_expr.inner.is_some()) {
+                return this.walk_expr(e.cast_expr.inner.some);
+            }
+            return false;
+        }
+        if (e is BoundExpression.new_expr) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.new_expr.arguments.size())) {
+                if (this.walk_expr(e.new_expr.arguments.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            return false;
+        }
+        if (e is BoundExpression.enum_variant) {
+            if (e.enum_variant.payload.is_some()) {
+                return this.walk_expr(e.enum_variant.payload.some);
+            }
+            return false;
+        }
+        if (e is BoundExpression.lambda_expr) {
+            if (e.lambda_expr.body.is_some()) {
+                return this.walk_expr(e.lambda_expr.body.some);
+            }
+            return false;
+        }
+        if (e is BoundExpression.meta_call) {
+            return true;
+        }
+        if (e is BoundExpression.try_bind) {
+            if (e.try_bind.check.is_some()) {
+                if (this.walk_expr(e.try_bind.check.some)) {
+                    return true;
+                }
+            }
+            if (e.try_bind.extract.is_some()) {
+                return this.walk_expr(e.try_bind.extract.some);
+            }
+            return false;
+        }
+        return false;
+    }
+
+    fun walk_stmt(mut this, s: BoundStatement) -> bool {
+        if (s is BoundStatement.expression) {
+            if (s.expression.expression.is_some()) {
+                return this.walk_expr(s.expression.expression.some);
+            }
+            return false;
+        }
+        if (s is BoundStatement.assignment) {
+            let a: BoundAssignmentStatement = s.assignment;
+            if (a.target_symbol.is_some()) {
+                if (a.target_symbol.some is BoundSymbol.variable) {
+                    let kind: VariableSymbolKind = a.target_symbol.some.variable.variable_kind;
+                    if (kind is VariableSymbolKind.Global) {
+                        return true;
+                    }
+                    if (kind is VariableSymbolKind.StaticField) {
+                        return true;
+                    }
+                }
+            }
+            if (a.target.is_some()) {
+                if (this.walk_expr(a.target.some)) {
+                    return true;
+                }
+            }
+            if (a.value.is_some()) {
+                return this.walk_expr(a.value.some);
+            }
+            return false;
+        }
+        if (s is BoundStatement.if_stmt) {
+            let dirty: bool = s.if_stmt.condition.is_some()
+                && this.walk_expr(s.if_stmt.condition.some);
+            if (dirty) {
+                return true;
+            }
+            if (s.if_stmt.then_statement.is_some()) {
+                if (this.walk_stmt(s.if_stmt.then_statement.some)) {
+                    return true;
+                }
+            }
+            if (s.if_stmt.else_statement.is_some()) {
+                return this.walk_stmt(s.if_stmt.else_statement.some);
+            }
+            return false;
+        }
+        if (s is BoundStatement.while_stmt) {
+            let dirty: bool = s.while_stmt.condition.is_some()
+                && this.walk_expr(s.while_stmt.condition.some);
+            if (dirty) {
+                return true;
+            }
+            if (s.while_stmt.body.is_some()) {
+                return this.walk_stmt(s.while_stmt.body.some);
+            }
+            return false;
+        }
+        if (s is BoundStatement.for_stmt) {
+            if (s.for_stmt.iterable.is_some()) {
+                if (this.walk_expr(s.for_stmt.iterable.some)) {
+                    return true;
+                }
+            }
+            if (s.for_stmt.body.is_some()) {
+                return this.walk_stmt(s.for_stmt.body.some);
+            }
+            return false;
+        }
+        if (s is BoundStatement.return_stmt) {
+            if (s.return_stmt.value.is_some()) {
+                return this.walk_expr(s.return_stmt.value.some);
+            }
+            return false;
+        }
+        if (s is BoundStatement.block) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(s.block.statements.size())) {
+                if (this.walk_stmt(s.block.statements.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            return false;
+        }
+        if (s is BoundStatement.try_catch) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(s.try_catch.try_statements.size())) {
+                if (this.walk_stmt(s.try_catch.try_statements.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            i = 0;
+            while (i < cast<i64>(s.try_catch.catch_statements.size())) {
+                if (this.walk_stmt(s.try_catch.catch_statements.at(cast<u64>(i)).some)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            return false;
+        }
+        // break/continue/meta statements carry nothing analyzable.
+        return false;
+    }
+
+    fun ends_with(mut this, s: string, suffix: string) -> bool {
+        let sl: i64 = string_length(s);
+        let fl: i64 = string_length(suffix);
+        if (fl > sl) {
+            return false;
+        }
+        return string_substring(s, sl - fl, fl) == suffix;
+    }
+}
+} // namespace emperor

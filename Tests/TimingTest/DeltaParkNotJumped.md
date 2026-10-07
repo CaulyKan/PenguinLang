@@ -9,12 +9,12 @@ A bare `wait;` (one delta round) must be served at the CURRENT tick even while l
 ## Test Code
 ```
 async fun sleeper() {
-    wait 100 tick;
+    wait 100;
 }
 
 initial {
     let f: mut IFuture<void> = async sleeper();
-    wait 1 tick;
+    wait 1;
     println("t1 t=" + cast<string>(_sim_now()));
     wait;
     println("park t=" + cast<string>(_sim_now()));

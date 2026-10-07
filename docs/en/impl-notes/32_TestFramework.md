@@ -4,7 +4,7 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 
 ## The Markdown Test Suite (`Tests/`)
 
-~614 cases in 33 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (2838 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
+~627 cases in 34 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (2838 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
 
 ### Case format
 

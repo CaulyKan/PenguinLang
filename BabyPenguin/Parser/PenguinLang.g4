@@ -39,7 +39,6 @@ postfixExpression:
 	| postfixExpression '(' expression? (',' expression)* ')'
 	| 'new' typeSpecifier '(' expression? (',' expression)* ')'
 	| 'async' expression
-	| 'wait' expression 'tick'
 	| 'wait' expression?;
 
 unaryExpression:

@@ -96,7 +96,7 @@ All AST nodes provide a `build_text()` method; expression, statement, and defini
 | `new_expr` | NewExpression | `type_name: string`, `generic_args: List<TypeSpecifier>`, `arguments: List<Expression>` | new expression |
 | `lambda_expr` | LambdaFunctionExpression | `parameters`, `return_type`, `body`, `is_async` | lambda function |
 | `spawn_async` | SpawnAsyncExpression | `expression: Option<Expression>` | async spawn |
-| `wait_expr` | WaitExpression | `expression: Option<Expression>`, `is_tick_unit: bool` | wait expression |
+| `wait_expr` | WaitExpression | `expression: Option<Expression>`, `is_tick_unit: bool` (always false — the parser produces no `tick`-keyword form) | wait expression |
 | `void_literal` | VoidLiteralExpression | `value: string` | void literal |
 | `meta_call` | MetaCallExpression | `func_name: string`, `arguments: List<Expression>`, `trailing_block_raw: Option<string>`, `trailing_definition: Option<Definition>` | `#fun(...)` meta call |
 | `specializing_impl` | SpecializingImplExpression | `impl_def: Option<InterfaceImplementation>`, `slot: i64` | conditional impl statement inside a `#specializing` block |

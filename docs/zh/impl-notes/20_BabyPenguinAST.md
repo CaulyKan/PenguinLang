@@ -4,9 +4,9 @@ BabyPenguin 前端是生成的 ANTLR4 解析器外披一层手写的语法层。
 
 ## 文法
 
-**`BabyPenguin/Parser/PenguinLang.g4`**——455 行组合文法（`grammar PenguinLang;`）。要点结构：
+**`BabyPenguin/Parser/PenguinLang.g4`**——454 行组合文法（`grammar PenguinLang;`）。要点结构：
 
-- **优先级阶梯**（3–88 行）：`primaryExpression` → `postfixExpression`（成员访问、调用、`new`、`async`、`wait expr [tick]`、`wait`）→ unary → multiplicative → additive → relational → equality（`== != is`）→ 位 and/xor/or → 逻辑 and/or。
+- **优先级阶梯**（3–88 行）：`primaryExpression` → `postfixExpression`（成员访问、调用、`new`、`async`、`wait expr`、`wait`）→ unary → multiplicative → additive → relational → equality（`== != is`）→ 位 and/xor/or → 逻辑 and/or。
 - **语句**（约 209 行）：if/while/for/赋值/跳转（`continue` / `break expr?`）/ `return` / `yield` / `__signal` / try-catch / `connect(a, b)`（RTL 连线，仅 `construct` 块内合法）。
 - **定义**：`namespaceDefinition`、`classDefinition`（含 `portDeclaration` `input`/`output`、`initialRoutine`、`constructBlock`、`#template(...)` 参数）、`enumDefinition`、`interfaceDefinition`、`interfaceImplementation`（`impl T;`）、`interfaceForImplementation`（`impl I for T;`）、带 `pure/!pure/extern/async/!async` 说明符的 `functionDefinition`、`lambdaFunctionExpression`、try-bind（`let a [: T] := b`）。
 - `compilationUnit: namespaceDeclaration* EOF`（约 300 行）——每个顶层声明都是可选 `export` 前缀的 `namespaceDeclaration` 条目。

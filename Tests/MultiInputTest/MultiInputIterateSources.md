@@ -12,7 +12,7 @@ class Sink {
     inputs : mut __builtin.MultiInput<i64> = new __builtin.MultiInput<i64>();
 
     initial {
-        wait 1 tick;
+        wait 1;
         let total : mut i64 = 0;
         for (let src : mut __builtin.ISource<i64> in this.inputs.iter()) {
             let v : __builtin.Option<i64> = src.try_poll();

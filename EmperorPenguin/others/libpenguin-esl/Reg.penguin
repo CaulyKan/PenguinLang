@@ -36,6 +36,7 @@ namespace esl {
     #template(T: type)
     class Reg {
         impl IReferenceType;
+        impl ISync;
 
         out_val: mut T;
         in_val: mut T;

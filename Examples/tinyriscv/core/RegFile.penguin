@@ -14,6 +14,7 @@ namespace tinyriscv {
 
     class RegFile {
         impl __builtin.IReferenceType;
+        impl __builtin.ISync;
 
         input wb_in : Writeback;
 

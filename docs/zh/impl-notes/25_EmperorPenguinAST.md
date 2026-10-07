@@ -96,7 +96,7 @@ TokenStream
 | `new_expr` | NewExpression | `type_name: string`, `generic_args: List<TypeSpecifier>`, `arguments: List<Expression>` | new 表达式 |
 | `lambda_expr` | LambdaFunctionExpression | `parameters`, `return_type`, `body`, `is_async` | lambda 函数 |
 | `spawn_async` | SpawnAsyncExpression | `expression: Option<Expression>` | async 启动 |
-| `wait_expr` | WaitExpression | `expression: Option<Expression>`, `is_tick_unit: bool` | wait 表达式 |
+| `wait_expr` | WaitExpression | `expression: Option<Expression>`, `is_tick_unit: bool`（恒为 false——解析器不产生 `tick` 关键字形式） | wait 表达式 |
 | `void_literal` | VoidLiteralExpression | `value: string` | void 字面量 |
 | `meta_call` | MetaCallExpression | `func_name: string`, `arguments: List<Expression>`, `trailing_block_raw: Option<string>`, `trailing_definition: Option<Definition>` | `#fun(...)` 元调用 |
 | `specializing_impl` | SpecializingImplExpression | `impl_def: Option<InterfaceImplementation>`, `slot: i64` | `#specializing` 块内的条件 impl 语句 |

@@ -24,3 +24,7 @@ thirdparty/
 .zcode
 build/
 tmp/
+out.ll
+out.def
+out.libs
+

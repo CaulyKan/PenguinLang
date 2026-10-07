@@ -1342,7 +1342,57 @@ LLVM Module text (.ll)
 
 ---
 
-## 11. Implementation Status
+## 11. DWARF Debug Info Emission (`-g`)
+
+`-g` (also spelled `--debug` / `--debug-info`) makes the emitter attach DWARF debug metadata to the `.ll`, so the linked binary is debuggable in gdb: `break <function>`, `file.penguin:<line>` breakpoints, `info args` / `info locals`, and `print obj->field` all resolve to penguin sources. The flag travels `CompilerConfig.debug_info` → `LLVMCompiler.debug_info` → `LLVMEmitter.debug_enabled`; when off, no metadata nodes and no `!dbg` attachments are emitted at all. The `.ll` stays platform-independent — the DWARF lives in the module's metadata section, so the same emission links to a debuggable binary on any platform.
+
+### 11.1 Compile unit and metadata plumbing
+
+`debug_init_compile_unit(filename)` allocates the metadata ids in a fixed order: file 0, compile unit 1, subroutine type 2, empty types list 3, module flags 4–5 (Dwarf Version 4, Debug Info Version 3). One `distinct !DICompileUnit(language: DW_LANG_C, ..., emissionKind: FullDebug)` covers the whole module. Every node is a string pushed onto the flat `debug_metadata` list; `debug_emit_metadata` appends `!llvm.dbg.cu`, `!llvm.module.flags`, and all numbered nodes at the end of the module. Ids come from a single increasing counter (`next_debug_id`), so nodes must be created after the nodes they reference.
+
+### 11.2 Per-function file attribution
+
+`debug_begin_function(func_name, loc)` resolves the function's own source file through the `debug_file_cache` (`debug_get_file(loc.filename)`), so each `!DISubprogram` points at the file the function was defined in, not whichever file opened the compile unit.
+
+`debug_push_di_file` always gives the `!DIFile` a non-empty directory: an absolute path is split at the last `/` into (directory, basename); a relative path gets the compile-time working directory (`_utils.getenv("PWD")`). gdb does not index a compile unit whose file entry has an empty directory — address-based line lookup would still work, but name-based breakpoints (`break fib`) would find nothing.
+
+### 11.3 Source-level names, no linkageName
+
+`debug_display_name(func_name)` strips the `<global>.` prefix and the `_ns_<filestem>_<hash>.` per-file namespace prefix (the hash is the digits-only run after the last `_` before the first `.`), so DW_AT_name carries `fib` or `Point.magnitude_squared` instead of the mangled IR name. The `!DISubprogram` deliberately carries no `linkageName`: when DW_AT_linkage_name is present, gdb's cooked index drops the natural name from lookup, and `break fib` / `info functions fib` stop resolving. The mangled ELF symbol stays reachable through the ELF symbol table.
+
+### 11.4 Line info
+
+`debug_loc(loc)` returns a `!dbg` suffix for every instruction — LLVM requires all instructions in a function that has a DISubprogram to carry `!dbg`. An instruction with a source location gets its own `!DILocation(line, column, scope)`; an instruction without one (line 0) reuses the function's scope location node, created once in `debug_begin_function`.
+
+### 11.5 Local variables
+
+Three binding paths, all in the LLVM 22 record form (`#dbg_declare` / `#dbg_value` — the reason the toolchain requires clang ≥ 22):
+
+- **Parameters**: a `#dbg_value(<ty> %name, !var, !DIExpression(), !loc)` per parameter in the entry block, with `arg:` numbering from 1.
+- **Immutable named locals** (single-definition SSA registers): `maybe_emit_imm_dbg` emits a `#dbg_value` right after the definition. Compiler temps (`%tN`), parameters, and mutable registers are skipped. A local whose value resolves to a global constant gets a dedicated entry-block debug alloca + store + `#dbg_declare` instead — a `#dbg_value` whose operand is a global is dropped from the DWARF.
+- **Mutable registers** (multiple definitions, backed by an entry-block alloca): the alloca emission attaches a `#dbg_declare(ptr %slot, ...)` binding the slot to the variable.
+
+Aggregate values (by-value class/enum structs) cannot be `#dbg_value` operands; they are only reachable through `#dbg_declare` on their alloca.
+
+### 11.6 Debug types
+
+`get_debug_type(ir_type)` (cached per IR type string in `debug_type_cache`) maps IR types to DI types:
+
+| IR type | DI type |
+|---|---|
+| integer / float / bool primitives | `!DIBasicType` with signed / unsigned / float / boolean encodings |
+| `char` | `!DIBasicType` 32-bit `DW_ATE_unsigned` |
+| `ref<string>` | pointer to `char` — gdb prints the C string directly |
+| `ref<Name>` | `!DIDerivedType` pointer to the class `!DICompositeType` |
+| `enum<Name>` / value-class structs | `!DICompositeType` (fields; enums carry tag + payload members) |
+
+### 11.7 Behavior guarantee
+
+Debug metadata changes nothing about codegen: `Tests/DebugInfoTest/DebugInfoSmoke.md` compiles the same program with `-g` on all four compilers and asserts byte-identical stdout — the DWARF only adds metadata.
+
+---
+
+## 12. Implementation Status
 
 ### Implemented
 
@@ -1370,6 +1420,7 @@ LLVM Module text (.ll)
 | Full ClassMetadata | — | `@<Type>_metadata` (9 fields) | all classes and enums; includes interface_map + field_offsets + field_is_ptr + destructor |
 | Interface default method dispatch | CALL | vtable slots point at the specialized default implementations | empty impl inherits the default implementations |
 | Deterministic dispatch | CALL | call @func_name | concrete-type method calls |
+| DWARF debug info | — | `debug_*` metadata (`-g`/`--debug`) | compile unit, per-function DISubprogram + DIFile, line info, local variables |
 
 All 29 `IRInstruction` variants have a corresponding `emit_*` lowering in the `emit_instruction` dispatcher.
 

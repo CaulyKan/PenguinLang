@@ -26,7 +26,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @foo() {
 entry:
@@ -52,7 +53,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @foo() {
 entry:
@@ -74,7 +76,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @foo() {
 entry:
@@ -100,7 +103,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -124,7 +128,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -148,7 +153,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -172,7 +178,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -201,7 +208,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @add(i64 %a, i64 %b) {
 entry:
@@ -236,7 +244,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define void @void_func() {
 entry:
@@ -261,7 +270,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -288,7 +298,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test(i64 %x) {
 entry:
@@ -323,7 +334,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -373,7 +385,8 @@ initial {
 }
 ", @"declare i32 @puts(ptr)
 declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr")]
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)")]
     public void TestLLVMExternDecl() => _batch.Value.AssertSemantic();
 
     #endregion
@@ -410,7 +423,8 @@ initial {
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
 
 declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
@@ -422,16 +436,16 @@ entry:
   %__gcf = alloca { ptr, i32, [0 x { ptr, ptr }] }
   %__gcf.prev = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 0
   %__gcf.n = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 1
-  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head
+  %__gcf.save = call ptr @_emperor_gc_frame_get()
   store ptr %__gcf.save, ptr %__gcf.prev
   store i32 0, ptr %__gcf.n
-  store ptr %__gcf, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %__gcf)
   %tmp_0 = getelementptr %enum.Option, ptr %t0, i32 0, i32 0
   store ptr @Option_metadata, ptr %tmp_0
   %tmp_1 = getelementptr %enum.Option, ptr %t0, i32 0, i32 1
   store i32 0, ptr %tmp_1
   %tmp_2 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_2, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_2)
   %tmp_3 = load %enum.Option, ptr %t0
   store %enum.Option %tmp_3, ptr %_sret_result
   ret void
@@ -472,7 +486,8 @@ initial {
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
 
 declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
@@ -484,10 +499,10 @@ entry:
   %__gcf = alloca { ptr, i32, [0 x { ptr, ptr }] }
   %__gcf.prev = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 0
   %__gcf.n = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 1
-  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head
+  %__gcf.save = call ptr @_emperor_gc_frame_get()
   store ptr %__gcf.save, ptr %__gcf.prev
   store i32 0, ptr %__gcf.n
-  store ptr %__gcf, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %__gcf)
   %t0 = add i64 0, 42
   %tmp_0 = getelementptr %enum.Option, ptr %t1, i32 0, i32 0
   store ptr @Option_metadata, ptr %tmp_0
@@ -496,7 +511,7 @@ entry:
   %tmp_2 = getelementptr %enum.Option, ptr %t1, i32 0, i32 2
   store i64 %t0, ptr %tmp_2
   %tmp_3 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_3, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_3)
   %tmp_4 = load %enum.Option, ptr %t1
   store %enum.Option %tmp_4, ptr %_sret_result
   ret void
@@ -537,7 +552,8 @@ initial {
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
 
 declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
@@ -547,10 +563,10 @@ entry:
   %__gcf = alloca { ptr, i32, [1 x { ptr, ptr }] }
   %__gcf.prev = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 0
   %__gcf.n = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 1
-  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head
+  %__gcf.save = call ptr @_emperor_gc_frame_get()
   store ptr %__gcf.save, ptr %__gcf.prev
   store i32 1, ptr %__gcf.n
-  store ptr %__gcf, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %__gcf)
   %__gcf.s0.a = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 2, i32 0, i32 0
   %__gcf.s0.m = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 2, i32 0, i32 1
   store ptr %o, ptr %__gcf.s0.a
@@ -562,7 +578,7 @@ entry:
   %tmp_3 = icmp eq i32 %tmp_1, %tmp_2
   %t2 = zext i1 %tmp_3 to i8
   %tmp_4 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_4, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_4)
   ret i8 %t2
 }")]
     public void TestLLVMIsEnum() => _batch.Value.AssertSemantic();
@@ -601,7 +617,8 @@ initial {
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
 
 declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
@@ -611,10 +628,10 @@ entry:
   %__gcf = alloca { ptr, i32, [1 x { ptr, ptr }] }
   %__gcf.prev = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 0
   %__gcf.n = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 1
-  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head
+  %__gcf.save = call ptr @_emperor_gc_frame_get()
   store ptr %__gcf.save, ptr %__gcf.prev
   store i32 1, ptr %__gcf.n
-  store ptr %__gcf, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %__gcf)
   %__gcf.s0.a = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 2, i32 0, i32 0
   %__gcf.s0.m = getelementptr { ptr, i32, [1 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 2, i32 0, i32 1
   store ptr %o, ptr %__gcf.s0.a
@@ -630,16 +647,16 @@ entry:
 then1:
   %t4 = add i64 0, 1
   %tmp_4 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_4, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_4)
   ret i64 %t4
 else2:
   %t5 = add i64 0, 0
   %tmp_5 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_5, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_5)
   ret i64 %t5
 merge0:
   %tmp_6 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_6, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_6)
   unreachable
 }")]
     public void TestLLVMEnumBranching() => _batch.Value.AssertSemantic();
@@ -661,7 +678,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define void @void_func() {
 entry:
@@ -693,7 +711,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -720,7 +739,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -747,7 +767,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @a() {
 entry:
@@ -785,7 +806,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test(i64 %n) {
 entry:
@@ -840,7 +862,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -868,7 +891,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -896,7 +920,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -925,7 +950,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -954,7 +980,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -983,7 +1010,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -1012,7 +1040,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i8 @test() {
 entry:
@@ -1041,7 +1070,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -1069,7 +1099,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @test() {
 entry:
@@ -1097,7 +1128,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @mul(i64 %a, i64 %b, i64 %c) {
 entry:
@@ -1124,7 +1156,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @dbl(i64 %x) {
 entry:
@@ -1161,7 +1194,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i64 @fib(i64 %n) {
 entry:
@@ -1201,7 +1235,8 @@ initial {
     println(llvm_ir);
 }
 ", @"declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 
 define i32 @test(i32 %x) {
 entry:
@@ -1247,7 +1282,8 @@ initial {
 @.Foo_name = private unnamed_addr constant [4 x i8] c""Foo\00""
 
 declare void @_emperor_gc_poll()
-@_emperor_gc_frame_head = external global ptr
+declare ptr @_emperor_gc_frame_get()
+declare void @_emperor_gc_frame_set(ptr)
 declare ptr @_emperor_int_to_string(i32)
 declare ptr @_emperor_i64_to_string(i64)
 declare ptr @_emperor_string_concat(ptr, ptr)
@@ -1257,12 +1293,12 @@ entry:
   %__gcf = alloca { ptr, i32, [0 x { ptr, ptr }] }
   %__gcf.prev = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 0
   %__gcf.n = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 1
-  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head
+  %__gcf.save = call ptr @_emperor_gc_frame_get()
   store ptr %__gcf.save, ptr %__gcf.prev
   store i32 0, ptr %__gcf.n
-  store ptr %__gcf, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %__gcf)
   %tmp_0 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_0, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_0)
   ret void
 }
 
@@ -1273,19 +1309,19 @@ entry:
   %__gcf = alloca { ptr, i32, [0 x { ptr, ptr }] }
   %__gcf.prev = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 0
   %__gcf.n = getelementptr { ptr, i32, [0 x { ptr, ptr }] }, ptr %__gcf, i32 0, i32 1
-  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head
+  %__gcf.save = call ptr @_emperor_gc_frame_get()
   store ptr %__gcf.save, ptr %__gcf.prev
   store i32 0, ptr %__gcf.n
-  store ptr %__gcf, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %__gcf)
   store ptr @Foo_metadata, ptr %t0
   call void @Foo_new(ptr %t0)
   %tmp_1 = load ptr, ptr %__gcf.prev
-  store ptr %tmp_1, ptr @_emperor_gc_frame_head
+  call void @_emperor_gc_frame_set(ptr %tmp_1)
   %tmp_2 = load %class.Foo, ptr %t0
   store %class.Foo %tmp_2, ptr %_sret_result
   ret void
-}")
-]
+}")]
+
     public void TestLLVMClassReturn() => _batch.Value.AssertSemantic();
 
     #endregion

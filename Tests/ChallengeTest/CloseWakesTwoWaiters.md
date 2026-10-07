@@ -11,7 +11,7 @@ close() is supervised shutdown: BOTH parked waiters on the same Fifo wake with t
 let q : mut __builtin.Fifo<i64> = new __builtin.Fifo<i64>(4, new __builtin.FifoPolicy.backpressure());
 initial { try { let v : i64 = wait q; println("a-got"); } catch (e : __builtin.RuntimeError) { println("a-closed"); } }
 initial { try { let v : i64 = wait q; println("b-got"); } catch (e : __builtin.RuntimeError) { println("b-closed"); } }
-initial { wait 1 tick; q.close(); wait 1 tick; println("closed"); exit(0); }
+initial { wait 1; q.close(); wait 1; println("closed"); exit(0); }
 ```
 
 ## Compile

@@ -6,6 +6,15 @@
  * list (the "large" path). Design: docs/impl-notes/25_EmperorPenguinGC.md
  * §4–§8; plan: .agents/plans/gc-greentea-span-heap.md.
  *
+ * M5 v1: allocation state is PER-THREAD (GtArena, gc_internal.h) — the
+ * per-class current span plus the thread's quarantine ring. The fast path
+ * (gt_alloc_small on a current span with a free slot) takes no lock; span
+ * retire/refill, superchunk acquisition and the malloc path funnel through
+ * gc.c's gc_alloc_lock (once per span fill, not per allocation). The
+ * collector stays ONE stop-the-world pass over every arena's spans; the
+ * local/shared domain split with promotion at the handoff points (design
+ * doc §10.2-10.6) is the next stage.
+ *
  * M1 scope: the allocation side plus a per-object mark/sweep adaptation —
  * colors ride the shared GCHeader.marked bit and sweep probes every dead
  * slot for a finalizer. The span-batched gray/black bitmap marker (green
@@ -23,6 +32,10 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+
+/* scheduler.c: true while worker threads may run coroutines (a parallel
+ * delta) — the refill emergency collect must not race live mutators. */
+extern int _emperor_sched_parallel_active(void);
 
 /* ---- Layout constants (spec §4.1) ---- */
 
@@ -62,8 +75,6 @@ _Static_assert(sizeof(GtSpan) == GT_SPAN_HDR, "GtSpan must fit GT_SPAN_HDR");
 
 /* ---- Size classes (spec §4.2): Go's table up to 512B ---- */
 
-#define GT_NCLASS 23
-
 static const struct { uint16_t slot_size; uint16_t nslots; } gt_classes[GT_NCLASS] = {
     {32, 252}, {48, 168}, {64, 126}, {80, 100}, {96, 84},  {112, 72},
     {128, 63}, {144, 56}, {160, 50}, {176, 45}, {192, 42}, {208, 38},
@@ -96,17 +107,32 @@ typedef struct GtSuper {
     uint32_t nempty;             /* spans on the class-agnostic pool      */
 } GtSuper;
 
-/* ---- Heap state (process-global singleton; single mutator, no locks) ---- */
+/* ---- Heap state (M5 v1: per-thread arenas + shared pools) ----
+ * Allocation state (the per-class CURRENT span) is PER-THREAD (GtArena,
+ * registry below) — the fast path in gt_alloc_small touches only the
+ * caller's arena. Everything below is shared, mutated either under
+ * gc_alloc_lock (retire/refill/super acquire, allocation side) or at the
+ * stop-the-world sweep (repool, byte accounting). The collector remains
+ * a single STW pass over every arena; the local/shared domain split
+ * (design doc §10.2-10.6) is the next stage. */
 
 typedef struct GtHeap {
-    GtSpan* current[GT_NCLASS];  /* active allocation span per class      */
     GtSpan* partial[GT_NCLASS];  /* swept spans with free slots           */
     GtSpan* full[GT_NCLASS];     /* swept spans, no free slots            */
     GtSpan* empty;               /* class-agnostic; reclassed on demand   */
     GtSuper* supers;
     size_t live_slot_bytes;      /* live slots' bytes (exact post-sweep)  */
-    size_t heap_slot_bytes;      /* allocated slots' bytes (monotonic
-                                  * between sweeps; == live after one)    */
+    size_t heap_bytes_total;     /* allocated slot bytes: EXACT at sweeps
+                                  * (== live), approximate between them —
+                                  * each arena folds its alloc_bytes into
+                                  * this at its next slow path (once per
+                                  * span fill), so the per-alloc readers
+                                  * (goal check, hard cap) pay ONE relaxed
+                                  * load instead of a registry sum. An
+                                  * arena's unflushed delta is bounded by
+                                  * what fits in its current spans
+                                  * (~23 spans x 8KiB), noise against the
+                                  * goal heuristic and the 8GiB cap. */
     /* The heap goal itself moved to gc.c (unified dual-heap budget, spec
      * §9.2): a span-only goal sized to span-live let the malloc side's
      * smaller budget fire cycles that still marked the whole span heap.
@@ -120,6 +146,56 @@ typedef struct GtHeap {
 } GtHeap;
 
 static GtHeap _gt; /* zero-init: live/heap bytes start at 0 */
+
+/* ---- Per-thread arena registry (M5 v1) ----
+ * Arenas are process-lifetime (a finished worker's current span stays
+ * sweepable — the STW sweep walks the registry, not the live threads).
+ * Registration appends to the compact pointer list under gc_alloc_lock;
+ * the RELEASE count store keeps the pointer visible to the STW registry
+ * walks (sweep/verify/stats). The allocation fast path never touches
+ * this — it goes through the TLS pointer only. */
+
+#define GT_MAX_ARENAS 64
+static GtArena _gt_arena_pool[GT_MAX_ARENAS];
+static GtArena* _gt_arenas[GT_MAX_ARENAS];
+static int _gt_narenas = 0;
+static __thread GtArena* _gt_tls_arena = NULL;
+
+GtArena* gt_arena_thread(void) {
+    GtArena* a = _gt_tls_arena;
+    if (a) return a;
+    gc_alloc_lock();
+    for (int i = 0; i < GT_MAX_ARENAS; i++) {
+        if (!_gt_arena_pool[i].used) {
+            _gt_arena_pool[i].used = 1;
+            _gt_tls_arena = a = &_gt_arena_pool[i];
+            _gt_arenas[__atomic_load_n(&_gt_narenas, __ATOMIC_RELAXED)] = a;
+            __atomic_store_n(&_gt_narenas, _gt_narenas + 1, __ATOMIC_RELEASE);
+            break;
+        }
+    }
+    if (!gt_classes_built) gt_build_classes();
+    gc_alloc_unlock();
+    return a; /* NULL only with >64 allocating threads (not a supported
+               * shape: EMPEROR_THREADS is single-digit) */
+}
+
+void gt_each_arena(void (*fn)(GtArena* a, void* ctx), void* ctx) {
+    int n = __atomic_load_n(&_gt_narenas, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++) fn(_gt_arenas[i], ctx);
+}
+
+/* Fresh-object quarantine ring push (the cover's rationale lives in
+ * gc.c's quarantine block). Arena-local: no lock — the ring belongs to
+ * the allocating thread, and the collector consumes it only at
+ * stop-the-world moments. */
+void gt_quarantine_push(GtArena* a, void* user) {
+    if (!_gc_greentea) return;
+    a->quarantine[a->quarantine_next] = user;
+    a->quarantine_next =
+        (unsigned short)((a->quarantine_next + 1) % GC_QUARANTINE_RING);
+    if (a->quarantine_count < GC_QUARANTINE_RING) a->quarantine_count++;
+}
 static char* _gt_heap_lo = (char*)(intptr_t)-1;
 static char* _gt_heap_hi = (char*)0;
 /* Exact superchunk ranges, sorted by start (the GC v2 _gc_super_ranges
@@ -288,7 +364,7 @@ void* gt_slot_owner(const void* p) {
     return NULL;
 }
 
-/* ---- Allocation (spec §6) ---- */
+/* ---- Allocation (spec §6; M5 v1: per-arena fast path) ---- */
 
 static GtSpan* gt_take_span_for(unsigned cls) {
     GtSpan* s = _gt.partial[cls];
@@ -300,40 +376,66 @@ static GtSpan* gt_take_span_for(unsigned cls) {
     return gt_span_class(cls);
 }
 
-static GtSpan* gt_refill_current(unsigned cls) {
+/* Slow path: retire ARENA's exhausted current span to the shared full
+ * list, then take a fresh span (shared partial -> empty pool -> new
+ * super -> emergency collect, in that order). List mutations happen
+ * under gc_alloc_lock; the emergency collect runs OUTSIDE it — a
+ * finalizer may allocate, and gc_alloc_lock is not recursive (the old
+ * single-heap path collected under the lock: a latent deadlock, only
+ * unobserved because the path needs a failed superchunk malloc).
+ * Mid-parallel-delta the collect is skipped entirely (mutators would
+ * race the marker): the flag defers to the boundary and the caller
+ * falls back to the malloc path. */
+static GtSpan* gt_retire_refill(GtArena* a, unsigned cls) {
+    gc_alloc_lock();
+    /* Fold this arena's accumulated fast-path bytes into the global
+     * counter (once per span fill): keeps gt_heap_bytes a single load. */
+    if (a->alloc_bytes) {
+        __atomic_add_fetch(&_gt.heap_bytes_total, a->alloc_bytes,
+                           __ATOMIC_RELAXED);
+        a->alloc_bytes = 0;
+    }
+    GtSpan* old = a->current[cls];
+    if (old) {
+        gt_pool_push(&_gt.full[cls], old);
+        a->current[cls] = NULL;
+    }
     GtSpan* s = gt_take_span_for(cls);
     if (!s) {
         gt_super_acquire(); /* refills the empty pool (or fails) */
         s = gt_take_span_for(cls);
     }
-    if (!s) {
-        /* Emergency: free memory, then retry once (spec §6.3). */
+    if (s) {
+        s->free_index = 0;
+        a->current[cls] = s;
+    }
+    gc_alloc_unlock();
+    if (!s && !_emperor_sched_parallel_active()) {
         gc_collect_greentea_emergency();
+        gc_alloc_lock();
         s = gt_take_span_for(cls);
         if (!s && !_gt.empty) {
             if (gt_super_acquire()) s = gt_take_span_for(cls);
         }
+        if (s) {
+            s->free_index = 0;
+            a->current[cls] = s;
+        }
+        gc_alloc_unlock();
     }
-    if (s) {
-        s->free_index = 0;
-        _gt.current[cls] = s;
+    if (!s) {
+        __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
     }
     return s;
 }
 
-void* gt_alloc_small(int size, int is_string) {
-    if (!gt_classes_built) gt_build_classes();
-    int slot = (int)sizeof(GCHeader) + size;
-    slot = (slot + 7) & ~7;
-    if (slot < 32) slot = 32;
-    if (slot > GT_MAX_SLOT) return NULL;
-    unsigned cls = gt_class_of[slot >> 3];
-    GtSpan* s = _gt.current[cls];
-    if (!s) {
-        s = gt_refill_current(cls);
-        if (!s) return NULL;
-    }
-    for (unsigned w = s->free_index >> 6; w < GT_BITMAP_WORDS; w++) {
+/* Claim one slot in S (the bitmap scan + header stamp + body zero).
+ * FROM is the first bitmap word to consider (the fast path starts at
+ * free_index, the post-refill retry starts at 0). Returns the user
+ * pointer, or NULL when the span has no free slot from FROM onward. */
+static void* gt_alloc_in_span(GtArena* a, GtSpan* s, unsigned cls,
+                              unsigned from, int size, int is_string) {
+    for (unsigned w = from >> 6; w < GT_BITMAP_WORDS; w++) {
         uint64_t freeb = ~s->alloc_bits[w];
         if (!freeb) continue;
         unsigned idx = (w << 6) + (unsigned)__builtin_ctzll(freeb);
@@ -341,7 +443,10 @@ void* gt_alloc_small(int size, int is_string) {
         s->alloc_bits[w] |= 1ull << (idx & 63);
         s->free_index = (uint16_t)(idx + 1);
         s->live_count++;
-        _gt.heap_slot_bytes += gt_classes[cls].slot_size;
+        /* RELAXED add: a plain add on x86-64 — kept atomic-formal because
+         * gt_heap_bytes_exact reads other arenas' deltas concurrently. */
+        __atomic_add_fetch(&a->alloc_bytes, gt_classes[cls].slot_size,
+                           __ATOMIC_RELAXED);
         GCHeader* h = gt_slot_header(s, idx);
         h->next = NULL;
         h->marked = 0;
@@ -349,18 +454,40 @@ void* gt_alloc_small(int size, int is_string) {
         h->size = size;
         memset(h + 1, 0, gt_classes[cls].slot_size - sizeof(GCHeader));
         if (_gc_timing) {
-            _gc_st_allocs++;
-            _gc_st_alloc_bytes += gt_classes[cls].slot_size;
+            __atomic_add_fetch(&_gc_st_allocs, 1, __ATOMIC_RELAXED);
+            __atomic_add_fetch(&_gc_st_alloc_bytes,
+                               gt_classes[cls].slot_size, __ATOMIC_RELAXED);
         }
         if (!_emperor_gc_disabled && gc_unified_goal_reached()) {
-            _emperor_gc_want_collect = 1; /* idempotent until the poll drains */
+            /* idempotent until the poll drains */
+            __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
         }
+        gt_quarantine_push(a, (char*)(h + 1));
         return (char*)(h + 1);
     }
-    /* Current span exhausted: retire and retry once through the refill. */
-    gt_pool_push(&_gt.full[cls], s);
-    _gt.current[cls] = NULL;
-    return gt_alloc_small(size, is_string);
+    return NULL;
+}
+
+void* gt_alloc_small(int size, int is_string) {
+    int slot = (int)sizeof(GCHeader) + size;
+    slot = (slot + 7) & ~7;
+    if (slot < 32) slot = 32;
+    if (slot > GT_MAX_SLOT) return NULL;
+    unsigned cls = gt_class_of[slot >> 3];
+    GtArena* a = gt_arena_thread();
+    if (!a) return NULL;
+    GtSpan* s = a->current[cls];
+    if (!s) {
+        s = gt_retire_refill(a, cls);
+        if (!s) return NULL;
+    }
+    void* r = gt_alloc_in_span(a, s, cls, s->free_index, size, is_string);
+    if (r) return r;
+    /* Current span exhausted: retire+refill under the lock, retry once
+     * from word 0 (the fresh span's free_index is 0 anyway). */
+    s = gt_retire_refill(a, cls);
+    if (!s) return NULL;
+    return gt_alloc_in_span(a, s, cls, 0, size, is_string);
 }
 
 /* ---- Green-tea mark state (M2, spec §7) ----
@@ -567,6 +694,7 @@ void gt_drain(void) {
  * left unscanned) and black ⊆ alloc (no phantom live slot). A violation
  * is a collector bug — loud abort, never a silent mis-sweep. */
 void gt_verify_invariants(void) {
+    int n = _gt_narenas;
     for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
         GtSpan* lists[2] = {_gt.full[cls], _gt.partial[cls]};
         for (int L = 0; L < 2; L++) {
@@ -585,7 +713,9 @@ void gt_verify_invariants(void) {
                     }
                 }
             }
-            GtSpan* cur = _gt.current[cls];
+        }
+        for (int i = 0; i < n; i++) {
+            GtSpan* cur = (GtSpan*)_gt_arenas[i]->current[cls];
             if (cur) {
                 for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
                     if (cur->gray_bits[w] != cur->black_bits[w] ||
@@ -607,13 +737,20 @@ void gt_verify_invariants(void) {
 
 /* ---- Sweep (spec §8) ---- */
 
+/* Walk every LIVE span: the shared full/partial pools plus every
+ * registered arena's current span. Stop-the-world moment only (a span
+ * is exclusively either pooled or one arena's current). */
 static void gt_foreach_span(void (*fn)(GtSpan*)) {
+    int n = _gt_narenas;
     for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
         GtSpan* lists[2] = {_gt.full[cls], _gt.partial[cls]};
         for (int L = 0; L < 2; L++) {
             for (GtSpan* s = lists[L]; s; s = s->next) fn(s);
         }
-        if (_gt.current[cls]) fn(_gt.current[cls]);
+        for (int i = 0; i < n; i++) {
+            GtSpan* c = (GtSpan*)_gt_arenas[i]->current[cls];
+            if (c) fn(c);
+        }
     }
 }
 
@@ -684,7 +821,15 @@ static void gt_repool_swept(GtSpan* s) {
 }
 
 void gt_sweep_reclaim(void) {
-    size_t pre = _gt.heap_slot_bytes;
+    /* The pre-sweep heap bytes snapshot: fold every arena's unflushed
+     * fast-path delta into the global first (STW makes it exact). */
+    int n = _gt_narenas;
+    for (int i = 0; i < n; i++) {
+        __atomic_add_fetch(&_gt.heap_bytes_total, _gt_arenas[i]->alloc_bytes,
+                           __ATOMIC_RELAXED);
+        _gt_arenas[i]->alloc_bytes = 0;
+    }
+    size_t pre = __atomic_load_n(&_gt.heap_bytes_total, __ATOMIC_RELAXED);
     _gt.live_slot_bytes = 0;
     for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
         GtSpan* lists[2] = {_gt.full[cls], _gt.partial[cls]};
@@ -698,13 +843,16 @@ void gt_sweep_reclaim(void) {
                 s = nx;
             }
         }
-        if (_gt.current[cls]) {
-            GtSpan* s = _gt.current[cls];
-            _gt.current[cls] = NULL;
-            gt_repool_swept(s);
+        for (int i = 0; i < n; i++) {
+            GtSpan* s = (GtSpan*)_gt_arenas[i]->current[cls];
+            if (s) {
+                _gt_arenas[i]->current[cls] = NULL;
+                gt_repool_swept(s);
+            }
         }
     }
-    _gt.heap_slot_bytes = _gt.live_slot_bytes;
+    __atomic_store_n(&_gt.heap_bytes_total, _gt.live_slot_bytes,
+                     __ATOMIC_RELAXED);
     _gt.last_freed = pre - _gt.live_slot_bytes;
     _gt.n_cycles++;
 }
@@ -719,19 +867,25 @@ uint64_t _emperor_gc_gt_stats(int which) {
     case 1: return gc_unified_goal_value();
     case 2: { /* full spans */
         uint64_t n = 0;
+        int na = _gt_narenas;
         for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
             for (GtSpan* s = _gt.full[cls]; s; s = s->next) n++;
-            if (_gt.current[cls] &&
-                _gt.current[cls]->live_count >= _gt.current[cls]->nslots) n++;
+            for (int i = 0; i < na; i++) {
+                GtSpan* c = (GtSpan*)_gt_arenas[i]->current[cls];
+                if (c && c->live_count >= c->nslots) n++;
+            }
         }
         return n;
     }
     case 3: { /* partial spans */
         uint64_t n = 0;
+        int na = _gt_narenas;
         for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
             for (GtSpan* s = _gt.partial[cls]; s; s = s->next) n++;
-            if (_gt.current[cls] &&
-                _gt.current[cls]->live_count < _gt.current[cls]->nslots) n++;
+            for (int i = 0; i < na; i++) {
+                GtSpan* c = (GtSpan*)_gt_arenas[i]->current[cls];
+                if (c && c->live_count < c->nslots) n++;
+            }
         }
         return n;
     }
@@ -753,7 +907,24 @@ uint64_t _emperor_gc_gt_stats(int which) {
 }
 
 uint64_t gt_heap_bytes(void) {
-    return (uint64_t)_gt.heap_slot_bytes;
+    /* One relaxed load (per-allocation reader). Exact at sweeps,
+     * approximate between them — see GtHeap.heap_bytes_total. */
+    return (uint64_t)__atomic_load_n(&_gt.heap_bytes_total, __ATOMIC_RELAXED);
+}
+
+uint64_t gt_heap_bytes_exact(void) {
+    /* The exact figure (global + every arena's unflushed delta) for USER
+     * queries (gc_info) and boundary predicates — rare, never per-alloc.
+     * Racy against concurrent fast paths by nature (each delta read once,
+     * RELAXED); the sum is monotonic between sweeps, which is all the
+     * queries need. */
+    int n = __atomic_load_n(&_gt_narenas, __ATOMIC_ACQUIRE);
+    uint64_t sum = (uint64_t)__atomic_load_n(&_gt.heap_bytes_total,
+                                             __ATOMIC_RELAXED);
+    for (int i = 0; i < n; i++) {
+        sum += __atomic_load_n(&_gt_arenas[i]->alloc_bytes, __ATOMIC_RELAXED);
+    }
+    return sum;
 }
 
 uint64_t gt_live_bytes(void) {

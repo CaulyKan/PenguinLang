@@ -12,12 +12,12 @@ let ev : mut __builtin.Event<i32> = new __builtin.Event<i32>();
 
 initial {
     ev.emit(cast<i32>(7));
-    wait 5 tick;
+    wait 5;
     ev.emit(cast<i32>(8));
 }
 
 initial {
-    wait 2 tick;
+    wait 2;
     let v : i32 = wait ev;
     println(cast<string>(v));
 }

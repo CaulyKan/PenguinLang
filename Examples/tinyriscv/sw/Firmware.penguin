@@ -43,4 +43,28 @@ namespace tinyriscv {
         return assemble(firmware_source());
     }
 
+    // The compute core's program: a counted loop (bound read from RAM
+    // word 2 — elaboration-preloaded, per-core workload shaping without
+    // R-type arithmetic, which this ISA subset lacks), then a checksum at
+    // RAM word 0 and a done flag at word 1. RAM base 0x10000000 (nibble 1).
+    fun compute_firmware_source() -> string {
+        return "    lui  x5, 0x10000       # x5 = 0x10000000 (RAM base)\n" +
+            "    lw   x3, 8(x5)         # n = loop bound (RAM word 2)\n" +
+            "    addi x1, x0, 0         # sum = 0\n" +
+            "    addi x2, x0, 0         # i = 0\n" +
+            "loop:\n" +
+            "    addi x1, x1, 5         # sum += 5\n" +
+            "    addi x2, x2, 1         # i += 1\n" +
+            "    bne  x2, x3, loop\n" +
+            "    sw   x1, 0(x5)         # RAM[0] = checksum\n" +
+            "    addi x6, x0, 1\n" +
+            "    sw   x6, 4(x5)         # RAM[1] = done\n" +
+            "end:\n" +
+            "    j    end\n";
+    }
+
+    #fun compute_firmware_image() -> string {
+        return assemble(compute_firmware_source());
+    }
+
 }

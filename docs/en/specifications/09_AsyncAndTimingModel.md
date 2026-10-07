@@ -48,14 +48,13 @@ A `wait` keyword without an expression pauses the current job and reschedules it
 | Form | Wakes when | Value |
 |---|---|---|
 | `wait;` | one scheduler round (one delta) passed | — |
-| `wait n;` / `wait n tick;` | the simulation clock advanced `n` ticks | — |
-| `wait <condition>;` | condition holds (re-checked every round) | — |
-| `wait change(<expr>);` | the watched value differs from its entry sample | new value |
+| `wait n;` | the simulation clock advanced `n` ticks | — |
 | `wait <event>;` | the event emits | delivered payload |
 | `wait <IFuture>;` | the future completes | the result |
+| `wait <channel>;` | the channel delivers a transaction | delivered value |
 | `wait <port>;` | the port delivers a transaction | delivered value (see [Modular Programming](./10_ModularProgramming.md)) |
 
-`wait change(x)` samples the watched expression's value at entry, parks until the value differs, and yields the NEW value — the classic edge-detection idiom as sugar. It works on plain variables and port reads alike.
+The operand must be an integer (a timer), an `Event`, an `IFuture`, a channel, or a port. A bool operand and a `change(x)` operand are compile errors (`E_TYPE_MISMATCH`) — a condition has no wake source (the writer of the condition cannot know who waits on it); wait on an Event, a channel, a future or a port transaction instead.
 
 ## Scheduling Model
 
@@ -97,27 +96,27 @@ The current simulation time is available through the `_sim_now()` builtin:
 ```
 initial {
 	println(cast<string>(_sim_now()));   // 0
-	wait 3 tick;
+	wait 3;
 	println(cast<string>(_sim_now()));   // 3
 }
 ```
 
 ### Waiting for Duration
-`wait <n>;` suspends the routine until the simulation clock has advanced by `n` ticks, where `<n>` is any integer expression — a literal, a variable (any integer width; narrower ints are cast to the i64 deadline unit) or a computation. The long form `wait <n> tick;` means exactly the same thing. Timers with shorter durations fire first; equal durations fire in scheduling order:
+`wait <n>;` suspends the routine until the simulation clock has advanced by `n` ticks, where `<n>` is any integer expression — a literal, a variable (any integer width; narrower ints are cast to the i64 deadline unit) or a computation. Timers with shorter durations fire first; equal durations fire in scheduling order:
 ```
 initial {
 	wait 1;
 	println("A");
 }
 initial {
-	wait 2 tick;
+	wait 2;
 	println("B");
 }
 ```
 This prints `A` then `B`.
 
 ### Zero-Time and Settling
-`wait 0 tick;` does not advance simulation time. It lets the scheduler finish every runnable job at the current time — updating assignments and propagation — and then reschedules the current routine:
+`wait 0;` does not advance simulation time. It lets the scheduler finish every runnable job at the current time — updating assignments and propagation — and then reschedules the current routine:
 ```
 let a : mut i32 = 0;
 
@@ -127,7 +126,7 @@ fun set_a() {
 
 initial {
 	let f = async set_a();
-	wait 0 tick;
+	wait 0;
 	println(cast<string>(a));   // 2
 }
 ```
@@ -145,13 +144,13 @@ initial {
 Port reads follow different rules: a bare port read is a **settle point** — it first lets the current time's propagation settle, then samples the channel's current slot (see [Modular Programming](./10_ModularProgramming.md)).
 
 ### Quiescence
-When every routine is parked and no timer, event, or channel can wake anything, the program has reached quiescence and terminates normally — with exit code 0. A condition that never becomes true is a legal final state:
+When every routine is parked and no timer, event, or channel can wake anything, the program has reached quiescence and terminates normally — with exit code 0. A wait that never wakes is a legal final state:
 ```
-let a : mut i32 = 0;
+let q : mut Fifo<i64> = new Fifo<i64>(1, new FifoPolicy.backpressure());
 
 initial {
 	println("start");
-	wait a == 99;			// parks forever; program ends at quiescence
+	let v : i64 = wait q;		// no producer ever writes; parks forever
 	println("never");
 }
 ```
@@ -181,21 +180,21 @@ fun	check_victory() -> victory_result {
 initial {
 	while true {
 		move_black();
-		wait 2 tick;
+		wait 2;
 	}
 }
 		
 initial {
-	wait 1 tick;
+	wait 1;
 	while true {
 		move_white();
-		wait 2 tick;
+		wait 2;
 	}
 }
 
 initial {
 	while (true) {
-		wait 1 tick;
+		wait 1;
 		let r : victory_result = check_victory();
 		if (r is victory_result.none) {
 			continue;

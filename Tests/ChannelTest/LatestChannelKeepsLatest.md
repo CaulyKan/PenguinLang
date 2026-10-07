@@ -14,7 +14,7 @@ initial {
     println("a=" + cast<string>(a));
 }
 initial {
-    wait 1 tick;
+    wait 1;
     c.write(1);
     c.write(2);
     println("wrote two");

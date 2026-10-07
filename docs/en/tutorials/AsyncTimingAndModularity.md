@@ -10,7 +10,7 @@ Coroutine features need `--enable-coroutine` on EmperorPenguin (BabyPenguin enab
 
 ```penguin
 fun work() -> i32 {
-    wait 2 tick;
+    wait 2;
     return 42;
 }
 
@@ -22,7 +22,7 @@ initial {
 }
 
 initial {
-    wait 1 tick;
+    wait 1;
     println("tick 1");
 }
 ```
@@ -57,25 +57,23 @@ All routines share one discrete simulation clock measured in **ticks**. The sche
 
 ```penguin
 initial {
-    wait 3 tick;
+    wait 3;
     println("c:" + cast<string>(_sim_now()));    // c:3
 }
 initial {
-    wait 1 tick;
+    wait 1;
     println("a:" + cast<string>(_sim_now()));    // a:1
 }
 ```
 
-`wait n tick;` (or the short form `wait n;`) suspends for `n` ticks. Shorter durations fire first; equal durations fire in scheduling order. A bare `wait;` parks for one scheduler round (one **delta**) without advancing the clock — that is the unit of *zero time*: `wait 0 tick;` lets every runnable job at the current time finish before resuming. When every routine is parked and nothing can wake anything, the program reaches **quiescence** and terminates normally (exit code 0).
+`wait n;` suspends for `n` ticks, where `n` is any integer expression. Shorter durations fire first; equal durations fire in scheduling order. A bare `wait;` parks for one scheduler round (one **delta**) without advancing the clock — that is the unit of *zero time*: `wait 0;` lets every runnable job at the current time finish before resuming. When every routine is parked and nothing can wake anything, the program reaches **quiescence** and terminates normally (exit code 0).
 
 `wait` accepts more than durations:
 
 | Form | Wakes when | Value |
 |---|---|---|
 | `wait;` | one scheduler round passed | — |
-| `wait 5 tick;` | the clock advanced 5 ticks | — |
-| `wait a == 5;` | condition holds (re-checked every round) | — |
-| `wait change(x);` | the watched value differs from its entry sample | new value |
+| `wait 5;` | the clock advanced 5 ticks | — |
 | `wait ev;` | the event emits | delivered payload |
 | `wait task;` | the IFuture completes | the result |
 | `wait this.port;` | the port delivers a transaction | delivered value |

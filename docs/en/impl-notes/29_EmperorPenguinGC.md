@@ -302,37 +302,48 @@ if (greentea mode && slot <= 512)  return gt_alloc_small(size, slot);
 else                               return <existing malloc-block path>;
 ```
 
-### 6.2 Fast path
+### 6.2 Fast path (M5 v1: per-thread arenas, lock-free)
+
+**M5 v1 (the first level of the concurrent scheduler's §10.2)**: allocation
+state moved from the global singleton into **per-thread arenas** (`GtArena`,
+gc_internal.h — the per-class current span plus the thread's fresh-object
+quarantine ring plus unflushed byte accounting). The fast path touches only
+the calling thread's arena and **takes no lock**; M4b's "every allocation
+funnels through gc_alloc_lock" is retired (that lock was the allocator's
+share of the classic-path +4.7% regression). The collector is still ONE
+stop-the-world pass over every arena (sweep/verify/stats all walk the arena
+registry); the local/shared domain split with promotion at the handoff
+points (§10.2-10.6 in full) is the next stage.
 
 ```c
-static void* gt_alloc_small(int size, int slot) {
+static void* gt_alloc_small(int size, int is_string) {
     unsigned cls = gt_class_of[slot];              /* O(1) lookup table   */
-    GtSpan* s = _gt.current[cls];
-    if (!s && !(s = gt_refill_current(cls)))       /* slow path, §6.3     */
+    GtArena* a = gt_arena_thread();                /* TLS, registered once*/
+    GtSpan* s = a->current[cls];
+    if (!s && !(s = gt_retire_refill(a, cls)))     /* slow path, §6.3     */
         return NULL;
-    for (unsigned w = s->free_index >> 6; w < GT_BITMAP_WORDS; w++) {
-        uint64_t free = ~s->alloc_bits[w];
-        if (!free) continue;
-        unsigned idx = (w << 6) + ctz64(free);
-        s->alloc_bits[w] |= 1ull << (idx & 63);
-        s->free_index = idx + 1;
-        s->live_count++;
-        _gt.heap_bytes += gt_classes[cls].slot_size;
-        GCHeader* h = gt_slot_header(s, idx);
-        h->next = NULL; h->marked = 0; h->is_string = 0; h->size = size;
-        memset(h + 1, 0, size);                    /* zeroing stays       */
-        if (_gt.heap_bytes > _gt.goal_bytes) _gt_want_collect = 1;
-        return h + 1;
-    }
-    /* current span is full: retire and retry once */
-    gt_pool_push(&_gt.full[cls], s);
-    _gt.current[cls] = NULL;
-    return gt_alloc_small(size, slot);
+    /* bitmap scan (from free_index): set the bit, account (plain,
+     * arena-local add), stamp the header, memset, goal check (RELAXED
+     * atomic reads), quarantine push (arena-local ring). No shared
+     * writes anywhere. */
+    ...
 }
+
+/* Slow path: retire the exhausted current (shared full list) + take a
+ * fresh span (shared partial -> empty -> new superchunk), one lock
+ * covers both; also folds the arena's accumulated alloc_bytes into the
+ * global approximate counter. The emergency collect runs OUTSIDE the
+ * lock — a finalizer allocates, and the lock is not recursive (the old
+ * code carried a latent deadlock here, unobserved only because triggering
+ * it needs a failed superchunk malloc). */
 ```
 
-Cost: one bitmap scan from a hint + one `memset`. Same order as the v2
-nursery bump (which also memsets), minus the per-object list append.
+Cost: one bitmap scan from a hint + one `memset` + a TLS read + three
+RELAXED atomic loads (the goal check). Heap bytes use a SINGLE approximate
+global (`heap_bytes_total`: exact (== live) at sweeps, in between topped up
+by each arena's slow-path folds — the unflushed error is bounded by the
+capacity of an arena's current spans), so the per-allocation goal/hard-cap
+read is one load, not a registry sum.
 
 ### 6.3 Slow path (refill)
 
@@ -738,6 +749,15 @@ on as the garbage-rich goal cap (§9.2).
 
 ## 14. Testing and benchmarks
 
+- **The runtime C build defaults to `-O2`** (the std/c Makefile's `OPT`
+  variable; `OPT=-O0` overrides for debuggable runtime frames): the
+  allocator and the scheduler's context switch are hot paths — an
+  unoptimized build measured ~12% whole-program regression on an
+  allocation-heavy program (tinyriscv). Two further all-N wins landed on
+  2026-10-05 and only pay off in optimized builds: the x86-64 fast context
+  switch (eliminates swapcontext's 2 rt_sigprocmask syscalls per switch;
+  N=1 tinyriscv 3.9s -> 2.5s) and the batched predicate spins at the
+  scheduler's wait points (see design doc §12.1, zh/wip).
 - **Correctness hammer**: `EmperorPenguin/std/c/gc_torture.c` (746 lines,
   standalone) extended with span-heap workloads: linked-list churn (infant
   mortality), tree rebuild, shared DAG, container churn (Vector/HashMap),

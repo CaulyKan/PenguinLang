@@ -1,6 +1,6 @@
 # WaitIntShortForm
 ## Description
-`wait <int>;` — the short timer form (`wait n tick;` with the `tick` keyword elided). Covers an integer LITERAL (`wait 1;`), an i64 VARIABLE (`wait n;`), a narrower i32 variable (the lowering casts it into _after's i64 deadline), and a computed expression — each wait advances the simulation clock by exactly that many ticks, verified with `_sim_now()` after every step. Also asserts the clock does NOT move before the first wait.
+`wait <int>;` — the short timer form (`wait n;` with the `tick` keyword elided). Covers an integer LITERAL (`wait 1;`), an i64 VARIABLE (`wait n;`), a narrower i32 variable (the lowering casts it into _after's i64 deadline), and a computed expression — each wait advances the simulation clock by exactly that many ticks, verified with `_sim_now()` after every step. Also asserts the clock does NOT move before the first wait.
 
 ## Apply To
 * BabyPenguin
@@ -19,7 +19,7 @@ initial {
     println("c:" + cast<string>(_sim_now()));
     wait (n + k);
     println("d:" + cast<string>(_sim_now()));
-    wait (n + 1) tick;
+    wait (n + 1);
     println("e:" + cast<string>(_sim_now()));
 }
 ```

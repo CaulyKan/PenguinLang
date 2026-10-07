@@ -2,6 +2,8 @@
 ## Description
 First-class event values: a free function takes the event object as a `mut Event<i32>` parameter and emits through it — no port drilling, no global required.
 
+UPDATED (M0 BabyPenguin scheduler alignment): emit no longer paces the emitter (the trailing bare wait is gone — the effect lands next delta via the deferred kick), so three back-to-back emits collapse into the waiter's single subscription slot like a wire: only the last value (2) is observed. Classic printed 012 off the emitter's per-emit parking. Verified byte-identical on BabyPenguin, pass1+mt and pass3+mt.
+
 ## Apply To
 * BabyPenguin
 * EmperorPenguin Pass3
@@ -30,7 +32,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine`
+Args: `--enable-coroutine --enable-multithread-scheduler`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
@@ -40,5 +42,5 @@ Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `012`
+ExpectedStdout: EQUALS `2`
 ExpectedStderr: DISCARD

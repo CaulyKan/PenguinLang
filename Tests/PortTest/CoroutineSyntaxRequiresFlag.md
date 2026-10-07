@@ -23,7 +23,7 @@ construct {
     connect(q, m.x);
 }
 initial {
-    wait 1 tick;
+    wait 1;
     println("never");
 }
 ```

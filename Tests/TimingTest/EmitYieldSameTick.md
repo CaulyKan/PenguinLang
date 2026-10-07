@@ -11,14 +11,14 @@
 let ev: mut Event<void> = new Event<void>();
 
 async fun sleeper() {
-    wait 50 tick;
+    wait 50;
 }
 
 initial {
     let f: mut IFuture<void> = async sleeper();
     ev.emit(void);
     println("emitted t=" + cast<string>(_sim_now()));
-    wait 2 tick;
+    wait 2;
     println("done t=" + cast<string>(_sim_now()));
 }
 ```

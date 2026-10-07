@@ -19,21 +19,24 @@ namespace tinyriscv {
 
     using esl;
 
-    async fun uart_emit(code: i64, at: i64) {
+    async fun uart_emit(uart: mut Uart, code: i64, at: i64) {
         let dur: i64 = at - _sim_now();
         if (dur > 0) {
-            wait dur tick;
+            wait dur;
         }
         print(cast<string>(cast<char>(code)));
+        uart.tx_done = uart.tx_done + 1;
     }
 
     class Uart {
         impl __builtin.IReferenceType;
+        impl __builtin.ISync;
 
         ctrl: mut u32 = cast<u32>(0);
         baud: mut u32 = cast<u32>(440);
         tx_end: mut i64 = -1;
         tx_count: mut i64 = 0;
+        tx_done: mut i64 = 0;
 
         fun new(mut this) {}
 
@@ -41,12 +44,29 @@ namespace tinyriscv {
             return _sim_now() < this.tx_end;
         }
 
+        // The tick the in-flight character's stop bit ends (for a
+        // drain-then-exit: one timed wait lands exactly on it — the same
+        // jump-to-deadline the scheduler itself would make).
+        fun tx_drain_tick(this) -> i64 {
+            return this.tx_end;
+        }
+
+        // Transmission COMPLETE: the stop-bit time has passed AND the
+        // waiter coroutine that prints the character has actually run.
+        // busy() alone is simulation TIME — at N>=5 the drain-exit and the
+        // print wake on different threads at the same tick and exit(0) can
+        // beat the print (the known one-lost-char race). tx_done counts
+        // COMPLETED transmissions (uart_emit increments it after printing).
+        fun tx_complete(this) -> bool {
+            return !this.busy() && this.tx_done >= this.tx_count;
+        }
+
         fun start_tx(mut this, v: u32) {
             if ((this.ctrl & cast<u32>(1)) == cast<u32>(0)) { return; }
             if (this.busy()) { return; }
             this.tx_end = _sim_now() + 10 * (cast<i64>(this.baud) + 1);
             this.tx_count = this.tx_count + 1;
-            let f: mut IFuture<void> = async uart_emit(cast<i64>(bits(v, 7, 0)), this.tx_end);
+            let f: mut IFuture<void> = async uart_emit(this, cast<i64>(bits(v, 7, 0)), this.tx_end);
         }
 
         impl IBusSlave {

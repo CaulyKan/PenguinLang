@@ -17,7 +17,7 @@ initial {
     println(cast<string>(a) + "," + suffix);
     exit(0);
 }
-initial { wait 1 tick; q.write(7); q.write(7); }
+initial { wait 1; q.write(7); q.write(7); }
 ```
 
 ## Compile

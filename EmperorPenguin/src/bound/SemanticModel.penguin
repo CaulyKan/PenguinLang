@@ -23,6 +23,7 @@ class SemanticModel {
     resolve_types_pass: mut ResolveTypesPass;
     // Pass 6 collaborator (M5), same pattern as the above.
     interfaces_pass: mut InterfacesPass;
+    concurrency_pass: mut ConcurrencyAnalysisPass;
     // Meta pre-processing stage (M6) — runs before the 9 passes in bind().
     meta_rewriter: mut MetaRewriter;
     // Pass 3 collaborator (M7), same pattern as the above.
@@ -104,6 +105,18 @@ class SemanticModel {
     // try/catch, async expressions) reports a clear compile error instead of
     // binding. Plumbed from CompilerConfig via EmperorPenguinCompiler.
     enable_coroutine: bool = false;
+    // --enable-multithread-scheduler: the convergence-delta policy
+    // (scheduler_mt.penguin) is loaded — drives the negative-`wait` lowering
+    // in bind_timer_wait and runs Pass 10 (confinement analysis).
+    enable_multithread_scheduler: bool = false;
+    enable_free_scheduler: bool = false;
+    // Escape-analysis context (Ownership freshness, §9.2 rule 1 form 3):
+    // the AST body of the function whose expressions are being bound +
+    // its full name. Set by BindBodiesPass around each body bind.
+    current_fn_ast_body: mut Option<Expression> = new Option<Expression>.none();
+    current_fn_name: mut string = "";
+    // -Wconcurrency: Pass 10 prints per-site stealable/pinned diagnostics.
+    warn_concurrency: bool = false;
     // Set during binding whenever a wait form or async spawn binds anywhere in
     // the unit (including instantiated stdlib channel code — their backpressure
     // loops contain `wait;`). Drives emit_main: only modules that actually
@@ -262,6 +275,7 @@ class SemanticModel {
         this.build_scopes_pass = new BuildScopesPass(this);
         this.resolve_types_pass = new ResolveTypesPass(this);
         this.interfaces_pass = new InterfacesPass(this);
+        this.concurrency_pass = new ConcurrencyAnalysisPass(this);
         this.meta_rewriter = new MetaRewriter(this);
         this.monomorphize_pass = new MonomorphizePass(this);
         this.bind_bodies_pass = new BindBodiesPass(this);
@@ -403,6 +417,14 @@ class SemanticModel {
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9: Validating control flow..."); }
         this.validate_control_flow_pass.run(result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
+        // Pass 10: confinement analysis (mt scheduler only) — the
+        // Shareable lattice + per-spawn-site stealability; rewrites
+        // stealable sites' spawn extern so the runtime can distribute them.
+        if (this.enable_multithread_scheduler || this.enable_free_scheduler) {
+            this.current_pass_index = 10;
+            this.concurrency_pass.warn = this.warn_concurrency;
+            this.concurrency_pass.run(result);
+        }
         // E5: static connect-topology checks (output driver uniqueness,
         // input double-connect, unconnected module inputs).
         this.validate_port_topology();

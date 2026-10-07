@@ -25,6 +25,7 @@ namespace tinyriscv {
     // if_id register bundle: the fetched word + its pc (for branch targets).
     class FetchPacket {
         impl ICopy<Self>;
+        impl __builtin.ISync;
         inst: u32;
         pc: u32;
     }
@@ -35,6 +36,7 @@ namespace tinyriscv {
     // (no effects, not a bus access, not a branch).
     class DecPacket {
         impl ICopy<Self>;
+        impl __builtin.ISync;
         op: u32;
         rd: u32;
         rs1: u32;
@@ -46,6 +48,7 @@ namespace tinyriscv {
     // RegFile write-port payload: one transaction per written instruction.
     class Writeback {
         impl ICopy<Self>;
+        impl __builtin.ISync;
         rd: u32;
         val: u32;
     }
@@ -66,6 +69,7 @@ namespace tinyriscv {
     // modeled.)
     class Ctrl {
         impl __builtin.IReferenceType;
+        impl __builtin.ISync;
 
         id_ex: mut Pipe<DecPacket>;
         regs: RegFile;

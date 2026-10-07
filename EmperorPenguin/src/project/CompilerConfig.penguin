@@ -79,6 +79,25 @@ export class CompilerConfig {
     // suspension points, so flag on/off produce identical binaries for
     // wait-free programs (bootstrap md5 convergence).
     coroutine_enabled: bool = true;
+    // --enable-multithread-scheduler (default off): auto-load
+    // scheduler_mt.penguin INSTEAD of scheduler.penguin — the convergence-
+    // delta scheduler (docs/zh/wip/concurrent_scheduler.md): full-convergence
+    // delta ticks, `wait;` = `wait 0;` (pins the tick), condition waits woken
+    // by their event source (no per-delta polling), exit only when every
+    // coroutine finished. Implies --enable-coroutine. The classic scheduler
+    // stays the default; this is the staging flag for the multi-thread
+    // scheduler work.
+    multithread_scheduler_enabled: bool = false;
+    // --enable-free-mt (default off): auto-load scheduler_free.penguin
+    // INSTEAD — the free-form runtime (design doc §6.7/§7.3): same kernel
+    // and component surface as sim-mt, but NO virtual clock (wait n>0
+    // rejected at run time) and IMMEDIATE components (no deferred commits)
+    // plus AsyncQueue<T> as the locked cross-thread pipe. Implies
+    // --enable-coroutine; Pass 10 confinement runs as with sim-mt.
+    free_mt_scheduler_enabled: bool = false;
+    // -Wconcurrency: with --enable-multithread-scheduler, Pass 10 prints
+    // per-spawn-site stealable/pinned diagnostics (pin reason chains).
+    warn_concurrency: bool = false;
     // --enable-std / --disable-std (default on): auto-load the std dynlib
     // (libemperorpenguin-std.penguin-lib) found beside the compiler
     // executable — json/vector/hashmap/array/dynlib/argparse without listing
@@ -180,6 +199,20 @@ export class CompilerConfig {
                 this.coroutine_enabled = true;
             } else if (arg == "--disable-coroutine" || arg == "-disable-coroutine") {
                 this.coroutine_enabled = false;
+            } else if (arg == "--enable-multithread-scheduler" || arg == "-enable-multithread-scheduler") {
+                this.multithread_scheduler_enabled = true;
+                // The mt scheduler IS the coroutine runtime — the flag
+                // implies the concurrency syntax surface.
+                this.coroutine_enabled = true;
+            } else if (arg == "--disable-multithread-scheduler" || arg == "-disable-multithread-scheduler") {
+                this.multithread_scheduler_enabled = false;
+            } else if (arg == "--enable-free-mt" || arg == "-enable-free-mt") {
+                this.free_mt_scheduler_enabled = true;
+                // The free scheduler IS the coroutine runtime, same as
+                // sim-mt — the flag implies the concurrency syntax surface.
+                this.coroutine_enabled = true;
+            } else if (arg == "-Wconcurrency" || arg == "-Wconcurrency=true") {
+                this.warn_concurrency = true;
             } else if (arg == "--enable-std" || arg == "-enable-std") {
                 this.std_enabled = true;
             } else if (arg == "--disable-std" || arg == "-disable-std") {

@@ -1056,7 +1056,7 @@ class LLVMEmitter {
         }
         while (i < cast<i64>(this.string_lits.size())) {
             let entry: StringLitEntry = this.string_lits.at(cast<u64>(i)).some;
-            let byte_len: i64 = cast<i64>(string_length(entry.value)) + 1;
+            let byte_len: i64 = this.utf8_byte_len(entry.value) + 1;
             // Literals carry the runtime string header INLINE
             // (emperor_string.h): { metaptr, length, data + NUL }. The value
             // of a literal is the ADDRESS of this struct — a valid
@@ -1171,11 +1171,17 @@ class LLVMEmitter {
         let has_layouts: bool = cast<i64>(this.class_layouts.size()) > 0 || cast<i64>(this.enum_layouts.size()) > 0;
         let needs_its: bool = this.needs_int_to_string;
         let needs_sc: bool = this.needs_string_concat;
-        // GC v2 phase 2: safepoint poll + the precise frame-chain head.
-        // Unconditional — the poll is a one-load no-op until a collection is
-        // pending, and old-runtime links are rejected by the ABI gate.
+        // GC v2 phase 2: safepoint poll + the precise frame-chain head
+        // accessors. Unconditional — the poll is a one-load no-op until a
+        // collection is pending, and old-runtime links are rejected by the
+        // ABI gate. The head itself is THREAD-LOCAL in the runtime (N mt
+        // workers swap per-coroutine chains in parallel); the IR reaches it
+        // through get/set calls because a thread_local global referenced
+        // from a JIT module binds to an emutls clone that does not alias
+        // the host's ELF TLS slot.
         target.append("declare void @_emperor_gc_poll()\n");
-        target.append("@_emperor_gc_frame_head = external global ptr\n");
+        target.append("declare ptr @_emperor_gc_frame_get()\n");
+        target.append("declare void @_emperor_gc_frame_set(ptr)\n");
         if (this.has_iref_class || this.has_boxing || this.needs_funval_alloc) {
             target.append("declare ptr @_emperor_alloc_impl(i32)\n");
         }
@@ -1707,10 +1713,10 @@ class LLVMEmitter {
         this.sb.append("  %__gcf = alloca " + ftype + "\n");
         this.sb.append("  %__gcf.prev = getelementptr " + ftype + ", ptr %__gcf, i32 0, i32 0\n");
         this.sb.append("  %__gcf.n = getelementptr " + ftype + ", ptr %__gcf, i32 0, i32 1\n");
-        this.sb.append("  %__gcf.save = load ptr, ptr @_emperor_gc_frame_head\n");
+        this.sb.append("  %__gcf.save = call ptr @_emperor_gc_frame_get()\n");
         this.sb.append("  store ptr %__gcf.save, ptr %__gcf.prev\n");
         this.sb.append("  store i32 " + cast<string>(nslots) + ", ptr %__gcf.n\n");
-        this.sb.append("  store ptr %__gcf, ptr @_emperor_gc_frame_head\n");
+        this.sb.append("  call void @_emperor_gc_frame_set(ptr %__gcf)\n");
         let si: mut i64 = 0;
         while (si < nslots) {
             let slot: GcSlotEntry = this.gc_frame_slots.at(cast<u64>(si)).some;
@@ -3421,6 +3427,7 @@ class LLVMEmitter {
         if (inst is IRInstruction.wrmbr) { return inst.wrmbr.location; }
         if (inst is IRInstruction.br) { return inst.br.location; }
         if (inst is IRInstruction.br_cond) { return inst.br_cond.location; }
+        if (inst is IRInstruction.gc_poll) { return inst.gc_poll.location; }
         if (inst is IRInstruction.ret) { return inst.ret.location; }
         if (inst is IRInstruction.ret_void) { return inst.ret_void.location; }
         if (inst is IRInstruction.call) { return inst.call.location; }
@@ -3552,6 +3559,7 @@ class LLVMEmitter {
         if (inst is IRInstruction.wrmbr) { this.emit_wrmbr(inst.wrmbr); return; }
         if (inst is IRInstruction.br) { this.emit_br(inst.br); return; }
         if (inst is IRInstruction.br_cond) { this.emit_br_cond(inst.br_cond); return; }
+        if (inst is IRInstruction.gc_poll) { this.emit_gc_poll(); return; }
         if (inst is IRInstruction.ret) { this.emit_ret(inst.ret); return; }
         if (inst is IRInstruction.ret_void) { this.emit_ret_void(); return; }
         if (inst is IRInstruction.call) { this.emit_call(inst.call); return; }
@@ -4524,7 +4532,7 @@ class LLVMEmitter {
         if (string_length(this.gc_frame_local) == 0) { return; }
         let restored: string = this.next_tmp();
         this.emit_line("  " + restored + " = load ptr, ptr " + this.gc_frame_prev_gep);
-        this.emit_line("  store ptr " + restored + ", ptr @_emperor_gc_frame_head");
+        this.emit_line("  call void @_emperor_gc_frame_set(ptr " + restored + ")");
     }
 
     // GC v2: safepoint poll — a cheap C call (one load + ret when no
@@ -7997,6 +8005,48 @@ class LLVMEmitter {
 
     // --- String escaping for LLVM c"..." format ---
     // LLVM c"..." uses \xx hex escapes only. No \\ or \" escapes exist.
+
+    // UTF-8 byte length of a literal, host-independent (see the literal
+    // emission note): the C# VM counts UTF-16 units in string_length while
+    // the .ll's array type and the native runtime's header length field
+    // need BYTES. Code-point weighting gives UTF-8 bytes there and the
+    // plain byte count on native (a native "char" is one byte 0-255, which
+    // never lands in the surrogate range).
+    fun utf8_byte_len(this, s: string) -> i64 {
+        // Host probe: on the C# VM the probe literal is ONE UTF-16 unit; on
+        // native it is its 3 UTF-8 bytes. Byte hosts are already accurate
+        // through string_length; only UTF-16 hosts need the weighting.
+        if (string_length("中") != 1) {
+            return string_length(s);
+        }
+        let n: i64 = string_length(s);
+        let total: mut i64 = 0;
+        let i: mut i64 = 0;
+        while (i < n) {
+            let c: i64 = string_char_code_at(s, i);
+            if (c < 0x80) {
+                total = total + 1;
+            } else {
+                if (c < 0x800) {
+                    total = total + 2;
+                } else {
+                    if (c >= 0xD800 && c <= 0xDBFF) {
+                        // surrogate pair: one code point, 4 UTF-8 bytes
+                        total = total + 4;
+                        i = i + 1;
+                    } else {
+                        if (c < 0x10000) {
+                            total = total + 3;
+                        } else {
+                            total = total + 4;
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return total;
+    }
 
     fun escape_llvm_string(this, s: string) -> string {
         if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter escape_llvm_string(s=" + cast<string>(s) + ")");

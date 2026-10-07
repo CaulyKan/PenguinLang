@@ -30,6 +30,7 @@ namespace esl {
     #template(T: type)
     class Pipe {
         impl IReferenceType;
+        impl ISync;
 
         // IN side: written during evaluate, read only at commit.
         in_slot: mut Option<T> = new Option<T>.none();

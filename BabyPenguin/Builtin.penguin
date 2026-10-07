@@ -669,12 +669,16 @@ namespace __builtin {
     interface IFuture {
         impl IFutureBase;
         fun poll(this) -> mut FutureState<T>;
-        
+
+        // The M0 condition wait: a ready future delivers in the CURRENT
+        // delta (poll-first fast path — the old park-first cost one round);
+        // an unready one parks WITHOUT being owed a delta (the future-park
+        // note; woken by its event source — delivery kick, timer fire or
+        // spawn completion) and re-polls.
         !async fun do_wait(mut this) -> T {
             let result: mut T;
+            let state: mut FutureState<T> = this.poll();
             while(true) {
-                wait;
-                let state: mut FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
                     __builtin._sim_activity();
                     result = state.ready_finished;
@@ -688,14 +692,29 @@ namespace __builtin {
                 } else if (state is FutureState<T>.finished) {
                     break;
                 }
+                __builtin._sched_future_park();
+                wait;
+                state = this.poll();
+            }
+            if (state is FutureState<T>.ready_finished) {
+                // A resolved wait may rescue a waiter that parked AFTER the
+                // delivery's kick (deliver happened, kick already passed,
+                // poll-first missed because another waiter took the value).
+                // DEFERRED, not immediate: an immediate coarse kick on the
+                // IMMEDIATE channel family lets the next waiter consume the
+                // value in the SAME delta and requeues parkers in resolution
+                // order — an intra-delta cascade the mt scheduler's deferred
+                // channels never produce (its version kicks immediately but
+                // nothing is visible to consume yet). Deferred keeps the
+                // observable pacing of the classic polling scheduler.
+                __builtin._sched_defer_kick();
             }
             return result;
         }
 
         !async fun do_wait_any(this: mut IFuture<T>) -> Option<T> {
+            let state: mut FutureState<T> = this.poll();
             while(true) {
-                wait;
-                let state: mut FutureState<T> = this.poll();
                 if (state is FutureState<T>.ready_finished) {
                     __builtin._sim_activity();
                     this.switch_state(new RoutineState.ready_finished(), new RoutineState.finished());
@@ -709,6 +728,9 @@ namespace __builtin {
                 } else if (state is FutureState<T>.finished) {
                     break;
                 }
+                __builtin._sched_future_park();
+                wait;
+                state = this.poll();
             }
             return new Option<T>.none();
         }
@@ -855,7 +877,11 @@ namespace __builtin {
             for (let w : mut LatestChannel<T> in this.wires.iter()) {
                 w.write(v);
             }
-            wait;
+            // Deferred wake (M0): the deliveries become observable at the
+            // delta boundary's kick — emit's effect lands in the NEXT
+            // delta. (The old trailing bare wait parked the EMITTER for a
+            // delta too; the new semantics keeps only the waiters' delay.)
+            __builtin._sched_defer_kick();
         }
 
         fun subscribe(mut this, s: _EventSubscription<T>) {
@@ -965,6 +991,34 @@ namespace __builtin {
     extern fun _after(n: i64) -> IFuture<i64>;
     extern fun _sim_now() -> i64;
     extern fun _run();
+    extern fun _sched_yield();
+    extern fun _sched_future_park();
+    extern fun _sched_defer_kick();
+    extern fun _sched_kick_futures();
+
+    // `wait <n>` under the M0 scheduler semantics — the runtime sign branch
+    // the design doc's 0.3 defines (mirrors the mt scheduler's
+    // _mt_wait_ticks; the wait lowering routes integer operands here):
+    //   n <  0 : PURE YIELD — the yield note re-queues the coroutine in the
+    //            CURRENT delta; no time passes, no convergence, the tick is
+    //            not pinned ("wait -1;" — the magnitude is meaningless);
+    //   n == 0 : the bare wait — owed the next delta at the CURRENT tick
+    //            (a barrier that pins the clock; NOT a zero deadline: the
+    //            do_wait fast path would find it ready in the SAME delta);
+    //   n >  0 : the timer condition wait (returns the deadline).
+    !async fun _wait_ticks(n: i64) -> i64 {
+        if (n < 0) {
+            __builtin._sched_yield();
+            wait;
+            return __builtin._sim_now();
+        }
+        if (n == 0) {
+            wait;
+            return __builtin._sim_now();
+        }
+        let f : mut IFuture<i64> = __builtin._after(n);
+        return f.do_wait();
+    }
 
     // ============ Channels (RTL-style communication) ============
     //
@@ -1066,6 +1120,10 @@ namespace __builtin {
             __builtin._sim_activity();
             this.queue.enqueue(v);
             this.latest = new Option<T>.some(v);
+            // The delivery's wake lands in the NEXT delta (the boundary's
+            // deferred kick) — the observable one-delta latency of the
+            // classic polling scheduler, without its per-round churn.
+            __builtin._sched_defer_kick();
         }
 
         impl ISink<T> {
@@ -1079,9 +1137,13 @@ namespace __builtin {
                     }
                     return;
                 }
-                // Backpressure: park (bare wait = one delta) until a slot frees
-                // up; the poll-wakeup below re-checks close in every round.
+                // Backpressure (M0): a CONDITION wait — parked without being
+                // owed a delta (a bare wait here would pin the tick: the
+                // clock may not jump past an owed delta, so a full channel
+                // plus a sleeping timer consumer would deadlock). Woken by
+                // the deferred kick a consumer/close fires when a slot frees.
                 while (self.is_full()) {
+                    __builtin._sched_future_park();
                     wait;
                     self.check_closed();
                 }
@@ -1103,7 +1165,13 @@ namespace __builtin {
             fun try_poll(this: mut ISource<T>) -> Option<T> {
                 let self : mut Self = cast<mut Self>(this);
                 self.check_closed();
-                return self.queue.dequeue();
+                let v : Option<T> = self.queue.dequeue();
+                if (v.is_some()) {
+                    // Capacity freed: backpressured writers re-check in the
+                    // next delta.
+                    __builtin._sched_defer_kick();
+                }
+                return v;
             }
 
             fun current(this: ISource<T>) -> Option<T> {
@@ -1116,6 +1184,9 @@ namespace __builtin {
             fun close(this: mut IChannel<T>) {
                 let self : mut Self = cast<mut Self>(this);
                 self.closed = true;
+                // Close is supervision shutdown: every waiter re-polls (and
+                // raises) in the next delta.
+                __builtin._sched_defer_kick();
             }
 
             fun is_closed(this: IChannel<T>) -> bool {
@@ -1145,6 +1216,9 @@ namespace __builtin {
                 self.check_closed();
                 let v : Option<T> = self.queue.dequeue();
                 if (v.is_some()) {
+                    // Capacity freed: backpressured writers re-check in the
+                    // next delta (mirror of try_poll).
+                    __builtin._sched_defer_kick();
                     return new FutureState<T>.ready_finished(v.some);
                 }
                 return new FutureState<T>.not_ready();
@@ -1229,12 +1303,20 @@ namespace __builtin {
 
         // Advance the cursor: oldest undelivered transaction, else the
         // one-shot seed (only before any real write), else none.
+        // A pending write is DELTA-DEFERRED: it becomes readable only in a
+        // LATER delta than the one it was written in (pending_round <
+        // current round) — the observable equivalent of the mt scheduler's
+        // boundary commit for wires (MtDeferredWire). Without the gate, a
+        // same-delta poll (do_wait's fast path, or a completion-kick wake)
+        // could consume the write the moment it was pushed, cascading a
+        // whole port chain inside one delta and diverging from both the
+        // classic pacing and the mt scheduler.
         fun take(mut this) -> Option<T> {
             let head : Option<T> = this.committed.dequeue();
             if (head.is_some()) {
                 return head;
             }
-            if (this.pending.is_some()) {
+            if (this.pending.is_some() && this.pending_round < __builtin._sim_delta()) {
                 let v : Option<T> = this.pending;
                 this.pending = new Option<T>.none();
                 return v;
@@ -1252,6 +1334,8 @@ namespace __builtin {
                 self.check_closed();
                 __builtin._sim_activity();
                 self.push(v);
+                // The write's wake lands in the NEXT delta (deferred kick).
+                __builtin._sched_defer_kick();
             }
 
             fun try_write(this: mut ISink<T>, v: T) -> bool {
@@ -1259,6 +1343,7 @@ namespace __builtin {
                 self.check_closed();
                 __builtin._sim_activity();
                 self.push(v);
+                __builtin._sched_defer_kick();
                 return true;
             }
         }
@@ -1283,6 +1368,7 @@ namespace __builtin {
             fun close(this: mut IChannel<T>) {
                 let self : mut Self = cast<mut Self>(this);
                 self.closed = true;
+                __builtin._sched_defer_kick();
             }
 
             fun is_closed(this: IChannel<T>) -> bool {
@@ -1368,6 +1454,7 @@ namespace __builtin {
             fun close(this: mut IChannel<T>) {
                 let self : mut Self = cast<mut Self>(this);
                 self.closed = true;
+                __builtin._sched_defer_kick();
             }
 
             fun is_closed(this: IChannel<T>) -> bool {
@@ -1585,6 +1672,7 @@ namespace __builtin {
             fun close(this: mut IChannel<T>) {
                 let self : mut Self = cast<mut Self>(this);
                 self.closed = true;
+                __builtin._sched_defer_kick();
             }
 
             fun is_closed(this: IChannel<T>) -> bool {
@@ -1674,6 +1762,12 @@ namespace __builtin {
                 for (let w : mut LatestChannel<T> in self.wires.iter()) {
                     w.write(v);
                 }
+                // The hub slot is DIRECTLY waitable (impl IFuture below): a
+                // direct `wait port` parker must be woken for the next
+                // delta — push alone sets no flag (w.write covers wired
+                // readers only), and the new scheduler's parkers do not
+                // re-poll on their own.
+                __builtin._sched_defer_kick();
             }
 
             fun try_write(this: mut ISink<T>, v: T) -> bool {
@@ -1684,6 +1778,7 @@ namespace __builtin {
                 for (let w : mut LatestChannel<T> in self.wires.iter()) {
                     w.write(v);
                 }
+                __builtin._sched_defer_kick();
                 return true;
             }
         }
@@ -1705,6 +1800,7 @@ namespace __builtin {
             fun close(this: mut IChannel<T>) {
                 let self : mut Self = cast<mut Self>(this);
                 self.closed = true;
+                __builtin._sched_defer_kick();
             }
 
             fun is_closed(this: IChannel<T>) -> bool {

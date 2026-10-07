@@ -1,56 +1,101 @@
-// main.penguin — tinyriscv SoC top level (Examples/tinyriscv).
+// main.penguin — tinyriscv multi-core SoC top level (Examples/tinyriscv).
 //
-// Memory map (addr[31:28] decode, faithful to rtl/tinyriscv_soc.v):
-//   0x0        ROM  (firmware, 4 KB)
-//   0x1        RAM  (16 KB)
-//   0x3        UART (0x30000000: CTRL/STATUS/BAUD/TXDATA)
+// One esl.Clock drives N independent RiscvCore instances (default 1, from
+// argv[1], clamped to 1..8). Each core carries its own pipeline, bus, ROM
+// and RAM; core 0 additionally owns the UART. The firmware images are
+// assembled AT COMPILE TIME (#fun meta): core 0 runs the classic hello
+// world (testbench end convention: x26 = 1); every other core runs the
+// compute firmware — a counted loop whose bound is preloaded at its RAM
+// word 2 (800 + 400*id iterations), leaving 5*bound at word 0 and a done
+// flag at word 1.
 //
-// The wiring lives in a top-level construct block — it runs at ELABORATION
-// (before any initial routine spawns) and is statically audited (E_WIRING):
-// every module input is connected. Pipeline state flows through esl.Pipe
-// channels (if_id / id_ex), the writeback through Execute's wb output port,
-// and the posedge fans out from the clock's Event into each module's clk
-// INPUT PORT (connect(clk.evt, m.clk) ≡ @(posedge clk)). The firmware is
-// assembled at compile time (#fun) and loaded into ROM during elaboration,
-// before the first fetch. The clock runs until the firmware sets x26=1
-// (testbench end convention); the final report prints the cycle count and
-// its 50 MHz wall-clock equivalent.
+// Per-core wiring (posedge fan-out, pipe handoffs, writeback) lives in
+// THIS construct block — `connect` is elaboration syntax; RiscvCore only
+// builds and exposes the ports. Cores are memory-independent, so core 0's
+// timing is IDENTICAL to the single-core model regardless of how many
+// compute cores run beside it (and regardless of scheduler/threads): the
+// end report fires when core 0's x26 is set AND every compute core's done
+// flag is up — all deterministic per-core cycle counts.
 //
-// Combinational paths (regfile reads, the RIB bus) stay plain function
-// calls during evaluate — the SystemC convention; every arbitration input
-// derives from committed register/pipe state, so wakeup order stays
-// irrelevant.
+// Exit is EXPLICIT (the SimEnd hook spawns the UART drain-then-exit
+// coroutine): stopping the clock parks every module process forever —
+// classic treats that quiescence as exit, mt (decision E) hangs by design.
 
 using tinyriscv;
 using esl;
+using std;
+
+// End the process once the UART has drained. The testbench convention
+// sets x26=1 WITHOUT waiting for the last character's stop bit, so the
+// final character may still be mid-flight when SimEnd reports (its
+// uart_emit waiter fires at tx_end, AFTER the report line). Under the
+// classic scheduler the pending timer keeps the model alive until the
+// character prints, then quiescence exits; the mt scheduler (decision E)
+// would hang on the parked module processes instead — so drain first,
+// then exit explicitly. Output is byte-identical under both schedulers.
+async fun uart_drain_exit(uart: mut Uart) {
+    // Wait until the transmission TIME has passed AND the printing
+    // coroutine has actually run (busy() alone races the print at N>=5:
+    // both wake at tx_end on different threads and exit(0) can win).
+    while (!uart.tx_complete()) {
+        wait 1;
+    }
+    exit(0);
+}
 
 class SimEnd {
     impl ICycleHook;
 
     clk: Clock;
-    regs: RegFile;
-    uart: Uart;
+    cores: mut Vector<RiscvCore>;
     limit: mut i64 = 2000000;
 
-    fun new(mut this, clk: mut Clock, regs: mut RegFile, uart: mut Uart) {
+    fun new(mut this, clk: mut Clock, cores: mut Vector<RiscvCore>) {
         this.clk = clk;
-        this.regs = regs;
-        this.uart = uart;
+        this.cores = cores;
+    }
+
+    fun all_compute_done(this) -> bool {
+        let i: mut i64 = 1;
+        while (i < cast<i64>(this.cores.size())) {
+            if (!this.cores.at(cast<u64>(i)).some.compute_done()) {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
     }
 
     impl ICycleHook {
         fun after_commit(this) -> bool {
-            if (this.regs.read(cast<u32>(26)) == cast<u32>(1)) {
+            let core0: RiscvCore = this.cores.at(cast<u64>(0)).some;
+            let u: mut Option<Uart> = core0.core_uart();
+            let chars: mut i64 = 0;
+            if (u.is_some()) {
+                chars = cast<mut Uart>(u.some).tx_count;
+            }
+            if (core0.regfile().read(cast<u32>(26)) == cast<u32>(1) &&
+                this.all_compute_done()) {
                 let n: i64 = this.clk.cycles;
                 println("");
                 println("[tinyriscv] simulation end: " + cast<string>(n) +
                     " cycles (" + cast<string>(n * 20) + " ns @ 50 MHz), " +
-                    cast<string>(this.uart.tx_count) + " chars sent");
+                    cast<string>(chars) + " chars sent");
+                // Non-interactive cores report their checksums.
+                let i: mut i64 = 1;
+                while (i < cast<i64>(this.cores.size())) {
+                    let c: RiscvCore = this.cores.at(cast<u64>(i)).some;
+                    println("[tinyriscv] core" + cast<string>(c.core_id()) +
+                        " checksum " + cast<string>(c.compute_result()));
+                    i = i + 1;
+                }
+                let f: mut IFuture<void> = async uart_drain_exit(cast<mut Uart>(u.some));
                 return true;
             }
             if (this.clk.cycles >= this.limit) {
                 println("");
                 println("[tinyriscv] TIMEOUT after " + cast<string>(this.clk.cycles) + " cycles");
+                let f2: mut IFuture<void> = async uart_drain_exit(cast<mut Uart>(u.some));
                 return true;
             }
             return false;
@@ -58,63 +103,55 @@ class SimEnd {
     }
 }
 
-fun load_firmware(rom: mut Rom) {
-    // Meta: firmware_image() assembles AT COMPILE TIME (#fun JIT).
-    let image: string = #firmware_image();
-    let idx: mut i64 = 0;
-    for (let line: string in image.split("\n")) {
-        let v: Option<i64> = parse_int(line);
-        if (v.is_some()) {
-            rom.set_word(cast<u64>(idx), cast<u32>(v.some));
-            idx = idx + 1;
+construct {
+    // Core count: argv[0] (the runtime strips the program name),
+    // default 1, clamped to 1..8.
+    let n: mut i64 = 1;
+    if (__builtin.__args_count() >= 1) {
+        let a: Option<i64> = parse_int(__builtin.__args_get(0));
+        if (a.is_some() && a.some >= 1) {
+            n = a.some;
         }
     }
-}
+    if (n > 8) {
+        n = 8;
+    }
 
-construct {
+    // Meta: both firmware images assemble AT COMPILE TIME.
+    let fw_hello: string = #firmware_image();
+    let fw_calc: string = #compute_firmware_image();
+
     let clk: mut Clock = new Clock();
 
-    let regs: mut RegFile = new RegFile(clk);
+    let cores: mut Vector<RiscvCore> = new Vector<RiscvCore>();
+    let i: mut i64 = 0;
+    while (i < n) {
+        let fw: mut string = fw_hello;
+        if (i > 0) {
+            fw = fw_calc;
+        }
+        // (a comparison result as a direct bool argument hits an emitter
+        // gap — the i1 isn't widened to the i8 bool ABI; through a local
+        // it stores/loads correctly)
+        let is_core0: bool = i == 0;
+        let c: mut RiscvCore = new RiscvCore(clk, i, fw, 800 + i * 400, is_core0);
+        cores.push(c);
+        // Hoist the modules into locals: the static wiring audit resolves
+        // a sink port's owner only through a direct identifier base
+        // (c.fetch.clk chains read as '?.clk' and collide).
+        let fe: mut Fetch = c.fetch;
+        let de: mut Decode = c.decode;
+        let ex: mut Execute = c.execute;
+        let rf: mut RegFile = c.regs;
+        connect(clk.evt, fe.clk);
+        connect(clk.evt, de.clk);
+        connect(clk.evt, ex.clk);
+        connect(c.if_pipe, de.if_in);
+        connect(c.id_pipe, ex.id_in);
+        connect(ex.wb, rf.wb_in);
+        i = i + 1;
+    }
 
-    let rom: mut Rom = new Rom(1024);
-    load_firmware(rom);
-    let ram: mut Ram = new Ram(4096);
-    let uart: mut Uart = new Uart();
-
-    // Meta: the addr[31:28] -> region decode is GENERATED from the #class
-    // memory-map table (perips/MemMap.penguin); slaves attach in table order.
-    let bus: mut Bus = new Bus();
-    bus.attach_indexed(rom);
-    bus.attach_indexed(ram);
-    bus.attach_indexed(uart);
-    bus.set_decoder(new MmioDecoder());
-
-    // Pipeline channels: if_id / id_ex as two-phase esl.Pipe registers
-    // (write during evaluate, publish at the clock's commit; a cycle with
-    // no write is the NOP bubble — the RTL's flush).
-    let if_pipe: mut Pipe<FetchPacket> = new Pipe<FetchPacket>(clk);
-    let id_pipe: mut Pipe<DecPacket> = new Pipe<DecPacket>(clk);
-
-    // Control: pure functions of the committed id_ex slot + regfile.
-    let ctrl: mut Ctrl = new Ctrl(id_pipe, regs);
-
-    let fetch: mut Fetch = new Fetch(clk, bus, if_pipe, ctrl);
-    let decode: mut Decode = new Decode(id_pipe, ctrl);
-    let execute: mut Execute = new Execute(regs, bus);
-
-    // Posedge fan-out (Event -> clk input ports), datapath channels, and
-    // the writeback wire (EX output -> RegFile input).
-    connect(clk.evt, fetch.clk);
-    connect(clk.evt, decode.clk);
-    connect(clk.evt, execute.clk);
-    connect(if_pipe, decode.if_in);
-    connect(id_pipe, execute.id_in);
-    connect(execute.wb, regs.wb_in);
-
-    // RIB m0 arbitration probe: the Bus asks EX (IBusMaster) whether it
-    // owns the bus this cycle.
-    bus.set_m0(execute);
-
-    let hook: mut SimEnd = new SimEnd(clk, regs, uart);
+    let hook: mut SimEnd = new SimEnd(clk, cores);
     clk.set_hook(hook);
 }

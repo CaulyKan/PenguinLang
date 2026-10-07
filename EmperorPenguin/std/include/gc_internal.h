@@ -26,6 +26,12 @@ typedef struct GCHeader {
 #define GT_MAX_SLOT 512
 #define GT_MAX_BODY ((int)(GT_MAX_SLOT - sizeof(GCHeader)))
 
+/* Size-class count and the quarantine ring size: GtArena (below) carries
+ * one of each, so the constants live here; gc_span.c/gc.c static-assert
+ * their local tables against them. */
+#define GT_NCLASS 23
+#define GC_QUARANTINE_RING 512
+
 /* Unified-goal defaults (spec §9.2): the floor (EMPEROR_GC_MIN_HEAP=0
  * keeps this) and the live multiplier (EMPEROR_GC_GOAL_FACTOR=0 keeps
  * this), applied to the COMBINED malloc+span live set. */
@@ -40,6 +46,12 @@ extern size_t _gc_st_allocs, _gc_st_alloc_bytes;
 extern int _emperor_gc_disabled;
 extern int _emperor_gc_mark_failed;  /* set by either unit on mark OOM */
 extern size_t _emperor_gc_mark_stack_top; /* shared worklist depth (gt_drain) */
+
+/* M5 v1: the allocator funnel's global lock. The span fast path is
+ * per-arena and lock-free (gt_alloc_small); span retire/refill, the
+ * malloc large path and the registries funnel through this. */
+void gc_alloc_lock(void);
+void gc_alloc_unlock(void);
 
 /* Run a dead object's dispose_mem, if any (gc.c's finalizer probe). */
 void _emperor_gc_finalize(GCHeader* h);
@@ -57,6 +69,47 @@ void gc_scan_object_body(GCHeader* h);
 /* Drain the shared large-object mark worklist (gc.c; the green-tea drain
  * interleaves it with the span queue). */
 void gc_mark_drain(void);
+
+/* ---- Per-thread allocation arenas (M5 v1, gc_span.c) ----
+ * Each thread allocates small objects from ITS OWN arena: the per-class
+ * current span plus the thread's fresh-object quarantine ring. The fast
+ * path (gt_alloc_small hit on the current span) touches no shared state;
+ * span retire/refill and superchunk acquisition take gc_alloc_lock. The
+ * collector is still one stop-the-world pass over every arena — the
+ * domain split (local collectors + shared-heap promotion at the handoff
+ * points, design doc §10.2-10.6) is the next stage. */
+
+typedef struct GtArena {
+    void* current[GT_NCLASS];        /* GtSpan* per size class (opaque
+                                      * here; the real type is gc_span.c's
+                                      * internal GtSpan) */
+    /* Fresh-object quarantine ring (moved from gc.c's global ring: the
+                                      * cover must follow the allocating
+                                      * THREAD — a boundary collect can
+                                      * run while several arenas hold
+                                      * in-flight temps). */
+    void* quarantine[GC_QUARANTINE_RING];
+    unsigned short quarantine_count;
+    unsigned short quarantine_next;
+    size_t alloc_bytes;              /* slot bytes allocated since the
+                                      * last sweep (monotonic between
+                                      * sweeps; folded into the global
+                                      * heap-bytes sum) */
+    int used;
+} GtArena;
+
+/* This thread's arena (assigns a registry slot on first use — call from
+ * the allocating thread only). Never NULL once returned. */
+GtArena* gt_arena_thread(void);
+
+/* Fresh-object quarantine ring push into ARENA (no-op in non-greentea
+ * modes; gc.c's malloc large path uses this with its own arena). */
+void gt_quarantine_push(GtArena* a, void* user);
+
+/* Snapshot helper for gc.c's quarantine marking: visit every registered
+ * arena (stop-the-world or single-threaded moment). */
+void gt_each_arena(void (*fn)(GtArena* a, void* ctx), void* ctx);
+
 
 /* ---- gc_span.c API used by gc.c ---- */
 
@@ -144,6 +197,10 @@ uint64_t _emperor_gc_gt_stats(int which);
 
 /* Allocated slot bytes (== live bytes right after a sweep). */
 uint64_t gt_heap_bytes(void);
+
+/* The exact figure (global + unflushed arena deltas) — user queries and
+ * boundary predicates only, never the per-allocation hot path. */
+uint64_t gt_heap_bytes_exact(void);
 
 /* Live slot bytes and last cycle's freed slot bytes (unified-goal inputs). */
 uint64_t gt_live_bytes(void);

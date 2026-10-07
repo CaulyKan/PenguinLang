@@ -1,6 +1,6 @@
 # TimerAdvance
 ## Description
-Two jobs wait different tick counts. The shorter timer fires first and _sim_now() confirms tick advancement.
+Two jobs wait different counts. The shorter timer fires first and _sim_now() confirms tick advancement.
 
 ## Apply To
 * BabyPenguin
@@ -9,11 +9,11 @@ Two jobs wait different tick counts. The shorter timer fires first and _sim_now(
 ## Test Code
 ```
 initial {
-    wait 3 tick;
+    wait 3;
     println("c:" + cast<string>(_sim_now()));
 }
 initial {
-    wait 1 tick;
+    wait 1;
     println("a:" + cast<string>(_sim_now()));
 }
 ```

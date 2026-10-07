@@ -2,41 +2,126 @@ using BabyPenguin.Symbol;
 
 namespace BabyPenguin.VirtualMachine
 {
+    /// <summary>
+    /// Which kind of park a Blocked return means. The Penguin-level code
+    /// cannot express this through the status number alone (the VM's park
+    /// instruction is a plain Blocked return), so the library helper that
+    /// immediately precedes the `wait` sets a side-channel note on the
+    /// scheduler and RunOneDeltaJob consumes it when filing the parked job:
+    /// the note extern and the wait are adjacent on the same stack with
+    /// nothing in between (single-threaded), so the pairing is unambiguous.
+    /// </summary>
+    public enum SchedParkNote
+    {
+        /// <summary>No note: a bare `wait;` / `wait 0;` — owed the next
+        /// delta at the CURRENT tick (the clock may not jump past it).</summary>
+        None,
+
+        /// <summary>`wait -1;` — pure yield: still runnable in the CURRENT
+        /// delta (re-queued at the tail; the magnitude is meaningless).</summary>
+        PureYield,
+
+        /// <summary>Condition park (do_wait / Fifo backpressure): owed
+        /// nothing; woken only by a kick (delivery, completion, timer).</summary>
+        FuturePark,
+    }
+
+    /// <summary>
+    /// The M0 scheduler semantics (docs/zh/wip/concurrent_scheduler.md §0.2,
+    /// §7): fully-converging delta ticks, the seven-step boundary, the
+    /// all-finished exit rule, tick-pinning bare waits and pure-yield
+    /// negative waits. This is the C# reference implementation of the same
+    /// semantics the native mt kernel implements (std/c/scheduler.c +
+    /// scheduler_mt.penguin); cross-compiler tests pin both.
+    ///
+    /// A delta: everything runnable runs until none is (spawns adopted
+    /// mid-delta run in their spawning delta; a pure yield re-queues in the
+    /// same delta; a kicked condition parker resumes in the kicking delta).
+    /// The boundary (§0.2 seven steps): deferred kicks (the channel family
+    /// stays immediate, so a transaction's wake lands in the NEXT delta —
+    /// classic observable parity) → fire due timers → owed bare-wait parkers
+    /// or anyone runnable means the next delta at the SAME tick → (no fd
+    /// sources in the C# VM) → advance the tick to the earliest deadline →
+    /// all coroutines finished exits; otherwise the program hangs quietly
+    /// (decision E: parked-with-no-wake-source is not an exit).
+    ///
+    /// The two stall leashes mirror the mt kernel: (a) a per-delta resume
+    /// budget (EMPEROR_SCHED_STEP_BUDGET, exit 60 — spin/livelock inside one
+    /// delta); (b) a pinned-clock streak (EMPEROR_SCHED_PIN_BUDGET, exit 61 —
+    /// deltas keep converging while timer waiters sit pending and no timer
+    /// makes real, strictly-later-deadline progress, classically a
+    /// `while (!cond) wait;` retry loop).
+    /// </summary>
     public class SimScheduler
     {
         private long _currentTick = 0;
         private readonly List<TimerEntry> _timers = new();
-        private readonly Queue<IRuntimeValue> _readyQueue = new();
+        /// <summary>Coroutines runnable in the current delta (FIFO).</summary>
+        private readonly Queue<IRuntimeValue> _runQueue = new();
+        /// <summary>Bare-wait parkers: owed the next delta at the CURRENT
+        /// tick — the clock may not advance past them (step 3 before
+        /// step 5).</summary>
+        private readonly Queue<IRuntimeValue> _owedQueue = new();
+        /// <summary>Condition parkers: asleep until a kick. Not runnable,
+        /// owed nothing — they never pin the clock and never burn a delta.</summary>
+        private readonly List<IRuntimeValue> _condParked = new();
+        /// <summary>Jobs that actually started running at least once and
+        /// have not finished: the live-coroutine set (the exit rule counts
+        /// these; channel objects mis-enqueued by do_wait's generator
+        /// re-drive are dropped before counting — they are not coroutines).</summary>
+        private readonly HashSet<ReferenceRuntimeValue> _liveJobs = new();
         private BabyPenguinVM? _vm;
         private bool _exited;
+        private bool _deferredKick;
+        /// <summary>The job currently being driven by RunOneDeltaJob — the
+        /// `_after` extern registers its timer against this job (the waiter
+        /// that will poll it), mirroring the mt (deadline, co) timer table.</summary>
+        private ReferenceRuntimeValue? _currentJob;
+
+        private long _stepBudget = -1;   /* lazy env parse; -1 = unparsed */
+        private long _pinBudget = -1;
+        private long _stepCount;         /* resumes in the current delta (a) */
+        private long _pinStreak;         /* converged deltas with pending timers (b) */
+        private long _pinMaxDeadline = long.MinValue; /* latest deadline ever fired */
+        private bool _stallReported;     /* one diagnostic per run */
+        private bool _trace;
 
         public long CurrentTick => _currentTick;
 
-        /// <summary>Monotonic delta-round counter (exposed to Penguin via
+        /// <summary>Monotonic delta counter (exposed to Penguin via
         /// __builtin._sim_delta — wires merge same-round writes).</summary>
         public long CurrentRound { get; private set; }
 
-        /// <summary>SimActivityCounter snapshot at the start of the round
+        /// <summary>SimActivityCounter snapshot at the start of the delta
         /// currently executing.</summary>
         public long RoundStartActivity { get; private set; }
 
-        /// <summary>True when the most recently COMPLETED round carried no
+        /// <summary>True when the most recently COMPLETED delta carried no
         /// transaction activity (exposed via __builtin._sim_settled together
         /// with RoundStartActivity — a settle-point port read parks until
         /// propagation at the current time is done).</summary>
         public bool LastRoundQuiet { get; private set; }
 
-        /// <summary>True when a scheduled job called __builtin.exit and the
-        /// scheduler stopped (vm.Global.ExitCode holds the code). The driver
-        /// (__builtin._run) turns this into ProgramExitException so
-        /// BabyPenguinVM.Run returns the program's exit code — without it the
-        /// Exited break is swallowed here and every program reports 0.</summary>
+        /// <summary>The park-kind side channel: set by the note externs
+        /// (__builtin._sched_yield / _sched_future_park), consumed when the
+        /// following Blocked return files the job.</summary>
+        public SchedParkNote PendingParkNote { get; set; } = SchedParkNote.None;
+
+        /// <summary>True when a job called __builtin.exit (or a stall leash
+        /// tripped) and the scheduler stopped (vm.Global.ExitCode holds the
+        /// code). The driver (__builtin._run) turns this into
+        /// ProgramExitException so BabyPenguinVM.Run returns the program's
+        /// exit code.</summary>
         public bool Exited => _exited;
 
         private class TimerEntry : IComparable<TimerEntry>
         {
             public long DeadlineTick { get; set; }
             public ReferenceRuntimeValue Future { get; set; } = null!;
+            /// <summary>The job that registered the timer (it polls the
+            /// future); null when registered outside any job — firing then
+            /// falls back to a generic kick.</summary>
+            public ReferenceRuntimeValue? Waiter { get; set; }
 
             public int CompareTo(TimerEntry? other)
             {
@@ -53,20 +138,50 @@ namespace BabyPenguin.VirtualMachine
         }
 
         /// <summary>
-        /// Jobs sitting in the ready queue have been removed from the
-        /// Penguin-level pending_jobs queue and are only reachable from C#;
-        /// expose them so the GC can treat them as roots.
+        /// Jobs sitting in the C# queues (runnable, owed, condition-parked)
+        /// have been removed from the Penguin-level pending_jobs queue and
+        /// are only reachable from C#; expose them so the GC treats them as
+        /// roots.
         /// </summary>
         public IEnumerable<IRuntimeValue> GetReadyJobs()
         {
-            foreach (var job in _readyQueue)
+            foreach (var job in _runQueue)
+                yield return job;
+            foreach (var job in _owedQueue)
+                yield return job;
+            foreach (var job in _condParked)
                 yield return job;
         }
 
         public void EnqueueTimerFuture(long deadlineTick, ReferenceRuntimeValue future)
         {
-            _timers.Add(new TimerEntry { DeadlineTick = deadlineTick, Future = future });
+            _timers.Add(new TimerEntry { DeadlineTick = deadlineTick, Future = future, Waiter = _currentJob });
             _timers.Sort();
+        }
+
+        /// <summary>A transaction flowed that waiters must observe in the
+        /// NEXT delta (channel deliver/emit/consume/close): the boundary's
+        /// step-1 kick. Deferring (rather than kicking at the delivery site)
+        /// keeps the observable one-delta latency of the classic polling
+        /// scheduler.</summary>
+        public void RequestDeferredKick() => _deferredKick = true;
+
+        /// <summary>Immediate wake of every condition parker: they re-queue
+        /// into the current delta (a spawn completing wakes its waiting
+        /// parent mid-delta, mt parity).</summary>
+        public void KickFutures()
+        {
+            if (_trace && _condParked.Count > 0)
+            {
+                var ids = new System.Text.StringBuilder();
+                foreach (var job in _condParked)
+                    if (job is ReferenceRuntimeValue rj)
+                        ids.Append(rj.RefId).Append(',');
+                Console.Error.WriteLine($"[SIM] kick futures: {ids}");
+            }
+            foreach (var job in _condParked)
+                _runQueue.Enqueue(job);
+            _condParked.Clear();
         }
 
         public void Run(BabyPenguinVM vm, RuntimeFrame? frame)
@@ -78,165 +193,172 @@ namespace BabyPenguin.VirtualMachine
             _exited = false;
             _currentTick = 0;
             _timers.Clear();
-            _readyQueue.Clear();
+            _runQueue.Clear();
+            _owedQueue.Clear();
+            _condParked.Clear();
+            _liveJobs.Clear();
+            _deferredKick = false;
+            _currentJob = null;
+            PendingParkNote = SchedParkNote.None;
             CurrentRound = 0;
             RoundStartActivity = 0;
             LastRoundQuiet = false;
+            _stepCount = 0;
+            _pinStreak = 0;
+            _pinMaxDeadline = long.MinValue;
+            _stallReported = false;
+            ParseBudgets();
 
             bool dbg = Environment.GetEnvironmentVariable("PENGUIN_SIM_DEBUG") == "1";
-            int dbgRounds = 0;
-            const long MaxRounds = 20_000_000;
-            // State snapshot of the previous signal-free round (null = none).
-            // Quiescence = two consecutive signal-free rounds (no progress, no
-            // timers, no transaction activity) with IDENTICAL job snapshots:
-            // parked frames replay the same instruction pointer + register
-            // contents, so an unchanged fingerprint means no forward motion is
-            // possible. Any real advancement — bare-wait handoffs, yields,
-            // counters, user code — mutates observable state and changes the
-            // fingerprint.
-            string? lastIdleSnapshot = null;
+            _trace = dbg;
+            long dbgRounds = 0;
 
             while (true)
             {
-                // Each round starts by draining pending_jobs (initial routines plus
-                // any jobs enqueued at runtime by `async` expressions / do_wait).
-                DrainPendingJobs(vm);
-
-                // Nothing to do -> program finished
-                if (_readyQueue.Count == 0 && _timers.Count == 0 && GetPendingJobCount(vm) == 0)
-                    break;
-
+                // A new delta begins (numbered from 1, matching the mt
+                // scheduler's round counter).
+                CurrentRound++;
+                RoundStartActivity = vm.Global.SimActivityCounter;
+                _stepCount = 0;
                 dbgRounds++;
-                if (dbgRounds > MaxRounds)
-                    throw new BabyPenguinRuntimeException("SimScheduler exceeded max rounds (possible live-lock)", code: ErrorCode.E_RUNTIME_INVALID_OP);
 
-                if (dbg)
+                // ---- DELTA: run everything runnable to convergence. ----
+                // Spawns adopted mid-delta run in their spawning delta; a
+                // pure yield re-queues at the tail; a kicked parker resumes
+                // here too. Nothing runs twice before everything runnable
+                // ran once (FIFO).
+                while (true)
                 {
-                    if (dbgRounds <= 200)
-                        Console.Error.WriteLine($"[SIM] round={dbgRounds} tick={_currentTick} ready={_readyQueue.Count} pending={GetPendingJobCount(vm)} timers={_timers.Count} activity={vm.Global.SimActivityCounter} snap={BuildPendingSnapshot(vm)}");
-                }
-
-                long activityAtRoundStart = vm.Global.SimActivityCounter;
-                CurrentRound = dbgRounds;
-                RoundStartActivity = activityAtRoundStart;
-
-                bool progress = false;
-
-                // --- Delta round: run every job currently ready ---
-                while (_readyQueue.Count > 0)
-                {
-                    var job = _readyQueue.Dequeue();
+                    AdoptSpawns(vm);
+                    if (_runQueue.Count == 0)
+                        break;
+                    var job = _runQueue.Dequeue();
                     if (job is not ReferenceRuntimeValue jobObj) continue;
-
-                    if (RunJob(vm, frame, jobObj)) progress = true;
+                    RunOneDeltaJob(vm, frame, jobObj);
                     if (_exited) return;
                 }
 
-                // Fire timers whose deadline has been reached
-                progress |= FireTimers();
+                if (dbg && dbgRounds <= 200)
+                    Console.Error.WriteLine($"[SIM] delta={CurrentRound} tick={_currentTick} run={_runQueue.Count} owed={_owedQueue.Count} parked={_condParked.Count} live={_liveJobs.Count} timers={_timers.Count} activity={vm.Global.SimActivityCounter}");
 
-                // No transaction flowed in this round → propagation at the
-                // current time is settling (settle-point readers check this).
-                LastRoundQuiet = vm.Global.SimActivityCounter == activityAtRoundStart;
+                // The delta converged with no transaction activity →
+                // propagation at the current time is settling (settle-point
+                // readers check this via _sim_settled).
+                LastRoundQuiet = vm.Global.SimActivityCounter == RoundStartActivity;
 
-                // A round with transaction ACTIVITY (emit / channel write /
-                // resolved wait — every SimActivityCounter tick) still has
-                // same-time propagation in flight: delta-parked jobs (bare
-                // `wait;`, emit's trailing yield) are owed their next round
-                // at the CURRENT tick before any timer-driven jump. Bare
-                // wait promises "one delta — without touching the tick
-                // counter" (08_TimingModel); without this gate the idle
-                // jump below either skipped straight to the earliest
-                // pending timer (resuming the parked job at the WRONG time)
-                // or lost the wakeup entirely behind the timer's exit.
-                if (progress || vm.Global.SimActivityCounter != activityAtRoundStart)
-                {
-                    lastIdleSnapshot = null;
-                    continue;
-                }
-
-                // --- No progress this round ---
+                // ---- Stall leash (b), evaluated at the boundary: the
+                // streak counts consecutive converged deltas while
+                // time-waiters sit pending and no timer makes real
+                // (strictly-later-deadline) progress — the clock is pinned
+                // by zero-time churn, classically `while (!cond) wait;`.
+                // An empty timer table is not a pin: reset and forget the
+                // deadline high-water mark so a fresh wait cycle starts
+                // clean. ----
                 if (_timers.Count > 0)
                 {
-                    // Advance tick to the earliest pending timer and fire it
-                    lastIdleSnapshot = null;
-                    _currentTick = Math.Max(_currentTick, _timers[0].DeadlineTick);
-                    FireTimers();
+                    _pinStreak++;
+                    if (_pinBudget > 0 && _pinStreak > _pinBudget)
+                    {
+                        StallAbort(61,
+                            $"the clock is pinned: {_pinStreak} deltas converged with timer wait(s) pending but no timer firing",
+                            "suspected tick-pinning retry loop, e.g. `while (!cond) wait;`");
+                        return;
+                    }
+                }
+                else
+                {
+                    _pinStreak = 0;
+                    _pinMaxDeadline = long.MinValue;
+                }
+
+                // ---- BOUNDARY: the seven steps. ----
+                // Step 1: deferred commits — BabyPenguin's channel family
+                // stays immediate (M0 scope; deferral is the native mt
+                // scheduler's M6 layer), so there is nothing to flush; the
+                // deferred KICK stands in: transactions that flowed this
+                // delta wake their waiters in the next delta.
+                if (_deferredKick)
+                {
+                    _deferredKick = false;
+                    KickFutures();
+                }
+
+                // Step 2: fire due timers (deadline <= now), waking their
+                // waiters.
+                FireDueTimers();
+
+                // Step 3: owed bare-wait parkers, or anyone a kick/timer
+                // wake made runnable -> next delta, SAME tick.
+                if (_owedQueue.Count > 0)
+                {
+                    while (_owedQueue.Count > 0)
+                        _runQueue.Enqueue(_owedQueue.Dequeue());
+                    continue;
+                }
+                if (_runQueue.Count > 0)
+                    continue;
+
+                // Step 4: non-blocking fd probe — the C# VM has no external
+                // event sources; nothing to do.
+
+                // Step 5: advance the tick to the earliest future deadline
+                // (nothing pins the clock anymore) — the next pass fires it
+                // (which is why a timer wake lands two delta numbers after
+                // the advance, matching the mt scheduler).
+                if (_timers.Count > 0)
+                {
+                    var d = _timers[0].DeadlineTick;
+                    if (d > _currentTick)
+                        _currentTick = d;
                     continue;
                 }
 
-                // No timers, no progress, pending jobs remain. Fingerprint
-                // every parked job (suspension point + register contents); two
-                // consecutive signal-free rounds with the identical fingerprint
-                // is quiescence — the next round would replay this one exactly
-                // (deterministic cooperative scheduling). The program ends
-                // normally: v1 has no external event sources, so "waiting for
-                // external input" and "deadlocked on a full/empty channel" are
-                // indistinguishable from quiescence. (The epoll integration
-                // changes this: external deltas reset activity.)
-                if (GetPendingJobCount(vm) > 0 || _readyQueue.Count > 0)
-                {
-                    bool transactionFlowed = vm.Global.SimActivityCounter != activityAtRoundStart;
-                    string snapshot = BuildPendingSnapshot(vm);
+                // Step 6: only fd waiters remain — none in the C# VM.
 
-                    if (transactionFlowed || snapshot != lastIdleSnapshot)
-                    {
-                        lastIdleSnapshot = snapshot;
-                        continue;
-                    }
-
-                    if (dbg)
-                        Console.Error.WriteLine($"[SIM] quiescent at round={dbgRounds} tick={_currentTick} pending={GetPendingJobCount(vm)}");
-                }
-
-                break;
+                // Step 7: every coroutine finished -> exit. Coroutines still
+                // parked with no wake source: HANG (decision E) — a quiet
+                // sleep keeps the hang free of CPU burn.
+                if (_liveJobs.Count == 0 && GetPendingJobCount(vm) == 0)
+                    break;
+                Thread.Sleep(10);
             }
+        }
+
+        private void ParseBudgets()
+        {
+            if (_stepBudget < 0)
+                _stepBudget = EnvBudget("EMPEROR_SCHED_STEP_BUDGET", 20_000_000);
+            if (_pinBudget < 0)
+                _pinBudget = EnvBudget("EMPEROR_SCHED_PIN_BUDGET", 20_000_000);
+        }
+
+        private static long EnvBudget(string name, long dflt)
+        {
+            var raw = Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrEmpty(raw)) return dflt;
+            if (!long.TryParse(raw, out var v)) return dflt;
+            return v < 0 ? dflt : v;
+        }
+
+        private void StallAbort(int code, string what, string hint)
+        {
+            if (_stallReported) return;
+            _stallReported = true;
+            Console.Error.WriteLine($"penguin sim sched: stall (exit {code}): {what}");
+            Console.Error.WriteLine($"  {hint}; {_liveJobs.Count} coroutine(s) live. Raise the matching EMPEROR_SCHED_*_BUDGET knob to lengthen the leash, or set it to 0 to disable.");
+            _vm!.Global.ExitCode = code;
+            _exited = true;
         }
 
         /// <summary>
-        /// Fingerprint every parked job: object identity, routine state and the
-        /// suspended frame's execution snapshot. Order-sensitive (queue
-        /// position is part of the scheduler state).
+        /// Move every job from the Penguin-level Scheduler.pending_jobs
+        /// queue into the current delta's run queue (FIFO preserved):
+        /// initial routines plus anything enqueued at runtime by `async`
+        /// expressions / do_wait's generator re-drive. A job that already
+        /// ran is re-runnable; one that never ran runs for the first time
+        /// in its spawning delta (mid-delta spawns are not deferred).
         /// </summary>
-        private string BuildPendingSnapshot(BabyPenguinVM vm)
-        {
-            var sb = new System.Text.StringBuilder(256);
-            var items = GetPendingJobItems(vm);
-            if (items != null)
-                foreach (var job in items)
-                    AppendJobSnapshot(sb, job);
-            foreach (var job in _readyQueue)
-                AppendJobSnapshot(sb, job);
-            return sb.ToString();
-        }
-
-        private static void AppendJobSnapshot(System.Text.StringBuilder sb, IRuntimeValue job)
-        {
-            sb.Append('#');
-            if (job is not ReferenceRuntimeValue jobObj)
-            {
-                sb.Append(job.GetType().Name);
-                return;
-            }
-            sb.Append(jobObj.RefId).Append(':');
-
-            if (jobObj.Fields.TryGetValue("context", out var ctxVal) && ctxVal is ReferenceRuntimeValue ctx
-                && ctx.Fields.TryGetValue("__impl", out var implVal) && implVal is ReferenceRuntimeValue impl
-                && impl.ExternImplenmentationValue is RuntimeFrame f)
-            {
-                sb.Append(f.GetSnapshot());
-            }
-            else
-            {
-                sb.Append("no-frame");
-            }
-        }
-
-        /// <summary>
-        /// Drain all pending jobs from the PenguinLang Scheduler.pending_jobs queue
-        /// into our readyQueue (FIFO preserved).
-        /// </summary>
-        private void DrainPendingJobs(BabyPenguinVM vm)
+        private void AdoptSpawns(BabyPenguinVM vm)
         {
             var items = GetPendingJobItems(vm);
             if (items == null) return;
@@ -245,19 +367,8 @@ namespace BabyPenguin.VirtualMachine
             {
                 var job = items[0];
                 items.RemoveAt(0);
-                _readyQueue.Enqueue(job);
+                _runQueue.Enqueue(job);
             }
-        }
-
-        /// <summary>
-        /// Re-enqueue a blocked job into the PenguinLang Scheduler.pending_jobs
-        /// queue so FIFO order relative to other jobs is preserved.
-        /// </summary>
-        private static void EnqueuePendingJob(BabyPenguinVM vm, IRuntimeValue job)
-        {
-            var items = GetPendingJobItems(vm);
-            if (items == null) return;
-            items.Add(job);
         }
 
         private static int GetPendingJobCount(BabyPenguinVM vm)
@@ -266,71 +377,157 @@ namespace BabyPenguin.VirtualMachine
         }
 
         /// <summary>
-        /// Run a single job by directly invoking its RoutineContext.call() extern,
-        /// replicating the state machine in _DefaultRoutine.start():
+        /// Run one job in the current delta by directly invoking its
+        /// RoutineContext.call() extern, replicating the state machine in
+        /// _DefaultRoutine.start():
         ///   state: pending(0) -> running(1)
         ///   status = context.call()
         ///   state: running(1) -> status
-        /// A job whose status is Blocked (0) stays pending and is re-enqueued.
-        /// Returns true if the job completed (finished) this round.
+        /// Then file the job by its park kind:
+        ///   3/4 finished (live--, timers purged, futures kicked — a
+        ///       waiting parent's spawn future just completed, same delta);
+        ///   2     generator yielded (parked consumers re-poll next delta);
+        ///   0     park, filed by the side-channel note (pure yield -> the
+        ///       current delta's tail; condition -> the kick-owned set;
+        ///       bare -> owed the next delta at the current tick).
         /// </summary>
-        private bool RunJob(BabyPenguinVM vm, RuntimeFrame? frame, ReferenceRuntimeValue jobObj)
+        private void RunOneDeltaJob(BabyPenguinVM vm, RuntimeFrame? frame, ReferenceRuntimeValue jobObj)
         {
+            // Stall leash (a): one resume = one step of the current delta.
+            // A spin (`while (!cond) wait -1;`) or a wake-livelock keeps
+            // resuming without the delta ever converging; past the leash,
+            // report and stop instead of hanging forever.
+            if (_stepBudget > 0 && ++_stepCount >= _stepBudget)
+            {
+                StallAbort(60,
+                    "the current delta did not converge within its step budget",
+                    "suspected zero-time loop or livelock, e.g. `while (!cond) wait -1;`");
+                return;
+            }
+
             var stateField = ReadField(jobObj, "state") as ReferenceRuntimeValue;
-            if (stateField == null) return false;
+            if (stateField == null) return; // not a coroutine (e.g. a channel object mis-enqueued by do_wait's generator re-drive) — drop it
             var stateBasic = ReadField(stateField, "value") as BasicRuntimeValue;
-            if (stateBasic == null) return false;
+            if (stateBasic == null) return;
 
             // pending(0) -> running(1); if not pending, skip
-            if (stateBasic.I64Value != 0) return false;
+            if (stateBasic.I64Value != 0) return;
             stateBasic.I64Value = 1;
+            _liveJobs.Add(jobObj);
+            PendingParkNote = SchedParkNote.None;
 
             var contextField = ReadField(jobObj, "context") as ReferenceRuntimeValue;
-            if (contextField == null) { stateBasic.I64Value = 3; return true; }
+            if (contextField == null) { stateBasic.I64Value = 3; JobFinished(jobObj); return; }
 
             var callFuncName = FindExternFuncName(vm, "RoutineContext", "call");
             var func = FindExternFunc(vm, callFuncName);
-            if (func == null) { stateBasic.I64Value = 3; return true; }
+            if (func == null) { stateBasic.I64Value = 3; JobFinished(jobObj); return; }
 
             var resultSym = CreateI64Result(vm);
             var args = new List<IRuntimeValue> { contextField };
+            _currentJob = jobObj;
             foreach (var brk in func(frame, resultSym, args))
             {
                 if (brk.Reason == RuntimeBreakReason.Exited)
                 {
                     _exited = true;
-                    return true;
+                    return;
                 }
             }
+            _currentJob = null;
 
             var status = resultSym.Value.As<BasicRuntimeValue>().I64Value;
             stateBasic.I64Value = status;
 
-            // Blocked (0) maps back to pending -> run again next round
-            if (status == 0)
-                EnqueuePendingJob(vm, jobObj);
+            if (status == 3 || status == 4)
+            {
+                JobFinished(jobObj);
+                return;
+            }
+            if (status == 2)
+            {
+                // Generator yielded a value: consumers parked in do_wait
+                // re-poll in the next delta (deferred kick — classic
+                // pacing; the consumer's poll re-enqueues this generator).
+                _deferredKick = true;
+                return;
+            }
 
-            return status == 3 || status == 4;
+            // status == 0: a park — filed by the consumed side-channel note.
+            var note = ConsumeParkNote();
+            if (_trace)
+                Console.Error.WriteLine($"[SIM] park job={jobObj.RefId} note={note} delta={CurrentRound}");
+            switch (note)
+            {
+                case SchedParkNote.PureYield:
+                    _runQueue.Enqueue(jobObj);
+                    break;
+                case SchedParkNote.FuturePark:
+                    _condParked.Add(jobObj);
+                    break;
+                default:
+                    _owedQueue.Enqueue(jobObj);
+                    break;
+            }
+        }
+
+        private SchedParkNote ConsumeParkNote()
+        {
+            var note = PendingParkNote;
+            PendingParkNote = SchedParkNote.None;
+            return note;
+        }
+
+        private void JobFinished(ReferenceRuntimeValue jobObj)
+        {
+            _liveJobs.Remove(jobObj);
+            // The job's timer entries are stale now (nobody will poll them).
+            for (int i = _timers.Count - 1; i >= 0; i--)
+                if (_timers[i].Waiter == jobObj)
+                    _timers.RemoveAt(i);
+            // A waiting parent's spawn future just completed — wake it in
+            // THIS delta (mt parity: completion is a same-delta kick).
+            KickFutures();
         }
 
         /// <summary>
-        /// Remove all timers whose deadline has been reached.
-        /// Returns true if any timer was fired.
+        /// Remove the timers whose deadline has been reached, waking their
+        /// waiter for the next delta. A firing with a strictly later
+        /// deadline than any before it is real clock progress — it resets
+        /// the pin streak (a same-deadline re-registration spin does not).
         /// </summary>
-        private bool FireTimers()
+        private void FireDueTimers()
         {
-            if (_timers.Count == 0) return false;
+            if (_timers.Count == 0) return;
 
-            bool fired = false;
-            for (int i = _timers.Count - 1; i >= 0; i--)
+            for (int i = 0; i < _timers.Count;)
             {
                 if (_currentTick >= _timers[i].DeadlineTick)
                 {
+                    var entry = _timers[i];
                     _timers.RemoveAt(i);
-                    fired = true;
+                    if (entry.DeadlineTick > _pinMaxDeadline)
+                    {
+                        _pinStreak = 0;
+                        _pinMaxDeadline = entry.DeadlineTick;
+                    }
+                    if (entry.Waiter != null)
+                    {
+                        // Only a condition parker can be woken; one that is
+                        // owed/runnable already will re-poll on its own.
+                        if (_condParked.Remove(entry.Waiter))
+                            _runQueue.Enqueue(entry.Waiter);
+                    }
+                    else
+                    {
+                        KickFutures();
+                    }
+                }
+                else
+                {
+                    i++;
                 }
             }
-            return fired;
         }
 
         /// <summary>

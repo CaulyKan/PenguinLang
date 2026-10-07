@@ -291,37 +291,41 @@ if (greentea mode && slot <= 512)  return gt_alloc_small(size, slot);
 else                               return <existing malloc-block path>;
 ```
 
-### 6.2 快速路径
+### 6.2 快速路径（M5 v1：每线程 arena，无锁）
+
+**M5 v1（并发调度器第 10.2 节的第一级）**：分配状态从全局单例移入**每线程
+arena**（`GtArena`，gc_internal.h——每大小类的 current span + 该线程的
+新对象隔离环 + 待冲账字节数）。快速路径只触碰调用线程自己的 arena，
+**不取任何锁**；M4b 时代的"每次分配过一遍 `gc_alloc_lock`"退役（那正是
+经典路径 +4.7% 回归里分配锁的来源）。收集器仍是**一次停世界扫全部
+arena**（清扫/校验/统计都遍历 arena 注册表）；本地/共享双域 + 移交点
+提升（§10.2-10.6 全量）是下一阶段。
 
 ```c
-static void* gt_alloc_small(int size, int slot) {
+static void* gt_alloc_small(int size, int is_string) {
     unsigned cls = gt_class_of[slot];              /* O(1) lookup table   */
-    GtSpan* s = _gt.current[cls];
-    if (!s && !(s = gt_refill_current(cls)))       /* slow path, §6.3     */
+    GtArena* a = gt_arena_thread();                /* TLS，首次注册        */
+    GtSpan* s = a->current[cls];
+    if (!s && !(s = gt_retire_refill(a, cls)))     /* slow path, §6.3     */
         return NULL;
-    for (unsigned w = s->free_index >> 6; w < GT_BITMAP_WORDS; w++) {
-        uint64_t free = ~s->alloc_bits[w];
-        if (!free) continue;
-        unsigned idx = (w << 6) + ctz64(free);
-        s->alloc_bits[w] |= 1ull << (idx & 63);
-        s->free_index = idx + 1;
-        s->live_count++;
-        _gt.heap_bytes += gt_classes[cls].slot_size;
-        GCHeader* h = gt_slot_header(s, idx);
-        h->next = NULL; h->marked = 0; h->is_string = 0; h->size = size;
-        memset(h + 1, 0, size);                    /* zeroing stays       */
-        if (_gt.heap_bytes > _gt.goal_bytes) _gt_want_collect = 1;
-        return h + 1;
-    }
-    /* current span is full: retire and retry once */
-    gt_pool_push(&_gt.full[cls], s);
-    _gt.current[cls] = NULL;
-    return gt_alloc_small(size, slot);
+    /* 位图扫描（free_index 起）：置位、冲账（arena 本地 plain 加）、
+     * 盖头、memset、goal 检查（RELAXED 原子读）、quarantine 推入
+     * （arena 本地环）。全程无共享写。 */
+    ...
 }
+
+/* 慢路径：退役耗尽的 current（进共享 full 表）+ 取新 span（共享
+ * partial → empty → 新超块），一次锁覆盖；顺带把 arena 攒的
+ * alloc_bytes 冲进全局近似计数。紧急收集在锁外（finalizer 会分配，
+ * 锁不可重入——旧代码在此埋着死锁，只因触发需要超块 malloc 失败
+ * 而从未被观察到）。 */
 ```
 
-成本：从提示位开始的一次位图扫描 + 一次 `memset`。与 v2 nursery 的
-bump 分配同阶（后者同样要 memset），只是省去了逐对象的链表追加。
+成本：从提示位开始的一次位图扫描 + 一次 `memset` + TLS 读 + 三个
+RELAXED 原子读（goal 检查）。堆字节数用**单一近似全局量**
+（`heap_bytes_total`，sweep 时精确==live，之间由各 arena 慢路径冲账，
+未冲账误差以"各 arena 当前 span 们的容量"为界）——每次分配的 goal/硬上限
+读回是一次 load，不再是注册表求和。
 
 ### 6.3 慢速路径（补充/refill）
 
@@ -704,6 +708,12 @@ maybe_nursery/super 范围）、卡表 + 脏卡扫描 + 屏障老年代目标逻
 
 ## 14. 测试与基准
 
+- **运行时 C 构建默认 `-O2`**（std/c Makefile 的 `OPT` 变量，`OPT=-O0` 可覆盖以便
+  调试运行时帧）：分配器与调度器切换是热路径，未优化构建在分配密集程序
+  （tinyriscv）上测得约 12% 的整体回退。2026-10-05 追加的两项全 N 收益也依赖
+  优化构建才有意义：x86-64 快速上下文切换（消除 swapcontext 每次切换的
+  2 次 rt_sigprocmask；N=1 tinyriscv 3.9s→2.5s）与调度器等待点的批量化
+  谓词自旋（详见设计文档 §12.1）。
 - **正确性重锤**：`EmperorPenguin/std/c/gc_torture.c`（746 行，可独立
   编译）扩展了 span 堆负载：链表周转（幼年夭折）、树重建、共享 DAG、
   容器周转（Vector/HashMap）、带存活帧的深递归、finalizer 风暴、

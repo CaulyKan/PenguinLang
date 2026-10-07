@@ -441,9 +441,16 @@ namespace BabyPenguin.SemanticPass
             }
             if (waitType.IsIntType && !operandIsCall && !operandIsPort)
             {
+                // `wait <int>` routes into _wait_ticks — the M0 runtime sign
+                // branch (mirrors the mt scheduler's _mt_wait_ticks): n < 0
+                // is a pure yield (re-queued in the current delta), n == 0
+                // the bare wait (owed the next delta, pinning the clock),
+                // n > 0 the timer condition wait. The old `_after(...)`
+                // lowering could not express any of this (a negative or zero
+                // deadline was simply a past timer).
                 var intCallExp = waitExpression.Build<FunctionCallExpression>(e =>
                 {
-                    e.FromString($"__builtin._after(cast<i64>({waitExpression.Expression.BuildText()}))", Model.Reporter);
+                    e.FromString($"__builtin._wait_ticks(cast<i64>({waitExpression.Expression.BuildText()}))", Model.Reporter);
                 });
                 waitExpression.Expression = intCallExp;
                 AddRewritedSource(codeContainer.FullName(), Tools.FormatPenguinLangSource(codeContainer.SyntaxNode!.BuildText()));
@@ -535,9 +542,20 @@ namespace BabyPenguin.SemanticPass
             });
         }
 
+        // IdentifyAsyncFunction entry memo: the call-site recursion below
+        // re-enters for every callee whose IsAsync is unknown, and without
+        // this set every re-entry re-walks the callee's whole subtree and
+        // re-resolves every call site in it — quadratic in the call graph,
+        // which turned large sources into an apparent test-run hang.
+        private readonly HashSet<IFunction> _asyncIdentifiedFunctions = new();
+
         public void IdentifyAsyncFunction(IFunction func)
         {
             if (func.FullName().Contains('?')) return;
+            // Analyze each function at most once per pass. A cycle's
+            // re-entry reads the provisional false set below — the same
+            // best-effort answer the old re-entrant full walk produced.
+            if (!_asyncIdentifiedFunctions.Add(func)) return;
 
             var isAsyncKnown = func.IsAsync != null;
 

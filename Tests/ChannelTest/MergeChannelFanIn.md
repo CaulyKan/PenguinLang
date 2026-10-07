@@ -20,7 +20,7 @@ initial {
     println("c=" + cast<string>(c));
 }
 initial {
-    wait 1 tick;
+    wait 1;
     q1.write(10);
     q2.write(20);
     q1.write(11);

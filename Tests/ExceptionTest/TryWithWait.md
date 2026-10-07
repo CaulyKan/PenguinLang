@@ -1,6 +1,6 @@
 # TryWithWait
 ## Description
-A try region stays active across a suspension: the frame blocks on `wait 2 tick`, resumes inside the try body, and an error raised after resumption is still caught by the same handler.
+A try region stays active across a suspension: the frame blocks on `wait 2`, resumes inside the try body, and an error raised after resumption is still caught by the same handler.
 
 ## Apply To
 * BabyPenguin
@@ -10,7 +10,7 @@ A try region stays active across a suspension: the frame blocks on `wait 2 tick`
 ```
 initial {
     try {
-        wait 2 tick;
+        wait 2;
         println("resumed");
         panic("late");
     } catch (e) {

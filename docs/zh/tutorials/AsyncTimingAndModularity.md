@@ -10,8 +10,8 @@ EmperorPenguin 上协程特性需要 `--enable-coroutine`（BabyPenguin 无条�
 
 ```penguin
 fun work() -> i32 {
-	wait 2 tick;
-	return 42;
+    wait 2;
+    return 42;
 }
 
 initial {
@@ -22,8 +22,8 @@ initial {
 }
 
 initial {
-	wait 1 tick;
-	println("tick 1");
+    wait 1;
+    println("tick 1");
 }
 ```
 
@@ -57,25 +57,23 @@ initial {
 
 ```penguin
 initial {
-	wait 3 tick;
-	println("c:" + cast<string>(_sim_now()));    // c:3
+    wait 3;
+    println("c:" + cast<string>(_sim_now()));    // c:3
 }
 initial {
-	wait 1 tick;
-	println("a:" + cast<string>(_sim_now()));    // a:1
+    wait 1;
+    println("a:" + cast<string>(_sim_now()));    // a:1
 }
 ```
 
-`wait n tick;`（或短形式 `wait n;`）挂起 `n` 个 tick。时长更短的先触发；时长相等按调度顺序触发。裸 `wait;` 停靠一个调度回合（一个 **delta**），不推进时钟——这是*零时间*的单位：`wait 0 tick;` 让当前时刻所有可运行作业结束后再恢复本例程。当所有例程停靠且无任何东西能唤醒任何作业时，程序到达**静默（quiescence）**并正常终止（退出码 0）。
+`wait n;` 挂起 `n` 个 tick，`n` 是任意整数表达式。时长更短的先触发；时长相等按调度顺序触发。裸 `wait;` 停靠一个调度回合（一个 **delta**），不推进时钟——这是*零时间*的单位：`wait 0;` 让当前时刻所有可运行作业结束后再恢复本例程。当所有例程停靠且无任何东西能唤醒任何作业时，程序到达**静默（quiescence）**并正常终止（退出码 0）。
 
 `wait` 接受的不只是时长：
 
 | 形式 | 唤醒条件 | 值 |
 |---|---|---|
 | `wait;` | 过一个调度回合 | — |
-| `wait 5 tick;` | 时钟推进 5 tick | — |
-| `wait a == 5;` | 条件成立（每回合重查） | — |
-| `wait change(x);` | 被观察值与进入采样不同 | 新值 |
+| `wait 5;` | 时钟推进 5 tick | — |
 | `wait ev;` | 事件发射 | 送达的载荷 |
 | `wait task;` | IFuture 完成 | 结果 |
 | `wait this.port;` | 端口送达一个事务 | 送达值 |

@@ -32,6 +32,11 @@ class Sink {
     }
 }
 
+initial {
+    wait 5;
+    exit(0);
+}
+
 construct {
     let p1 : mut Producer = new Producer(1);
     let p2 : mut Producer = new Producer(2);

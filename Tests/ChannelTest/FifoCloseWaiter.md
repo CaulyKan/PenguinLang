@@ -18,7 +18,7 @@ initial {
     }
 }
 initial {
-    wait 2 tick;
+    wait 2;
     q.close();
     println("closed");
 }

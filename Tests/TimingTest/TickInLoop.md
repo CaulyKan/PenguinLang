@@ -10,7 +10,7 @@ A for loop waits N ticks per iteration where N varies at runtime; the output seq
 ```
 initial {
     for (let i : i64 in range(0, 3)) {
-        wait (i + 1) tick;
+        wait (i + 1);
         println(cast<string>(i));
     }
 }

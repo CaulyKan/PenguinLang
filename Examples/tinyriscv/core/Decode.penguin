@@ -11,6 +11,7 @@ namespace tinyriscv {
 
     class Decode {
         impl __builtin.IReferenceType;
+        impl __builtin.ISync;
 
         input clk : i64;
         input if_in : FetchPacket;

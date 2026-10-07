@@ -8,7 +8,7 @@ An uncaught panic inside a class-body initial routine runs the program up to the
 
 ## Test Code
 ```
-class M { input x : i64 = 0; initial { println("module-start"); wait 1 tick; panic("boom"); } }
+class M { input x : i64 = 0; initial { println("module-start"); wait 1; panic("boom"); } }
 construct { let m : mut M = new M(); }
 initial { println("before"); }
 ```

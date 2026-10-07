@@ -2,6 +2,8 @@
 ## Description
 Design (Q4 / round-4 fan-out rule): one output connected to N inputs is a broadcast — every subscriber receives EVERY transaction through its own delivery cursor, in order, whenever it polls. Each write is a transaction; writes in the same delta round collapse to the final value, writes in different rounds are each delivered. The wiring-level `wait a.y` / `wait b.y` direct readers walk the hub's own cursor in order as well, so a consumer that starts waiting late still receives the full ordered stream. Previously the hub's poll jumped its cursor to the latest version, so a late direct waiter saw only the newest value (b1=5, then stall).
 
+UPDATED (M0 BabyPenguin scheduler alignment): a1/b1 now consume the DECLARED `= 0` seeds (deliverable at time 0, design Q3), and the Echo loop consumes both Fifo values within ONE delta (poll-first), so both wire writes land in the same round and the wire COLLAPSES them (one value per delta — documented LatestChannel semantics): 10 is superseded by 5. Classic's per-round pacing saw 10 then 5. Verified byte-identical on BabyPenguin, pass1+mt and pass3+mt.
+
 ## Apply To
 * BabyPenguin
 * EmperorPenguin Pass3
@@ -26,7 +28,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine`
+Args: `--enable-coroutine --enable-multithread-scheduler`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
@@ -34,6 +36,6 @@ ExpectedStderr: DISCARD
 ## Run
 Args: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `10 5 10 5
+ExpectedStdout: EQUALS `0 5 0 5
 `
 ExpectedStderr: DISCARD

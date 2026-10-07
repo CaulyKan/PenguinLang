@@ -2,7 +2,7 @@
 
 本章记录 RTL 风格的通信层——模块端口、`construct` 连线块、一等通道、广播事件与其下的调度语义（delta 回合、沉淀点、静默）——以及软件模块化层：`.penguin-lib` 共享库。词汇表刻意精简：
 
-- **`wait` 是唯一的唤醒原语。** 它接受时长（`wait 5 tick`）、条件（`wait a == 5`）、边沿（`wait change(x)`——停靠到被观察值与进入采样不同，产出新值）、事件（`let v : T = wait ev`）、future（`let v : T = wait task`）或端口（`let v : T = wait this.x`）。每个带载荷的形式都返回送达值。
+- **`wait` 是唯一的唤醒原语。** 它接受时长（`wait 5`）、事件（`let v : T = wait ev`）、future（`let v : T = wait task`）、通道（`let v : T = wait q`）或端口（`let v : T = wait this.x`）。每个带载荷的形式都返回送达值。
 - **没有 `event`/`emit`/`on` 关键字。** 广播是一等值 `Event<T>`；订阅就是 wait 循环。没有 `poll`。
 - **编译器拥有三样东西**：端口声明、`connect` 拓扑检查、调度/送达原语。每个缓冲、路由或仲裁*策略*都是库代码（实现 `ISource`/`ISink` 的通道）。
 
@@ -63,10 +63,9 @@ class Foo {
 - 端口不带 `mut` 修饰——矩阵已固定所有读写规则。
 - 默认值与初值：端口的初值是其显式默认**或载荷类型的零值**。
   - `input x : i64 = 0;` 绑定常量源（默认是*电平*，裸读可读；从不送达事务）。
-  - `output line : bool = true;`（UART 空闲电平情形）是弱可送达种子：首个 `wait line` 立即以它唤醒，真实写入取而代之。
-  - *不带*默认的输出以类型零值作为仅当前种子——裸读确定性地返回它，但 `wait port` 停靠到模块真正写入。
+  - `output line : bool = true;`——输出的默认值（显式默认或类型零值）是*电平*：裸读确定性地返回它，而 `wait port` 停靠到模块的首次真实写入（端口事务等待不交付 time-0 种子；每次真实写入取而代之）。
 - **拓扑静态检查**（`error[E_WIRING]`）：两个源连到同一输入、construct 实例化模块的无默认输入未连接、输出同时被体内代码*和* construct 线驱动，都是编译错误。*动态*实例化的模块（construct 之外的 `new`）跳过静态审计——未绑定输入在运行时优雅停靠（阻塞而非崩溃）。
-- **裸端口读**（`let v : i64 = s.out;`）是**沉淀点**：先每次停靠一个 delta 直到当前仿真时间的传播沉淀（上一调度回合无事务活动且当前回合尚安静），再采样通道*当前槽*。经典例子——`x = 2; println(f2.y)`——输出传播后的 `2` 而不是过期槽。`construct` 块内读端口是编译错误（沉淀点是挂起，construct 不得等待）。`wait port` 消费下一个事务；`wait <condition>` 每个调度回合经沉淀读重求值（`wait s.line == false` 是 Verilog `wait()` 惯用法）。`wait change(port)` 是唯一例外：它每回合采样**原始电平**、不沉淀——边沿检测必须看到单回合脉冲。*普通变量*读取是对最新赋值的普通读取（见[异步与时序模型](./09_AsyncAndTimingModel.md)）。
+- **裸端口读**（`let v : i64 = s.out;`）是**沉淀点**：先每次停靠一个 delta 直到当前仿真时间的传播沉淀（上一调度回合无事务活动且当前回合尚安静），再采样通道*当前槽*。经典例子——`x = 2; println(f2.y)`——输出传播后的 `2` 而不是过期槽。`construct` 块内读端口是编译错误（沉淀点是挂起，construct 不得等待）。`wait port` 消费下一个事务。等电平与边沿检测都是普通的事务循环：停靠到端口达到给定电平（Verilog `wait(s.line == false)` 惯用法）就消费事务直到值匹配——`let v : mut bool = wait s.line; while (v) { v = wait s.line; }`——抓边沿则每次写入消费一个 `wait port`（每次写入都是事务，连续等待看到连续写入）。*普通变量*读取是对最新赋值的普通读取（见[异步与时序模型](./09_AsyncAndTimingModel.md)）。
 
 ## connect 与 construct
 
@@ -176,5 +175,5 @@ emperor_penguin app.penguin --lib libfoo.penguin-lib -o app
 ## 终止与病态拓扑
 
 - **终止 = 所有 initial 例程结束 + 调度器静默。** 静默本身不是退出——停靠等待外部输入的服务器是设计中的合法终态——且自 LSP 运行时落地后该状态是真实的：`__builtin._fd_wait_read(fd)` / `_fd_wait_write(fd)` 把当前协程停靠在文件描述符就绪上（stdio 语言服务器的 stdin/stdout，任何非阻塞 fd）。只要有 fd 等待者停靠，调度器绝不在静默处退出——它在注册描述符上 `poll()` 阻塞，任一就绪注入下一个 delta 回合（EOF 唤醒读等待者；随后的 `_read_fd` 返回 `""`）。从不停靠在 fd 上的程序保持 v1 行为：死寂的程序就此结束。显式 `$finish` 用 `exit()`。
-- 永不为真的条件（`wait a == 99`）贡献相同的调度器回合，与停靠的通道等待者一样在静默处结束。
+- 停靠的等待者若唤醒源永不触发（无生产者的空通道、永不发射的事件），贡献相同的调度器回合，在静默处结束。
 - 零延迟振荡循环在一个仿真时间内消耗 delta 回合；调度器在回合预算后以活锁错误中止。收敛的组合环（无新事务）合法。

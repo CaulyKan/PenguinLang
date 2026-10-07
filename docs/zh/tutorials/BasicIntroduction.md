@@ -219,12 +219,12 @@ initial {
 
 ## 协程与时间
 
-`async expr` 把一个函数作为并发作业启动并返回 `IFuture<T>`；`wait` 挂起当前例程，直到 future 完成、条件成立、事件发生或时长耗尽：
+`async expr` 把一个函数作为并发作业启动并返回 `IFuture<T>`；`wait` 挂起当前例程，直到 future 完成、事件发生、通道送达或时长耗尽：
 
 ```penguin
 fun work() -> i32 {
-	wait 2 tick;
-	return 42;
+    wait 2;
+    return 42;
 }
 
 initial {
@@ -235,8 +235,8 @@ initial {
 }
 
 initial {
-	wait 1 tick;
-	println("tick 1");
+    wait 1;
+    println("tick 1");
 }
 ```
 
@@ -248,7 +248,7 @@ tick 1
 wait done 42
 ```
 
-因为 `wait 2 tick` 把 `work` 挂起在仿真时钟上，另一个例程推进到 tick 1，随后时钟推进到 tick 2、`work` 返回。PenguinLang 的调度器是协作式单线程的；所有例程共享同一个以 tick 计的离散时钟。这是编写仿真与 RTL 风格模块系统的基础——参见[异步、时序与模块](./AsyncTimingAndModularity.md)。
+因为 `wait 2` 把 `work` 挂起在仿真时钟上，另一个例程推进到 tick 1，随后时钟推进到 tick 2、`work` 返回。PenguinLang 的调度器是协作式单线程的；所有例程共享同一个以 tick 计的离散时钟。这是编写仿真与 RTL 风格模块系统的基础——参见[异步、时序与模块](./AsyncTimingAndModularity.md)。
 
 ## 接下来去哪
 

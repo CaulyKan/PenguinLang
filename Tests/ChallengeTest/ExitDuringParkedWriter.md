@@ -10,7 +10,7 @@ exit() while another routine is parked on a full backpressuring Fifo: the parked
 ```
 let q : mut __builtin.Fifo<i64> = new __builtin.Fifo<i64>(1, new __builtin.FifoPolicy.backpressure());
 initial { q.write(1); println("parked"); q.write(2); println("never"); }
-initial { wait 2 tick; println("bye"); exit(0); }
+initial { wait 2; println("bye"); exit(0); }
 ```
 
 ## Compile

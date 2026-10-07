@@ -101,6 +101,11 @@ class IRBuilder {
         this.func.add_inst(new IRInstruction.wrmbr(new IRWrmbr(obj, field_name, value, loc)));
     }
 
+    // GC_POLL instruction (loop back-edge safepoint)
+    fun emit_gc_poll(mut this, loc: SourceLocation) {
+        this.func.add_inst(new IRInstruction.gc_poll(new IRGcPoll(loc)));
+    }
+
     // BR instruction
     fun emit_br(mut this, target: IRLabel, loc: SourceLocation) {
         _utils.trace_enter("Enter emit_br");

@@ -38,6 +38,7 @@ initial {
     let a : i64 = wait e1.y;
     let b : i64 = wait e2.y;
     println(cast<string>(a + b));
+    exit(0);
 }
 ```
 

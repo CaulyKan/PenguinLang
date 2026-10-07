@@ -151,46 +151,68 @@ static const char* emperor_memmem(const char* haystack, size_t haystacklen,
 
 /* --- I/O --- */
 
+/* M4b: whole-line lock — coroutines on different threads must not
+ * interleave inside one line (flockfile would also work; a mutex keeps it
+ * portable to the SRWLOCK build). Uncontended single-threaded. */
+#if defined(EMPEROR_WIN) || defined(_WIN32)
+static SRWLOCK io_line_mutex = SRWLOCK_INIT;
+#define IO_LINE_LOCK() AcquireSRWLockExclusive(&io_line_mutex)
+#define IO_LINE_UNLOCK() ReleaseSRWLockExclusive(&io_line_mutex)
+#else
+#include <pthread.h>
+static pthread_mutex_t io_line_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define IO_LINE_LOCK() pthread_mutex_lock(&io_line_mutex)
+#define IO_LINE_UNLOCK() pthread_mutex_unlock(&io_line_mutex)
+#endif
+
 void _emperor_println(_emperor_string* s) {
+    IO_LINE_LOCK();
     if (s) {
         fwrite(s->data, 1, (size_t)s->length, stdout);
     }
     fputc('\n', stdout);
     fflush(stdout);
+    IO_LINE_UNLOCK();
 }
 
 void _emperor_print(_emperor_string* s) {
+    IO_LINE_LOCK();
     if (s) {
         fwrite(s->data, 1, (size_t)s->length, stdout);
     }
     fflush(stdout);
+    IO_LINE_UNLOCK();
 }
 
 void _emperor_eprint(_emperor_string* s) {
+    IO_LINE_LOCK();
     if (s) {
         fwrite(s->data, 1, (size_t)s->length, stderr);
     }
     fflush(stderr);
+    IO_LINE_UNLOCK();
 }
 
 void _emperor_eprintln(_emperor_string* s) {
+    IO_LINE_LOCK();
     if (s) {
         fwrite(s->data, 1, (size_t)s->length, stderr);
     }
     fputc('\n', stderr);
     fflush(stderr);
+    IO_LINE_UNLOCK();
 }
 
 void _emperor_exit(int code) {
     /* exit() inside a coroutine (initial routine / async spawn) must unwind
      * to the scheduler instead of terminating the process mid-switch: the
      * scheduler ends the program with this code after flushing its loop.
-     * _emperor_gc_on_coroutine (scheduler.c) is non-zero exactly while a
+     * _emperor_sched_am_on_coroutine() (scheduler.c) is non-zero exactly while a
      * coroutine is running; zero for plain programs → direct exit. */
     {
-        extern int _emperor_gc_on_coroutine;
+        extern int _emperor_sched_am_on_coroutine(void);
         extern void _emperor_sched_exit(int);
-        if (_emperor_gc_on_coroutine) {
+        if (_emperor_sched_am_on_coroutine()) {
             _emperor_sched_exit(code);
             return;
         }
@@ -1220,4 +1242,107 @@ _emperor_string* _emperor_StringBuilder_to_string(void* vsb) {
         if (sb->data && len) memcpy(result->data, sb->data->data, (size_t)len);
     }
     return result;
+}
+
+/* ---- Native atomics (multi-thread scheduler M1) ----
+ * The atomic cell lives OUTSIDE the GC heap (plain malloc), keyed by the
+ * i64 handle stored in the Penguin wrapper class; the wrapper's
+ * IMemoryDispose frees the cell when the GC sweeps it. C11 __atomic
+ * builtins work on both linux (clang/gcc) and windows (llvm-mingw clang),
+ * so no Interlocked path is needed. Single-threaded today (CAS loops are
+ * legal); cross-thread safety arrives with the sim-mt scheduler. */
+
+#include <stdatomic.h>
+
+int64_t _emperor_atomic_i64_new(int64_t v) {
+    int64_t* cell = (int64_t*)malloc(sizeof(int64_t));
+    EMPEROR_ASSERT(cell, "atomic cell alloc");
+    __atomic_store_n(cell, v, __ATOMIC_RELAXED);
+    return (int64_t)(intptr_t)cell;
+}
+
+void _emperor_atomic_i64_free(int64_t h) {
+    if (h) free((void*)(intptr_t)h);
+}
+
+int64_t _emperor_atomic_i64_load(int64_t h) {
+    return __atomic_load_n((int64_t*)(intptr_t)h, __ATOMIC_SEQ_CST);
+}
+
+void _emperor_atomic_i64_store(int64_t h, int64_t v) {
+    __atomic_store_n((int64_t*)(intptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+int64_t _emperor_atomic_i64_swap(int64_t h, int64_t v) {
+    return __atomic_exchange_n((int64_t*)(intptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+/* Compare-exchange: returns the ORIGINAL value (the caller observes
+ * success as original == expected — BabyPenguin Interlocked semantics). */
+int64_t _emperor_atomic_i64_cas(int64_t h, int64_t expected, int64_t v) {
+    int64_t* cell = (int64_t*)(intptr_t)h;
+    __atomic_compare_exchange_n(cell, &expected, v, 0,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return expected;
+}
+
+int64_t _emperor_atomic_i64_add(int64_t h, int64_t v) {
+    return __atomic_add_fetch((int64_t*)(intptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+uint64_t _emperor_atomic_u64_new(uint64_t v) {
+    uint64_t* cell = (uint64_t*)malloc(sizeof(uint64_t));
+    EMPEROR_ASSERT(cell, "atomic cell alloc");
+    __atomic_store_n(cell, v, __ATOMIC_RELAXED);
+    return (uint64_t)(uintptr_t)cell;
+}
+
+void _emperor_atomic_u64_free(uint64_t h) {
+    if (h) free((void*)(uintptr_t)h);
+}
+
+uint64_t _emperor_atomic_u64_load(uint64_t h) {
+    return __atomic_load_n((uint64_t*)(uintptr_t)h, __ATOMIC_SEQ_CST);
+}
+
+void _emperor_atomic_u64_store(uint64_t h, uint64_t v) {
+    __atomic_store_n((uint64_t*)(uintptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+uint64_t _emperor_atomic_u64_swap(uint64_t h, uint64_t v) {
+    return __atomic_exchange_n((uint64_t*)(uintptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+uint64_t _emperor_atomic_u64_cas(uint64_t h, uint64_t expected, uint64_t v) {
+    uint64_t* cell = (uint64_t*)(uintptr_t)h;
+    __atomic_compare_exchange_n(cell, &expected, v, 0,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return expected;
+}
+
+uint64_t _emperor_atomic_u64_add(uint64_t h, uint64_t v) {
+    return __atomic_add_fetch((uint64_t*)(uintptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+int64_t _emperor_atomic_bool_new(int8_t v) {
+    int8_t* cell = (int8_t*)malloc(sizeof(int8_t));
+    EMPEROR_ASSERT(cell, "atomic cell alloc");
+    __atomic_store_n(cell, v, __ATOMIC_RELAXED);
+    return (int64_t)(intptr_t)cell;
+}
+
+void _emperor_atomic_bool_free(int64_t h) {
+    if (h) free((void*)(intptr_t)h);
+}
+
+int8_t _emperor_atomic_bool_load(int64_t h) {
+    return __atomic_load_n((int8_t*)(intptr_t)h, __ATOMIC_SEQ_CST);
+}
+
+void _emperor_atomic_bool_store(int64_t h, int8_t v) {
+    __atomic_store_n((int8_t*)(intptr_t)h, v, __ATOMIC_SEQ_CST);
+}
+
+int8_t _emperor_atomic_bool_swap(int64_t h, int8_t v) {
+    return __atomic_exchange_n((int8_t*)(intptr_t)h, v, __ATOMIC_SEQ_CST);
 }

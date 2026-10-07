@@ -16,7 +16,7 @@ initial {
     println("after");
 }
 initial {
-    wait 5 tick;
+    wait 5;
     println("never");
 }
 ```

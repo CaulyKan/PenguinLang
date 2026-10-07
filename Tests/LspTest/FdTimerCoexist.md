@@ -23,7 +23,7 @@ initial {
 
 initial {
     let v : i64 = wait done;
-    wait 2 tick;
+    wait 2;
     __builtin._write_fd(1, "T\n");
 }
 ```

@@ -48,14 +48,13 @@ initial {
 | 形式 | 唤醒条件 | 值 |
 |---|---|---|
 | `wait;` | 过一个调度回合（一个 delta） | — |
-| `wait n;` / `wait n tick;` | 仿真时钟推进 `n` tick | — |
-| `wait <condition>;` | 条件成立（每回合重查） | — |
-| `wait change(<expr>);` | 被观察值与进入采样不同 | 新值 |
+| `wait n;` | 仿真时钟推进 `n` tick | — |
 | `wait <event>;` | 事件发射 | 送达的载荷 |
 | `wait <IFuture>;` | future 完成 | 结果 |
+| `wait <channel>;` | 通道送达事务 | 送达值 |
 | `wait <port>;` | 端口送达事务 | 送达值（见[模块化编程](./10_ModularProgramming.md)） |
 
-`wait change(x)` 在进入时采样被观察表达式的值，停靠到值变化，并产出**新**值——经典边沿检测惯用法的语法糖。对普通变量与端口读取都有效。
+操作数必须是整数（定时器）、`Event`、`IFuture`、通道或端口。bool 操作数与 `change(x)` 操作数是编译错误（`E_TYPE_MISMATCH`）——条件没有唤醒源（写条件的协程不知道谁在等它）；请改为等待 Event、通道、future 或端口事务。
 
 ## 调度模型
 
@@ -97,27 +96,27 @@ Penguin-lang 使用以 **tick** 计的离散仿真时钟。所有例程共享同
 ```
 initial {
 	println(cast<string>(_sim_now()));   // 0
-	wait 3 tick;
+	wait 3;
 	println(cast<string>(_sim_now()));   // 3
 }
 ```
 
 ### 等待时长
-`wait <n>;` 挂起例程直到仿真时钟推进 `n` tick，`<n>` 是任意整数表达式——字面量、变量（任意整数宽度；较窄整数转换到 i64 截止单位）或计算。长形式 `wait <n> tick;` 含义完全相同。时长更短的先触发；时长相等按调度顺序触发：
+`wait <n>;` 挂起例程直到仿真时钟推进 `n` tick，`<n>` 是任意整数表达式——字面量、变量（任意整数宽度；较窄整数转换到 i64 截止单位）或计算。时长更短的先触发；时长相等按调度顺序触发：
 ```
 initial {
 	wait 1;
 	println("A");
 }
 initial {
-	wait 2 tick;
+	wait 2;
 	println("B");
 }
 ```
 输出 `A` 然后 `B`。
 
 ### 零时间与沉淀
-`wait 0 tick;` 不推进仿真时间。它让调度器完成当前时刻所有可运行作业——更新赋值与传播——然后重新调度当前例程：
+`wait 0;` 不推进仿真时间。它让调度器完成当前时刻所有可运行作业——更新赋值与传播——然后重新调度当前例程：
 ```
 let a : mut i32 = 0;
 
@@ -127,7 +126,7 @@ fun set_a() {
 
 initial {
 	let f = async set_a();
-	wait 0 tick;
+	wait 0;
 	println(cast<string>(a));   // 2
 }
 ```
@@ -145,13 +144,13 @@ initial {
 端口读取遵循不同规则：裸端口读是**沉淀点**——先让当前时间的传播沉淀，再采样通道当前槽（见[模块化编程](./10_ModularProgramming.md)）。
 
 ### 静默
-当所有例程停靠、没有定时器、事件或通道能唤醒任何东西时，程序到达静默并正常终止——退出码 0。永不为真的条件是合法的终态：
+当所有例程停靠、没有定时器、事件或通道能唤醒任何东西时，程序到达静默并正常终止——退出码 0。永不唤醒的 wait 是合法的终态：
 ```
-let a : mut i32 = 0;
+let q : mut Fifo<i64> = new Fifo<i64>(1, new FifoPolicy.backpressure());
 
 initial {
 	println("start");
-	wait a == 99;			// 永久停靠；程序在静默处结束
+	let v : i64 = wait q;		// 没有生产者写入；永久停靠
 	println("never");
 }
 ```
@@ -181,21 +180,21 @@ fun	check_victory() -> victory_result {
 initial {
 	while true {
 		move_black();
-		wait 2 tick;
+		wait 2;
 	}
 }
 		
 initial {
-	wait 1 tick;
+	wait 1;
 	while true {
 		move_white();
-		wait 2 tick;
+		wait 2;
 	}
 }
 
 initial {
 	while (true) {
-		wait 1 tick;
+		wait 1;
 		let r : victory_result = check_victory();
 		if (r is victory_result.none) {
 			continue;

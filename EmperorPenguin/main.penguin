@@ -24,6 +24,9 @@ initial {
         __builtin.eprintln("  -o <output>       output base; X.penguin-lib triggers dyn-lib (lib) mode");
         __builtin.eprintln("  -v / -vv / -vvv   verbosity");
         __builtin.eprintln("  --enable-coroutine / --disable-coroutine   concurrency syntax + scheduler stdlib (default: on)");
+        __builtin.eprintln("  --enable-multithread-scheduler             load the convergence-delta scheduler (scheduler_mt.penguin) instead (default: off)");
+        __builtin.eprintln("  --enable-free-mt                            load the free-form scheduler (scheduler_free.penguin): no virtual clock, immediate components, AsyncQueue (default: off)");
+        __builtin.eprintln("  -Wconcurrency                               with the mt scheduler: per-site stealable/pinned diagnostics");
         __builtin.eprintln("  --enable-std / --disable-std               auto-load libemperorpenguin-std.penguin-lib beside the compiler (default: on)");
         __builtin.eprintln("  --enable-dl / --disable-dl                 dyn-lib build/consume (default: on)");
         __builtin.eprintln("  --lib <file.penguin-lib>                   consume a dyn-lib (repeatable; deps resolved recursively)");
@@ -159,7 +162,19 @@ initial {
     // scheduler surface entirely.
     let sched_source: mut string = "";
     if (config.coroutine_enabled) {
-        sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler.penguin");
+        // --enable-multithread-scheduler swaps the POLICY implementation
+        // (convergence-delta loop, condition waits, new exit rule); the
+        // surface (names, IFuture, channels, __sched_run) is identical, so
+        // the emitter and the wait lowering need no changes. The
+        // SourceInput name stays "scheduler.penguin" so diagnostics and
+        // libmeta naming are unaffected by which policy file is loaded.
+        if (config.free_mt_scheduler_enabled) {
+            sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler_free.penguin");
+        } else if (config.multithread_scheduler_enabled) {
+            sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler_mt.penguin");
+        } else {
+            sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler.penguin");
+        }
     }
 
     // Output layout: the emitter writes a platform-independent .ll plus a
@@ -287,6 +302,9 @@ initial {
     let mut compiler = new EmperorPenguinCompiler();
     compiler.verbose = config.verbose;
     compiler.enable_coroutine = config.coroutine_enabled;
+    compiler.enable_multithread_scheduler = config.multithread_scheduler_enabled;
+    compiler.enable_free_scheduler = config.free_mt_scheduler_enabled;
+    compiler.warn_concurrency = config.warn_concurrency;
     compiler.meta_user_inputs = user_meta_inputs;
     compiler.cli_define_keys = config.cli_define_keys;
     compiler.cli_define_values = config.cli_define_values;

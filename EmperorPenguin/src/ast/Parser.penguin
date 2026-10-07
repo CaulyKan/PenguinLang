@@ -649,6 +649,18 @@ fun _mark_ast_exported(def: Definition) {
             results.push(new Expression.new_expr(new_expr));
             } else if (this.stream.peek_type() is TokenType.Async) {
             this.stream.expect(new TokenType.Async());
+            // `async` requires a function call; a specifier keyword can never
+            // start one (it would parse into an EMPTY expression and fail
+            // with a confusing E_ASYNC_INVALID much later, at binding).
+            let bad: mut string = "";
+            if (this.stream.peek_type() is TokenType.Pure) { bad = "pure"; }
+            if (this.stream.peek_type() is TokenType.NotPure) { bad = "!pure"; }
+            if (this.stream.peek_type() is TokenType.Extern) { bad = "extern"; }
+            if (this.stream.peek_type() is TokenType.Async) { bad = "async"; }
+            if (this.stream.peek_type() is TokenType.NotAsync) { bad = "!async"; }
+            if (string_length(bad) > 0) {
+                this.report_error("E_PARSE: 'async' requires a function call; '" + bad + "' is a keyword and cannot be a callee");
+            }
             let async_inner: Expression = this.parse_expression();
             let spawn_expr: SpawnAsyncExpression = new SpawnAsyncExpression();
             spawn_expr.expression = new Option<Expression>.some(async_inner);
@@ -656,17 +668,11 @@ fun _mark_ast_exported(def: Definition) {
             } else if (this.stream.peek_type() is TokenType.Wait) {
             this.stream.expect(new TokenType.Wait());
             let wait_inner: mut Option<Expression> = new Option<Expression>.none();
-            if (!(this.stream.peek_type() is TokenType.Semicolon) && !(this.stream.peek_type() is TokenType.RParen) && !(this.stream.peek_type() is TokenType.RBrace) && !(this.stream.peek_type() is TokenType.Tick)) {
+            if (!(this.stream.peek_type() is TokenType.Semicolon) && !(this.stream.peek_type() is TokenType.RParen) && !(this.stream.peek_type() is TokenType.RBrace)) {
                 wait_inner = new Option<Expression>.some(this.parse_expression());
             }
             let wait_expr: WaitExpression = new WaitExpression();
             wait_expr.expression = wait_inner;
-            // `wait <n> tick` — timer wait; `tick` is a keyword so the expression
-            // parser stops right before it.
-            if (this.stream.peek_type() is TokenType.Tick) {
-                this.stream.advance();
-                wait_expr.is_tick_unit = true;
-            }
             return new Expression.wait_expr(wait_expr);
             } else {
                 results.push(this.parse_primaryExpression());
@@ -1040,6 +1046,7 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Sequence
         fun parse_declaration(this) -> Definition {
             let name_token: Token = this.stream.advance();
+            this.check_name_token(name_token, "a variable");
             let fd: FunctionDefinition = new FunctionDefinition(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
@@ -1057,6 +1064,7 @@ fun _mark_ast_exported(def: Definition) {
         // Classification: Sequence
         fun parse_classDeclaration(this) -> Definition {
             let name_token: Token = this.stream.advance();
+            this.check_name_token(name_token, "a field");
             let node: mut ClassFieldDefinition = new ClassFieldDefinition(name_token.text);
             node.location = this.tok_loc(name_token);
             if (this.stream.match(new TokenType.Colon())) {
@@ -2771,8 +2779,34 @@ fun _mark_ast_exported(def: Definition) {
         }
 
         // singleParameter: identifier (':' typeSpecifier)? ('=' expression)?;
+        // Keywords silently accepted as NAMES parse the definition fine but
+        // every USE site lexes as the keyword and produces an EMPTY
+        // expression — the hole behind both the `pure`-function-name and
+        // the `initial`-parameter bugs. Specifier keywords can never be
+        // identifiers; type-name keywords stay legal where call sites
+        // resolve (de-facto language — DynamicLinkTest has `fun double`).
+        fun is_reserved_name_token(this, tok: Token) -> bool {
+            if (tok.token_type is TokenType.Pure) { return true; }
+            if (tok.token_type is TokenType.NotPure) { return true; }
+            if (tok.token_type is TokenType.Extern) { return true; }
+            if (tok.token_type is TokenType.Export) { return true; }
+            if (tok.token_type is TokenType.Async) { return true; }
+            if (tok.token_type is TokenType.NotAsync) { return true; }
+            if (tok.token_type is TokenType.Initial) { return true; }
+            if (tok.token_type is TokenType.Wait) { return true; }
+            if (tok.token_type is TokenType.Tick) { return true; }
+            return false;
+        }
+
+        fun check_name_token(this, tok: Token, what: string) {
+            if (this.is_reserved_name_token(tok)) {
+                this.report_error("E_PARSE: " + what + " cannot be named '" + tok.text + "' - it is a keyword");
+            }
+        }
+
         fun parse_singleParameter(this) -> Parameter {
             let name_token: Token = this.stream.advance();
+            this.check_name_token(name_token, "a parameter");
             let node: Parameter = new Parameter(name_token.text);
             if (this.stream.match(new TokenType.Colon())) {
                 let ts = this.parse_typeSpecifier();
@@ -2861,6 +2895,25 @@ fun _mark_ast_exported(def: Definition) {
             }
             this.stream.expect(new TokenType.Fun());
             let name_token: Token = this.stream.advance();
+            // ANTLR parity: the name must be an identifier (or 'new'). A
+            // specifier keyword here (`fun pure(...)`) used to parse with the
+            // keyword's text as the name while every call site `pure(...)`
+            // lexes as the keyword token and produces an EMPTY expression —
+            // the silent hole behind AsyncSpawnAfterGlobalTouchFails.
+            // Specifier keywords (pure/!pure/extern/export/async/!async)
+            // cannot serve as a function name: every call site lexes them
+            // as the keyword and parses into an EMPTY expression (the
+            // silent hole behind the old AsyncSpawnAfterGlobalTouchFails
+            // sentinel). Type-name keywords (double, float, ...) DO parse
+            // at call sites and stay legal names — de-facto language.
+            if (name_token.token_type is TokenType.Pure
+                || name_token.token_type is TokenType.NotPure
+                || name_token.token_type is TokenType.Extern
+                || name_token.token_type is TokenType.Export
+                || name_token.token_type is TokenType.Async
+                || name_token.token_type is TokenType.NotAsync) {
+                this.report_error("E_PARSE: expected a function name after 'fun', got keyword '" + name_token.text + "'");
+            }
             node.name = name_token.text;
             node.location = this.tok_loc(name_token);
             node.source_file = name_token.location.filename;

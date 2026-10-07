@@ -122,7 +122,29 @@ public static class Program
         var bpDll = Path.Combine(repoRoot, "BabyPenguin", "bin", "Release", "net10.0", "BabyPenguin.dll");
         if (usedCompilers.Contains(CompilerKind.EmperorPenguinPass1) || usedCompilers.Contains(CompilerKind.BabyPenguin))
         {
-            if (!File.Exists(bpDll))
+            // Rebuild when any BabyPenguin source (or its data files) is newer
+            // than the DLL. A plain existence check silently kept a STALE
+            // Release around — Builtin.penguin is loaded from the assembly
+            // directory at runtime, so an old build ran the old scheduler/
+            // stdlib and the whole matrix lied about a fresh change.
+            var stale = !File.Exists(bpDll);
+            if (!stale)
+            {
+                var dllTime = File.GetLastWriteTimeUtc(bpDll);
+                foreach (var src in Directory.EnumerateFiles(Path.Combine(repoRoot, "BabyPenguin"), "*.*", SearchOption.AllDirectories))
+                {
+                    if (src.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}") ||
+                        src.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") ||
+                        src.EndsWith(".csproj.lscache"))
+                        continue;
+                    if (File.GetLastWriteTimeUtc(src) > dllTime)
+                    {
+                        stale = true;
+                        break;
+                    }
+                }
+            }
+            if (stale)
             {
                 Console.WriteLine("Building BabyPenguin (Release)...");
                 var (code, _, _) = ProcessRunner.RunSync(

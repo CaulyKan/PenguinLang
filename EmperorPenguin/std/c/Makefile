@@ -1,6 +1,9 @@
 # Cross-compilation support:
 #   CROSS=win64   → use /opt/llvm-mingw x86_64-w64-mingw32 toolchain
-#   OPT=-O2       → optimization level (appended to CFLAGS)
+#   OPT=-O0       → optimization level (default -O2: the runtime's allocator
+#                   and scheduler are hot paths — an unoptimized build costs
+#                   ~12% on allocation-heavy programs, measured on tinyriscv;
+#                   pass OPT=-O0 for debuggable runtime frames)
 #   LLVM_WIN_PREFIX=<dir> → dir containing a WINDOWS LLVM for the cross JIT:
 #       <dir>/include   (LLVM 22 headers, llvm-config.h with LLVM_ON_WIN32)
 #       <dir>/lib/libLLVM-22.dll.a  (import lib generated from libLLVM-22.dll)
@@ -39,6 +42,7 @@ ifeq ($(origin AR),default)
 endif
 
 CFLAGS ?= -I../include -g
+OPT ?= -O2
 CFLAGS += $(OPT)
 
 CXXFLAGS ?= -I../include -g -std=c++17

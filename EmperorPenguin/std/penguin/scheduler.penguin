@@ -1575,4 +1575,12 @@ namespace __builtin {
             }
         }
     }
+
+    // Settling probe (see scheduler_mt's __sched_settling): the classic
+    // scheduler delivers immediately — nothing settles beyond the one
+    // wait-0 beat the caller already did. Stub keeps esl.Clock identical
+    // across schedulers.
+    fun __sched_settling() -> i64 {
+        return 0;
+    }
 }

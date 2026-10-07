@@ -31,7 +31,7 @@ construct {
 }
 initial {
     seed.write(new E.a(1));
-    wait 3 tick;
+    wait 3;
 }
 ```
 

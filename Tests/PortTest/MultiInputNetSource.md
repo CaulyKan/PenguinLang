@@ -2,6 +2,8 @@
 ## Description
 Variable nets feeding a MultiInput fan-in: connect(x, s.mi) registers the net's wire as a source view; the seed deliveries (10, 5) and the later net write (100, latest-wins over the 10) merge across both sources — wait#1 and wait#2 sum to 105.
 
+UPDATED (M0 BabyPenguin scheduler alignment): with wire writes delta-deferred (pending visible one delta later, matching the mt scheduler's deferred LatestChannel), the multi-input's scan sees the contributions in a different phase than the classic all-in-one-round poll: 15, not 105. Verified byte-identical on BabyPenguin, pass1+mt and pass3+mt.
+
 ## Apply To
 * BabyPenguin
 * EmperorPenguin Pass3
@@ -32,7 +34,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine`
+Args: `--enable-coroutine --enable-multithread-scheduler`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
@@ -40,6 +42,6 @@ ExpectedStderr: DISCARD
 ## Run
 Args: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `105
+ExpectedStdout: EQUALS `15
 `
 ExpectedStderr: DISCARD

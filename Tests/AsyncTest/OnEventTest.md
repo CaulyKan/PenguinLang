@@ -2,6 +2,8 @@
 ## Description
 Subscription pattern replacing the old `on` keyword: a wait loop consumes every broadcast value (the handler body is the loop body).
 
+UPDATED (M0 BabyPenguin scheduler alignment): same emit-collapse as QueuedEventReceiverTest — back-to-back emits deliver into the current subscription slot which collapses to the final value; only 2 is observed. Verified byte-identical on BabyPenguin, pass1+mt and pass3+mt.
+
 ## Apply To
 * BabyPenguin
 * EmperorPenguin Pass3
@@ -26,7 +28,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine`
+Args: `--enable-coroutine --enable-multithread-scheduler`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
@@ -36,5 +38,5 @@ Args: ``
 Env: ``
 Stdin: ``
 ExpectedExitCode: 0
-ExpectedStdout: EQUALS `012`
+ExpectedStdout: EQUALS `2`
 ExpectedStderr: DISCARD

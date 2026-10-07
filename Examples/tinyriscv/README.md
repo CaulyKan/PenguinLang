@@ -130,3 +130,25 @@ so the `#fun`s can call them.
 - `EmperorPenguin/others/libpenguin-esl/smoke/smoke.penguin` — ESL library
   self-test (commit order independence, freeze/flush, arbitration, cycle
   counting; expected output in the file header).
+
+
+## Multi-core
+
+`main.penguin` instantiates N independent `RiscvCore` instances under one
+`esl.Clock` — pass the core count as the first program argument (default 1,
+clamped to 1..8):
+
+```bash
+build/bootstrap/pass3 Examples/tinyriscv/tinyriscv.penguins --enable-coroutine -o /tmp/tinyriscv
+EmperorPenguin/emperor_penguin link /tmp/tinyriscv.ll -o /tmp/tinyriscv
+/tmp/tinyriscv 4
+```
+
+Each core carries its own pipeline, bus, ROM and data RAM; core 0 owns the
+UART and runs the hello-world firmware (end convention: x26 = 1), the other
+cores run the compute firmware — a counted loop (bound preloaded at RAM
+word 2 at elaboration, 800 + 400*id iterations) leaving `5*bound` at word 0
+and a done flag at word 1. Because cores share no memory, core 0's timing
+is identical to the single-core model (48614 cycles regardless of N) and
+every checksum is deterministic. SimEnd waits for all cores' done flags,
+prints the per-core checksums, then drains the UART and exits explicitly.

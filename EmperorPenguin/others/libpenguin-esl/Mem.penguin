@@ -20,6 +20,7 @@ namespace esl {
 
     class Rom {
         impl IReferenceType;
+        impl ISync;
 
         buf: mut Vector<u32> = new Vector<u32>();
         word_count: mut u64 = 0;
@@ -71,17 +72,29 @@ namespace esl {
 
     class Ram {
         impl IReferenceType;
+        impl ISync;
+        // ISync: reads see committed words only; writes journal and land
+        // at the clock edge (do_commit) — the two-phase discipline ESL
+        // parallel evaluate requires (an immediate write would race a
+        // same-cycle fetch on another thread AND make the value
+        // evaluate-order dependent).
 
         buf: mut Vector<u32> = new Vector<u32>();
         word_count: mut u64 = 0;
+        // The journaled edge write (single per cycle: the RIB grants one
+        // write master, one access per cycle).
+        pend_en: mut bool = false;
+        pend_idx: mut u64 = 0;
+        pend_val: mut u32 = cast<u32>(0);
 
-        fun new(mut this, words: u64) {
+        fun new(mut this, clk: mut Clock, words: u64) {
             let i: mut u64 = 0;
             while (i < words) {
                 this.buf.push(cast<u32>(0));
                 i = i + 1;
             }
             this.word_count = words;
+            clk.attach(cast<IReg>(this));
         }
 
         fun word_at(this, idx: u64) -> u32 {
@@ -114,7 +127,12 @@ namespace esl {
         }
 
         fun write_word(mut this, addr: u32, w: u32) {
-            this.set_word(this.bus_word_index(addr), w);
+            // Journal: the visible array only changes at the clock edge
+            // (parallel-evaluate discipline; same-cycle reads see the old
+            // word, matching the RTL's posedge write).
+            this.pend_idx = this.bus_word_index(addr);
+            this.pend_val = w;
+            this.pend_en = true;
         }
 
         fun read_byte(this, addr: u32) -> u32 {
@@ -157,6 +175,17 @@ namespace esl {
             }
             fun bus_write(mut this, addr: u32, wdata: u32) {
                 this.write_word(addr, wdata);
+            }
+        }
+
+        // The clock edge: apply the journaled write (registration order
+        // among regs/mems is construction order — deterministic).
+        impl IReg {
+            fun do_commit(mut this) {
+                if (this.pend_en) {
+                    this.buf.set(this.pend_idx, this.pend_val);
+                    this.pend_en = false;
+                }
             }
         }
     }

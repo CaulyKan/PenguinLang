@@ -1,6 +1,6 @@
 # PortConditionWait
 ## Description
-Level-sensitive wait on a port condition (`wait s.line == false`, the Verilog wait() idiom): the condition re-evaluates every scheduler round through the bare-read slot, so the waiter wakes when the level actually changes without burning a polling process.
+The Verilog-style level wait `wait s.line == false` is REMOVED (a bool condition has no wake source; concurrency redesign M0). The migrated form consumes port TRANSACTIONS in a loop — `let v = wait s.line; while (v) { v = wait s.line; }` — parking on the channel itself, so the waiter wakes exactly when the low transaction arrives: prints `low seen`.
 
 ## Apply To
 * BabyPenguin
@@ -11,7 +11,7 @@ Level-sensitive wait on a port condition (`wait s.line == false`, the Verilog wa
 class Src {
     output line : bool = true;
     initial {
-        wait 2 tick;
+        wait 2;
         this.line.write(false);
     }
 }
@@ -21,7 +21,10 @@ construct {
 }
 
 initial {
-    wait s.line == false;
+    let v : mut bool = wait s.line;
+    while (v) {
+        v = wait s.line;
+    }
     println("low seen");
     exit(0);
 }
@@ -29,12 +32,15 @@ initial {
 
 ## Compile
 Args: `--enable-coroutine`
+Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
+Env: ``
+Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `low seen
 `

@@ -393,15 +393,6 @@ class BindExpressionsPass {
         return true;
     }
 
-    // The sampled/compared operand of `wait change(x)`: a port reads its RAW
-    // slot (no settle), anything else is the expression as-is.
-    fun wait_change_operand(mut this, watched: Expression, pai: Option<PortAccessInfo>, scope: mut BoundScope) -> Expression {
-        if (pai.is_some()) {
-            return this.mk_checked_raw_port_read(watched, pai.some.payload, scope);
-        }
-        return watched;
-    }
-
     // A wait operand's type probe: member accesses bind with port sugar
     // suppressed (a port must stay its IChannel type for the branch below).
     fun wait_probe_inner(mut this, inner: Expression, scope: mut BoundScope) -> Option<BoundExpression> {
@@ -438,48 +429,13 @@ class BindExpressionsPass {
             return this.bind_timer_wait(inner, scope);
         }
 
-        // `wait change(x)` — sample x, park while unchanged, yield the new value.
+        // `wait change(x)` REMOVED (concurrency redesign M0): same
+        // no-wake-source hole as wait <condition>.
         if (this.wait_is_change_unit(expr)) {
-            let fc: FunctionCallExpression = inner.function_call;
-            let watched: Expression = fc.arguments.at(cast<u64>(0)).some;
-            // A port operand samples the RAW slot (no settle): the idiom this
-            // sugars (`let v = x; while (x == v) { wait x; }`) watches the
-            // instantaneous level, and settle-point granularity would miss
-            // single-round pulses.
-            let pai: Option<PortAccessInfo> = this.resolve_port_access_for_base(watched, scope);
-            let watched_expr: Expression = this.wait_change_operand(watched, pai, scope);
-            // let __wait_sample = <x>;
-            let ld: mut LetDeclarationStatement = new LetDeclarationStatement();
-            ld.is_mutable = false;
-            ld.variable_name = "__wait_sample";
-            ld.initializer = new Option<Expression>.some(watched_expr);
-            ld.location = loc;
-            let stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
-            stmts.push(new Statement.let_decl(ld));
-            // while (<x> == __wait_sample) { __builtin._co_wait(); }
-            let sample_id: IdentifierExpression = new IdentifierExpression("__wait_sample");
-            let operands: mut _utils.List<Expression> = new _utils.List<Expression>();
-            operands.push(watched_expr);
-            operands.push(new Expression.identifier(sample_id));
-            let operators: mut _utils.List<BinaryOperator> = new _utils.List<BinaryOperator>();
-            operators.push(new BinaryOperator.Equal());
-            let cmp: mut BinaryExpression = new BinaryExpression();
-            cmp.operands = operands;
-            cmp.operators = operators;
-            let park_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
-            let park_es: mut ExpressionStatement = new ExpressionStatement();
-            park_es.expression = new Option<Expression>.some(this.mk_park_call());
-            park_es.location = loc;
-            park_stmts.push(new Statement.expression(park_es));
-            let we: mut WhileExpression = new WhileExpression();
-            we.condition = new Option<Expression>.some(new Expression.binary(cmp));
-            we.body = new Option<Expression>.some(this.mk_block_expr(park_stmts, new Option<Expression>.none()));
-            let ws: mut BlockExpressionStatement = new BlockExpressionStatement();
-            ws.expression = new Option<Expression>.some(new Expression.while_expr(we));
-            ws.location = loc;
-            stmts.push(new Statement.block_expr(ws));
-            // trailing <x> — the new value
-            return this.bind_expression(this.mk_block_expr(stmts, new Option<Expression>.some(watched_expr)), scope);
+            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                "wait change(x) is removed: wait on an Event, a channel, a future or a port transaction instead",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
         }
 
         // Probe the operand's type to pick the condition-loop vs future form.
@@ -490,28 +446,17 @@ class BindExpressionsPass {
         if (bound_inner.is_none()) { return new Option<BoundExpression>.none(); }
         let inner_type: BoundType = bound_inner.some.get_bound_type();
 
-        // `wait <bool>` — level-sensitive: re-evaluate every round.
+        // `wait <condition>` REMOVED (concurrency redesign M0): a bool
+        // operand has no wake source (the writer of the condition cannot
+        // know who waits on it). Wait on an Event/Future/channel/port.
         if (inner_type.kind is TypeKind.PrimitiveKind && inner_type.primitive is PrimitiveType.BoolType) {
-            let notcond: mut UnaryExpression = new UnaryExpression();
-            notcond.operator_value = new UnaryOperator.Not();
-            notcond.operand = new Option<Expression>.some(inner);
-            let park_stmts2: mut _utils.List<Statement> = new _utils.List<Statement>();
-            let park_es2: mut ExpressionStatement = new ExpressionStatement();
-            park_es2.expression = new Option<Expression>.some(this.mk_park_call());
-            park_es2.location = loc;
-            park_stmts2.push(new Statement.expression(park_es2));
-            let we2: mut WhileExpression = new WhileExpression();
-            we2.condition = new Option<Expression>.some(new Expression.unary(notcond));
-            we2.body = new Option<Expression>.some(this.mk_block_expr(park_stmts2, new Option<Expression>.none()));
-            let stmts2: mut _utils.List<Statement> = new _utils.List<Statement>();
-            let ws2: mut BlockExpressionStatement = new BlockExpressionStatement();
-            ws2.expression = new Option<Expression>.some(new Expression.while_expr(we2));
-            ws2.location = loc;
-            stmts2.push(new Statement.block_expr(ws2));
-            return this.bind_expression(this.mk_block_expr(stmts2, new Option<Expression>.none()), scope);
+            this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                "wait <condition> is removed: a boolean operand has no wake source - wait on an Event, a channel, a future or a port transaction instead",
+                new SourceLocation("", 0, 0));
+            return new Option<BoundExpression>.none();
         }
 
-        // `wait <integer>` — the short timer form: `wait n;` == `wait n tick;`.
+        // `wait <integer>` — the short timer form: `wait n;` == `wait n;`.
         // Any integer width (literal, variable, expression); the deadline unit
         // is i64 (bind_timer_wait inserts the cast).
         if (this.model.some.type_registry.is_integer(inner_type)) {
@@ -606,6 +551,11 @@ class BindExpressionsPass {
     // `wait <n> [tick]` — timer wait: __builtin._after(cast<i64>(<n>)).do_wait().
     // The operand may be any integer width (literal, variable, expression);
     // _after takes the deadline as i64, so narrower ints get an explicit cast.
+    // Under --enable-multithread-scheduler the call goes to
+    // __builtin._mt_wait_ticks instead (scheduler_mt.penguin): a runtime
+    // sign check makes negative n a PURE YIELD (no time passes, no delta
+    // boundary — _co_yield re-queues in the current delta) while n >= 0
+    // parks on the timer condition wait without pinning the clock.
     fun bind_timer_wait(mut this, inner: Expression, scope: mut BoundScope) -> Option<BoundExpression> {
         let probe: Option<BoundExpression> = this.bind_expression(inner, scope);
         if (probe.is_none()) { return new Option<BoundExpression>.none(); }
@@ -626,6 +576,16 @@ class BindExpressionsPass {
             cn.type_name = "i64";
             cn.inner = new Option<Expression>.some(inner);
             after_args.push(new Expression.cast_expr(cn));
+        }
+        if (this.model.some.enable_multithread_scheduler ||
+            this.model.some.enable_free_scheduler) {
+            // Direct call to the mt runtime branch (an async fun — its own
+            // waits park this coroutine's stack, exactly like the do_wait
+            // dispatch below). Returns the tick, like the classic form.
+            // (free-mt's _mt_wait_ticks rejects n > 0 at run time — no
+            // virtual clock exists to schedule on.)
+            let mt_call: Expression = this.mk_builtin_call("_mt_wait_ticks", after_args);
+            return this.bind_expression(mt_call, scope);
         }
         let after_call: Expression = this.mk_builtin_call("_after", after_args);
         let probe_after: Option<BoundExpression> = this.bind_expression(after_call, scope);
@@ -656,6 +616,486 @@ class BindExpressionsPass {
     // The IFuture<T> interface type a bound type implements (with its generic
     // args), or the type itself when it already IS an IFuture value. Drives
     // the cast<IFuture<T>>(x).do_wait() wait lowering.
+    // v1 freshness forms for Ownership construction (§9.2 rule 1).
+    fun ownership_arg_is_fresh(mut this, a: Expression) -> bool {
+        // Primitive literals carry no aliases by construction (values are
+        // copied; the design doc's Imm basis).
+        if (a is Expression.constant) {
+            return true;
+        }
+        if (a is Expression.string_literal) {
+            return true;
+        }
+        if (a is Expression.bool_literal) {
+            return true;
+        }
+        if (a is Expression.new_expr) {
+            return true;
+        }
+        if (a is Expression.function_call) {
+            let fc: FunctionCallExpression = a.function_call;
+            if (fc.callee.is_some()) {
+                let callee: Expression = fc.callee.some;
+                if (callee is Expression.member_access) {
+                    if (callee.member_access.member_name == "move") {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Form 3 (escape analysis, §9.2 rule 1): a LINEARLY HELD local —
+        // fresh at birth and only ever touched as a receiver until the
+        // wrap. See ownership_local_is_linear below.
+        if (a is Expression.identifier) {
+            let visited: mut _utils.List<string> = new _utils.List<string>();
+            return this.ownership_local_is_linear(a.identifier.name, visited);
+        }
+        return false;
+    }
+
+    // ============ Ownership escape analysis (§9.2 rule 1, form 3) ============
+    // `new Ownership<T>(l)` with a locally built l: accept iff l is linearly
+    // held from birth to the wrap —
+    //   * its let-initializer is itself fresh (literal / new / .move() /
+    //     another linearly-held local, cycle-guarded by name), and
+    //   * every OTHER textual use of the name in the enclosing function body
+    //     is RECEIVER-position (l.push(..), l.field) or a == / != comparison
+    //     — no argument passing, no aliasing assignment, no field/global
+    //     store, no capture by spawn/lambda/return.
+    // Receiver-position method calls are accepted as mutations of the object
+    // being transferred — the classic linear-type compromise (auditing every
+    // method for a `this`-capture is out of scope; §9.4 documents the
+    // residual hole). Any same-named let in a NESTED block disqualifies the
+    // name (shadow ambiguity — conservative).
+    fun ownership_local_is_linear(mut this, name: string, visited: mut _utils.List<string>) -> bool {
+        // Cycle guard (l1 from l2, l2 from l1).
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(visited.size())) {
+            if (visited.at(cast<u64>(vi)).some == name) {
+                return false;
+            }
+            vi = vi + 1;
+        }
+        visited.push(name);
+        if (this.model.some.current_fn_ast_body.is_none()) {
+            return false;
+        }
+        let body: Expression = this.model.some.current_fn_ast_body.some;
+        // A same-named let anywhere OTHER than the top-level statement list
+        // of the body block means shadowing — refuse the name outright.
+        if (this.ownership_body_has_shadowing_let(body, name)) {
+            return false;
+        }
+        let init: Option<Expression> = this.ownership_find_let_init(body, name);
+        if (init.is_none()) {
+            return false;
+        }
+        if (!this.ownership_arg_is_fresh_inner(init.some, visited)) {
+            return false;
+        }
+        // Audit every use outside the initializer and the wrap itself.
+        return this.ownership_uses_are_linear(body, name, init.some);
+    }
+
+    fun ownership_arg_is_fresh_inner(mut this, a: Expression, visited: mut _utils.List<string>) -> bool {
+        if (a is Expression.constant) { return true; }
+        if (a is Expression.string_literal) { return true; }
+        if (a is Expression.bool_literal) { return true; }
+        if (a is Expression.new_expr) { return true; }
+        if (a is Expression.function_call) {
+            let fc: FunctionCallExpression = a.function_call;
+            if (fc.callee.is_some()) {
+                let callee: Expression = fc.callee.some;
+                if (callee is Expression.member_access) {
+                    if (callee.member_access.member_name == "move") {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (a is Expression.identifier) {
+            return this.ownership_local_is_linear(a.identifier.name, visited);
+        }
+        return false;
+    }
+
+    // The body's top-level lets (the only binding level we trust): a let in
+    // any nested block/branch/loop with the same name = shadow ambiguity.
+    fun ownership_body_has_shadowing_let(this, body: Expression, name: string) -> bool {
+        if (!(body is Expression.code_block)) {
+            return false;
+        }
+        let cb: CodeBlockExpression = body.code_block;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cb.statements.size())) {
+            let st: Statement = cb.statements.at(cast<u64>(i)).some;
+            if (st is Statement.let_decl) {
+                if (st.let_decl.variable_name == name) {
+                    return false; // the top-level binding itself
+                }
+            }
+            if (this.ownership_stmt_declares_name(st, name)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        if (cb.trailing_expr.is_some()) {
+            return this.ownership_expr_declares_name(cb.trailing_expr.some, name);
+        }
+        return false;
+    }
+
+    fun ownership_find_let_init(this, body: Expression, name: string) -> Option<Expression> {
+        // The LAST top-level binding wins (a later `let x = ...` rebinds;
+        // the wrap textually follows it).
+        if (!(body is Expression.code_block)) {
+            return new Option<Expression>.none();
+        }
+        let cb: CodeBlockExpression = body.code_block;
+        let found: mut Option<Expression> = new Option<Expression>.none();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cb.statements.size())) {
+            let st: Statement = cb.statements.at(cast<u64>(i)).some;
+            if (st is Statement.let_decl) {
+                if (st.let_decl.variable_name == name) {
+                    found = st.let_decl.initializer;
+                }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+
+    // Nested-block let/for/try-catch binders with the same name.
+    fun ownership_stmt_declares_name(this, st: Statement, name: string) -> bool {
+        if (st is Statement.let_decl) {
+            return st.let_decl.variable_name == name;
+        }
+        if (st is Statement.for_stmt) {
+            return st.for_stmt.variable_name == name;
+        }
+        if (st is Statement.try_stmt) {
+            return st.try_stmt.catch_var_name == name;
+        }
+        if (st is Statement.if_stmt) {
+            if (st.if_stmt.then_statement.is_some() &&
+                this.ownership_stmt_declares_name(st.if_stmt.then_statement.some, name)) {
+                return true;
+            }
+            if (st.if_stmt.else_statement.is_some() &&
+                this.ownership_stmt_declares_name(st.if_stmt.else_statement.some, name)) {
+                return true;
+            }
+            return false;
+        }
+        if (st is Statement.while_stmt) {
+            return st.while_stmt.body.is_some() &&
+                this.ownership_stmt_declares_name(st.while_stmt.body.some, name);
+        }
+        if (st is Statement.block_expr) {
+            return st.block_expr.expression.is_some() &&
+                this.ownership_expr_declares_name(st.block_expr.expression.some, name);
+        }
+        return false;
+    }
+
+    fun ownership_expr_declares_name(this, e: Expression, name: string) -> bool {
+        if (e is Expression.code_block) {
+            let cb: CodeBlockExpression = e.code_block;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(cb.statements.size())) {
+                if (this.ownership_stmt_declares_name(cb.statements.at(cast<u64>(i)).some, name)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+            if (cb.trailing_expr.is_some()) {
+                return this.ownership_expr_declares_name(cb.trailing_expr.some, name);
+            }
+            return false;
+        }
+        if (e is Expression.if_expr) {
+            if (e.if_expr.then_block.is_some() &&
+                this.ownership_expr_declares_name(e.if_expr.then_block.some, name)) {
+                return true;
+            }
+            if (e.if_expr.else_block.is_some() &&
+                this.ownership_expr_declares_name(e.if_expr.else_block.some, name)) {
+                return true;
+            }
+            return false;
+        }
+        if (e is Expression.while_expr) {
+            return e.while_expr.body.is_some() &&
+                this.ownership_expr_declares_name(e.while_expr.body.some, name);
+        }
+        return false;
+    }
+
+    // The use audit: every identifier occurrence of NAME must be (a) the
+    // base of a member access, (b) an operand of an all-==/!= binary, (c)
+    // inside the let's own initializer (the freshness check covers it), or
+    // (d) an Ownership wrap argument. Everything else escapes.
+    fun ownership_uses_are_linear(mut this, body: Expression, name: string, init: Expression) -> bool {
+        return this.ownership_walk_expr_linear(body, name, init, false);
+    }
+
+    fun ownership_walk_expr_linear(mut this, e: Expression, name: string, init: Expression, recv_ok: bool) -> bool {
+        if (e is Expression.identifier) {
+            if (e.identifier.name != name) {
+                return true;
+            }
+            return recv_ok;
+        }
+        if (e is Expression.parenthesized) {
+            if (e.parenthesized.inner.is_none()) { return true; }
+            return this.ownership_walk_expr_linear(e.parenthesized.inner.some, name, init, false);
+        }
+        if (e is Expression.member_access) {
+            let base_ok: bool = e.member_access.base_expr.is_some()
+                && this.ownership_walk_expr_linear(e.member_access.base_expr.some, name, init, true);
+            return base_ok;
+        }
+        if (e is Expression.function_call) {
+            let fc: FunctionCallExpression = e.function_call;
+            if (fc.callee.is_some()) {
+                if (!this.ownership_walk_expr_linear(fc.callee.some, name, init, false)) {
+                    return false;
+                }
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fc.arguments.size())) {
+                if (!this.ownership_walk_expr_linear(fc.arguments.at(cast<u64>(i)).some, name, init, false)) {
+                    return false;
+                }
+                i = i + 1;
+            }
+            return true;
+        }
+        if (e is Expression.binary) {
+            let b: BinaryExpression = e.binary;
+            let all_eq: mut bool = true;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(b.operators.size())) {
+                let op: BinaryOperator = b.operators.at(cast<u64>(oi)).some;
+                if (!(op is BinaryOperator.Equal) && !(op is BinaryOperator.NotEqual)) {
+                    all_eq = false;
+                }
+                oi = oi + 1;
+            }
+            let bi: mut i64 = 0;
+            while (bi < cast<i64>(b.operands.size())) {
+                if (!this.ownership_walk_expr_linear(b.operands.at(cast<u64>(bi)).some, name, init, all_eq)) {
+                    return false;
+                }
+                bi = bi + 1;
+            }
+            return true;
+        }
+        if (e is Expression.unary) {
+            if (e.unary.operand.is_none()) { return true; }
+            return this.ownership_walk_expr_linear(e.unary.operand.some, name, init, false);
+        }
+        if (e is Expression.code_block) {
+            let cb: CodeBlockExpression = e.code_block;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(cb.statements.size())) {
+                if (!this.ownership_walk_stmt_linear(cb.statements.at(cast<u64>(i)).some, name, init)) {
+                    return false;
+                }
+                i = i + 1;
+            }
+            if (cb.trailing_expr.is_some()) {
+                return this.ownership_walk_expr_linear(cb.trailing_expr.some, name, init, false);
+            }
+            return true;
+        }
+        if (e is Expression.new_expr) {
+            let ne: NewExpression = e.new_expr;
+            // The wrap itself: the freshness check judged the argument.
+            if (string_find(ne.type_name, "Ownership") >= 0 &&
+                cast<i64>(ne.arguments.size()) == 1) {
+                let arg: Expression = ne.arguments.at(cast<u64>(0)).some;
+                if (arg is Expression.identifier && arg.identifier.name == name) {
+                    return true;
+                }
+            }
+            let j: mut i64 = 0;
+            while (j < cast<i64>(ne.arguments.size())) {
+                if (!this.ownership_walk_expr_linear(ne.arguments.at(cast<u64>(j)).some, name, init, false)) {
+                    return false;
+                }
+                j = j + 1;
+            }
+            return true;
+        }
+        if (e is Expression.cast_expr) {
+            if (e.cast_expr.inner.is_some()) {
+                return this.ownership_walk_expr_linear(e.cast_expr.inner.some, name, init, false);
+            }
+            return true;
+        }
+        if (e is Expression.if_expr) {
+            let ie: IfExpression = e.if_expr;
+            if (ie.condition.is_some() &&
+                !this.ownership_walk_expr_linear(ie.condition.some, name, init, false)) {
+                return false;
+            }
+            if (ie.then_block.is_some() &&
+                !this.ownership_walk_expr_linear(ie.then_block.some, name, init, false)) {
+                return false;
+            }
+            if (ie.else_block.is_some() &&
+                !this.ownership_walk_expr_linear(ie.else_block.some, name, init, false)) {
+                return false;
+            }
+            return true;
+        }
+        if (e is Expression.while_expr) {
+            let we: WhileExpression = e.while_expr;
+            if (we.condition.is_some() &&
+                !this.ownership_walk_expr_linear(we.condition.some, name, init, false)) {
+                return false;
+            }
+            if (we.body.is_some() &&
+                !this.ownership_walk_expr_linear(we.body.some, name, init, false)) {
+                return false;
+            }
+            return true;
+        }
+        if (e is Expression.spawn_async) {
+            // Any mention inside a spawn escapes by capture.
+            if (e.spawn_async.expression.is_none()) { return true; }
+            return !this.ownership_expr_mentions(e.spawn_async.expression.some, name);
+        }
+        if (e is Expression.lambda_expr) {
+            if (e.lambda_expr.body.is_none()) { return true; }
+            return !this.ownership_expr_mentions(e.lambda_expr.body.some, name);
+        }
+        // Literals, void, meta calls, try_bind, function_call_arguments,
+        // specializing_impl: no identifier surface beyond their children
+        // (conservatively re-walk the generic children where they exist).
+        return true;
+    }
+
+    fun ownership_walk_stmt_linear(mut this, st: Statement, name: string, init: Expression) -> bool {
+        if (st is Statement.expression) {
+            return st.expression.expression.is_some() &&
+                this.ownership_walk_expr_linear(st.expression.expression.some, name, init, false);
+        }
+        if (st is Statement.block_expr) {
+            return st.block_expr.expression.is_some() &&
+                this.ownership_walk_expr_linear(st.block_expr.expression.some, name, init, false);
+        }
+        if (st is Statement.assignment) {
+            // RHS mention escapes (aliasing); a TARGET that is a member of
+            // the name (l.field = ...) is a receiver use.
+            if (st.assignment.value.is_some() &&
+                !this.ownership_walk_expr_linear(st.assignment.value.some, name, init, false)) {
+                return false;
+            }
+            if (st.assignment.target.is_some() &&
+                !this.ownership_walk_expr_linear(st.assignment.target.some, name, init, true)) {
+                return false;
+            }
+            return true;
+        }
+        if (st is Statement.let_decl) {
+            // The binding's own initializer is judged by freshness; any
+            // OTHER let initialized from the name aliases it.
+            if (st.let_decl.initializer.is_none()) {
+                return true;
+            }
+            if (this.ownership_expr_is(st.let_decl.initializer.some, init)) {
+                return true;
+            }
+            return this.ownership_walk_expr_linear(st.let_decl.initializer.some, name, init, false);
+        }
+        if (st is Statement.if_stmt) {
+            if (st.if_stmt.condition.is_some() &&
+                !this.ownership_walk_expr_linear(st.if_stmt.condition.some, name, init, false)) {
+                return false;
+            }
+            if (st.if_stmt.then_statement.is_some() &&
+                !this.ownership_walk_stmt_linear(st.if_stmt.then_statement.some, name, init)) {
+                return false;
+            }
+            if (st.if_stmt.else_statement.is_some() &&
+                !this.ownership_walk_stmt_linear(st.if_stmt.else_statement.some, name, init)) {
+                return false;
+            }
+            return true;
+        }
+        if (st is Statement.while_stmt) {
+            if (st.while_stmt.condition.is_some() &&
+                !this.ownership_walk_expr_linear(st.while_stmt.condition.some, name, init, false)) {
+                return false;
+            }
+            if (st.while_stmt.body.is_some() &&
+                !this.ownership_walk_stmt_linear(st.while_stmt.body.some, name, init)) {
+                return false;
+            }
+            return true;
+        }
+        if (st is Statement.for_stmt) {
+            if (st.for_stmt.iterable.is_some() &&
+                !this.ownership_walk_expr_linear(st.for_stmt.iterable.some, name, init, false)) {
+                return false;
+            }
+            if (st.for_stmt.body.is_some() &&
+                !this.ownership_walk_stmt_linear(st.for_stmt.body.some, name, init)) {
+                return false;
+            }
+            return true;
+        }
+        if (st is Statement.return_stmt) {
+            if (st.return_stmt.value.is_some()) {
+                return this.ownership_walk_expr_linear(st.return_stmt.value.some, name, init, false);
+            }
+            return true;
+        }
+        if (st is Statement.connect_stmt) {
+            if (st.connect_stmt.source.is_some() &&
+                !this.ownership_walk_expr_linear(st.connect_stmt.source.some, name, init, false)) {
+                return false;
+            }
+            if (st.connect_stmt.sink.is_some() &&
+                !this.ownership_walk_expr_linear(st.connect_stmt.sink.some, name, init, false)) {
+                return false;
+            }
+            return true;
+        }
+        if (st is Statement.try_stmt) {
+            if (st.try_stmt.try_block.is_some() &&
+                !this.ownership_walk_stmt_linear(st.try_stmt.try_block.some, name, init)) {
+                return false;
+            }
+            if (st.try_stmt.catch_block.is_some() &&
+                !this.ownership_walk_stmt_linear(st.try_stmt.catch_block.some, name, init)) {
+                return false;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    // Pointer identity over the AST nodes (the initializer we judged).
+    fun ownership_expr_is(this, a: Expression, b: Expression) -> bool {
+        return this.ownership_expr_key(a) == this.ownership_expr_key(b);
+    }
+
+
+    fun ownership_expr_key(this, e: Expression) -> string {
+        // Reference-keyed identity is not available; the text form is
+        // sufficient to recognize the SAME let initializer walked twice
+        // (identical text in one function implies the same binding).
+        return e.build_text();
+    }
+
+    fun ownership_expr_mentions(this, e: Expression, name: string) -> bool {
+        return string_find(e.build_text(), name) >= 0;
+    }
+
     fun find_ifuture_iface_type(this, bt: BoundType) -> Option<BoundType> {
         if (bt.kind is TypeKind.InterfaceKind) {
             if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.interface_def) {
@@ -3605,6 +4045,26 @@ class BindExpressionsPass {
             let bound_base: Option<BoundExpression> = this.bind_member_base(expr.base_expr.some, base_is_port, scope);
             if (bound_base.is_some()) {
                 let base_type: BoundType = bound_base.some.get_bound_type();
+                // Ownership payload privacy (design doc §9.3): the wrapper's
+                // internal slots must not be reachable — a direct read of
+                // __payload leaks the payload without consuming the wrapper
+                // (exclusivity void); a direct write forges state. .move()
+                // is the only way out, .is_owned() the only introspection.
+                if (expr.member_name == "__payload" || expr.member_name == "__state") {
+                    let td: Option<BoundDefinition> = base_type.type_definition;
+                    if (td.is_some()) {
+                        let d: BoundDefinition = td.some;
+                        if (d is BoundDefinition.class_def) {
+                            if (d.class_def.name == "Ownership") {
+                                this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                    "Ownership internals are private: use .move() to take the payload (or .is_owned() to inspect state); direct '"
+                                    + expr.member_name + "' access would bypass the exclusivity guarantee (design doc §9)",
+                                    new SourceLocation("", 0, 0));
+                                return new Option<BoundExpression>.none();
+                            }
+                        }
+                    }
+                }
                 // E5 bare port READ: `X.p` in value position (p a declared
                 // port of X's class) is the settle-point payload read. The
                 // read matrix lets outsiders read outputs but only the owner
@@ -5772,6 +6232,25 @@ class BindExpressionsPass {
     }
 
     fun bind_new_expr(mut this, expr: NewExpression, scope: mut BoundScope) -> Option<BoundExpression> {        _utils.trace_enter("Enter bind_new_expr");
+        // Ownership construction check (design doc §9.2 rule 1, v1 subset):
+        // `new Ownership<T>(v)` requires v to be WHOLE-GRAPH FRESH — a
+        // `new` expression, or another Ownership's `.move()` result
+        // (exclusivity transferred). v1 does NOT yet accept linear-held
+        // locals (that needs an escape analysis; the restrictive form is
+        // sound — anything else could alias a global/field/parameter and
+        // the cross-thread exclusivity guarantee would be void).
+        if (string_find(expr.type_name, "Ownership") >= 0) {
+            if (cast<i64>(expr.arguments.size()) == 1) {
+                let a: Expression = expr.arguments.at(cast<u64>(0)).some;
+                let fresh: bool = this.ownership_arg_is_fresh(a);
+                if (!fresh) {
+                    this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                        "new Ownership<T>(v) requires a freshly built value: a 'new' expression, another Ownership's .move() result, or a linearly-held local (a let whose initializer is fresh and whose only uses before the wrap are receiver calls like l.push(..))"
+                        + " (the wrapped graph must have no aliases; design doc §9)",
+                        new SourceLocation("", 0, 0));
+                }
+            }
+        }
         // First, try to resolve the full type_name as a class/struct type
         let type_sym: Option<BoundSymbol> = this.resolve_type_by_name(expr.type_name, scope);
         if (type_sym.is_some()) {

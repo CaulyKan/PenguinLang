@@ -13,7 +13,7 @@ let slow : mut __builtin.Fifo<i64> = new __builtin.Fifo<i64>(8, new __builtin.Fi
 let mi : mut __builtin.MultiInput<i64> = new __builtin.MultiInput<i64>();
 initial { mi.add(cast<mut __builtin.ISource<i64>>(busy)); mi.add(cast<mut __builtin.ISource<i64>>(slow)); }
 initial { for (let i : i64 in range(0, 5)) { busy.write(i); } slow.write(99); }
-initial { wait 1 tick; let sum : mut i64 = 0; let cnt : mut i64 = 0; while (cnt < 6) { let v : i64 = wait mi; sum = sum + v; cnt = cnt + 1; } println("count=" + cast<string>(cnt) + ",sum=" + cast<string>(sum)); exit(0); }
+initial { wait 1; let sum : mut i64 = 0; let cnt : mut i64 = 0; while (cnt < 6) { let v : i64 = wait mi; sum = sum + v; cnt = cnt + 1; } println("count=" + cast<string>(cnt) + ",sum=" + cast<string>(sum)); exit(0); }
 ```
 
 ## Compile

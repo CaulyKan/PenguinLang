@@ -203,6 +203,23 @@ class IRBr {
 }
 
 // 9. BR_COND - conditional branch
+// GC safepoint poll at a LOOP BACK EDGE (M7 free-mt GC): a cheap C call
+// (one load + ret when idle) that lets a tight no-call loop reach the
+// poll-side STW escalation — without it a spinning coroutine never parks
+// and a perpetual delta can only be broken by the hard-cap valve at the
+// 8 GiB cap, not at the heap goal.
+class IRGcPoll {
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, loc: SourceLocation) {
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "GC_POLL";
+    }
+}
+
 class IRBrCond {
     cond: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
     true_name: string = "";
@@ -714,6 +731,7 @@ enum IRInstruction {
     wrmbr: IRWrmbr;
     br: IRBr;
     br_cond: IRBrCond;
+    gc_poll: IRGcPoll;
     ret: IRRet;
     ret_void: IRRetVoid;
     call: IRCall;
@@ -745,6 +763,7 @@ enum IRInstruction {
         if (this is IRInstruction.wrmbr) { return this.wrmbr.display(); }
         if (this is IRInstruction.br) { return this.br.display(); }
         if (this is IRInstruction.br_cond) { return this.br_cond.display(); }
+        if (this is IRInstruction.gc_poll) { return this.gc_poll.display(); }
         if (this is IRInstruction.ret) { return this.ret.display(); }
         if (this is IRInstruction.ret_void) { return this.ret_void.display(); }
         if (this is IRInstruction.call) { return this.call.display(); }

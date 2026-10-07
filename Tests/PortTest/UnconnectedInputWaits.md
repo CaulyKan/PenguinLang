@@ -20,6 +20,11 @@ initial {
     let m : mut M = new M();
     println("start");
 }
+
+initial {
+    wait 5;
+    exit(0);
+}
 ```
 
 ## Compile

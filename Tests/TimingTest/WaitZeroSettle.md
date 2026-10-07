@@ -14,7 +14,7 @@ async fun set_x() {
 }
 initial {
     let f = async set_x();
-    wait 0 tick;
+    wait 0;
     println(cast<string>(x));
 }
 ```

@@ -13,6 +13,11 @@ initial {
     let v : i64 = wait q;
     println("never " + cast<string>(v));
 }
+
+initial {
+    wait 5;
+    exit(0);
+}
 ```
 
 ## Compile

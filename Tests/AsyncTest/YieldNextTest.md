@@ -11,6 +11,7 @@ Call next() directly on a generator.
     initial {
         let a : Option<i32> = (test()).next();
         print(cast<string>(a.some));
+        exit(0);
     } 
     fun test() -> mut IGenerator<i32> {
         yield 1;

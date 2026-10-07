@@ -31,6 +31,7 @@ initial {
     top.write(21);
     let out : i64 = wait d2.y;
     println(cast<string>(out));
+    exit(0);
 }
 ```
 

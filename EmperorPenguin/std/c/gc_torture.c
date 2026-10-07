@@ -10,7 +10,7 @@
  *
  * Build (from EmperorPenguin/std/c):
  *   clang -I../include -g -fsanitize=address -o /tmp/gc_torture gc_torture.c gc.c gc_span.c scheduler.c
- * (scheduler.c provides _emperor_gc_main_watermark / _emperor_gc_on_coroutine;
+ * (scheduler.c provides the per-thread interop accessors;
  *  pull core_builtin.c too if the link demands it.)
  */
 #include <stdio.h>

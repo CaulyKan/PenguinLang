@@ -1,0 +1,2005 @@
+// FREE-MT scheduler stdlib — the free-form concurrency runtime, auto-loaded
+// with --enable-free-mt (see main.penguin). Same C microkernel and same
+// public surface as scheduler_mt.penguin, with the semantics of
+// docs/zh/wip/concurrent_scheduler.md §6.7/§7.3 (free-mt):
+//   - NO simulation time: there is no tick to advance and no timer table;
+//     `wait n;` with n > 0 is rejected at RUN time (use Events/futures/
+//     AsyncQueue); `wait;` / `wait 0;` park for one convergence round and
+//     negative `wait` is a pure yield, exactly as in sim-mt;
+//   - components are IMMEDIATE: Signal/Fifo/LatestChannel/Event commit and
+//     wake inline (the deferred-commit layer of sim-mt is inverted — the
+//     delta boundary has nothing to commit), so a write's effect is
+//     visible to a woken reader in the SAME convergence round;
+//   - cross-THREAD structure goes through AsyncQueue<T> (§8, free-mt's
+//     "immediate + locked" component — spinlock-guarded, ISync). The
+//     immediate Signal/Fifo/Latest/Event stay single-domain (Pass 10 pins
+//     their holders, same lattice as sim-mt);
+//   - the boundary keeps only: owed/runnable check -> non-blocking fd
+//     probe -> blocking fd poll when only fd waiters remain -> exit when
+//     every coroutine finished, otherwise hang by design (decision E).
+// For programs that use no simulation time, free-mt and sim-mt behave
+// identically (§6.7) — this file exists so services never pay for a
+// virtual clock, and so `wait n` fails loudly instead of silently
+// scheduling on a tick that never advances.
+// Worker threads (EMPEROR_THREADS=N) plug in behind the same interface;
+// decision A: started coroutines never migrate.
+namespace __builtin {
+    // --- Coroutine scheduler runtime (scheduler.c = the C microkernel) ---
+    // Stackful coroutines: initial routines and `async f()` spawns each run on
+    // their own stack; `wait` parks the current coroutine for one delta round.
+    // The scheduler POLICY (delta rounds, queues, timers, the virtual clock,
+    // fd block/probe decisions, quiescence) lives in Penguin code below
+    // (__sched_run); scheduler.c keeps only the context-switch/GC/poll
+    // machinery and exposes it through these externs.
+    extern fun _co_wait();
+    // Condition park: owed nothing; the policy/library re-queues the
+    // coroutine when its event source fires (channel delivery, timer
+    // deadline, future completion). _co_switch_in reports status 7.
+    extern fun _co_park();
+    // Yield execution only: still runnable in the CURRENT delta — the loop
+    // re-queues it immediately, no convergence, no time passes. Status 6.
+    extern fun _co_yield();
+    // Plain millisecond sleep (scheduler.c): the decision-E hang's idle
+    // sleep — silent, no CPU burn.
+    extern fun _sched_msleep(ms: i64);
+    // ---- MT execution kernel (scheduler.c, M4a) ----
+    // The delta EXECUTION engine: run queues, park filing, wake routing,
+    // the timer table and the future-waiter set all live in C; the policy
+    // loop below only drives the boundary's seven steps. Single worker in
+    // M4a — worker threads (M4b) plug in behind the same interface.
+    extern fun _co_current() -> mut __Coroutine;
+    // 0 = the delta converged (nothing runnable), 1 = exit() requested
+    // mid-delta (read the code via _sched_exit_code).
+    extern fun _mt_run_delta() -> i64;
+    extern fun _mt_runnable() -> i64;
+    extern fun _mt_owed_count() -> i64;
+    extern fun _mt_requeue_owed();
+    extern fun _mt_live_count() -> i64;
+    extern fun _mt_destroy_all();
+    // Wake routing: only a condition-parked coroutine wakes (the CAS in C
+    // makes stale/spurious wakes no-ops).
+    extern fun _mt_wake(h: mut __Coroutine);
+    // The IFuture.do_wait park, Mesa-ordered: register claims the parked
+    // state and the future-waiter slot WITHOUT parking (the poll after the
+    // claim observes a completion whose kick already ran; one after it is
+    // guaranteed to kick); the shared _mt_switch_away parks. NO-CONSUME:
+    // the entry stays linked for the whole do_wait (kicks never unlink
+    // it) — do_wait exits only through _mt_future_cancel. Unregister is
+    // kept as the manual-unfile escape hatch (debug/profiling paths).
+    extern fun _mt_future_register();
+    extern fun _mt_future_unregister();
+    // The runner-side cancel: a registered do_wait whose poll came back
+    // ready (or threw) without parking reclaims RUNNING and unlinks the
+    // phantom queue entry a racing kick may have pushed (see scheduler.c
+    // _emperor_mt_future_cancel).
+    extern fun _mt_future_cancel();
+    extern fun _mt_kick_futures();
+    // Library-level condition-wait pair (Fifo backpressure): park_begin
+    // claims the parked state FIRST (no wake can be lost after it
+    // returns), the caller registers in ITS waiter list, switch_away
+    // parks.
+    extern fun _mt_park_begin();
+    extern fun _mt_switch_away();
+    // Timer table (C-side): `_after` registers the CURRENT coroutine — it
+    // runs on the waiter's stack.
+    extern fun _mt_timer_at(deadline: i64);
+    extern fun _mt_timer_earliest() -> i64;
+    // Fire every deadline <= now, waking the waiters; returns how many.
+    extern fun _mt_fire_due(now: i64) -> i64;
+    // fd-woken handles join the run queue: fd readiness injects a delta.
+    extern fun _mt_adopt_fd_woken(n: i64);
+    // Atomic id source (library counters bumped from multiple threads).
+    extern fun _mt_next_id() -> i64;
+    // Decision-E idle round: counts toward EMPEROR_IDLE_DUMP (default 1000,
+    // 0 = off) — past the limit the C kernel dumps every live coroutine's
+    // park filing and stops with exit 63 instead of hanging silently.
+    extern fun _mt_note_idle();
+    // Opaque handle to a C coroutine (mmap'd stack + saved context). The
+    // handle points outside the GC heap, so storing it in Penguin containers
+    // is safe: a conservative scan ignores non-heap pointers.
+    class __Coroutine {
+        impl IReferenceType;
+    }
+    // Run/resume a coroutine (embeds the whole main-stack GC protocol).
+    // Status: 0 = finished (destroy it), 1 = round-parked (re-queue for the
+    // next delta round), 2 = fd-parked (it stays in the C waiter list —
+    // leave it out of every queue; _fd_poll re-queues it), 3 = exit
+    // requested (read _sched_exit_code and return it).
+    extern fun _co_switch_in(h: mut __Coroutine) -> i64;
+    extern fun _co_destroy(h: mut __Coroutine);
+    // Creation index — the coroutine's stable identity (classes have no
+    // reference equality, so the all-live registry keys on it).
+    extern fun _co_seq(h: mut __Coroutine) -> i64;
+    // Hash of one coroutine's frozen stack (quiescence fingerprint input).
+    extern fun _co_fingerprint(h: mut __Coroutine) -> u64;
+    // The spawn externs below create a coroutine and park the handle in a
+    // C-side inbox; drain it with _co_spawn_count/_co_take_spawn (FIFO).
+    extern fun _co_spawn_count() -> i64;
+    extern fun _co_take_spawn() -> mut __Coroutine;
+    extern fun _sched_exit_code() -> i64;
+    // Spawn a coroutine whose entry is a __ICoroutineEntry object (the
+    // async-spawn desugar's ctx class implements it).
+    extern fun _co_spawn_entry(entry: mut __ICoroutineEntry);
+    // Pass 10 rewrites a stealable site's spawn call to this variant: same
+    // as _co_spawn_entry plus the coroutine's stealable bit (read by the
+    // M4b distribution/stealing; unused by the single-worker kernel).
+    extern fun _co_spawn_entry_stealable(entry: mut __ICoroutineEntry);
+
+    // --- External fd event sources (scheduler.c + core_builtin.c) ---
+    // Park the current coroutine until the fd becomes readable/writable.
+    // While any fd waiter exists, the scheduler blocks in poll() at quiescence
+    // instead of exiting — fd readiness injects the next delta round (external
+    // events; a server parked on its stdin is a legitimate steady state).
+    extern fun _fd_wait_read(fd: i64);
+    extern fun _fd_wait_write(fd: i64);
+    // The poll half of the fd integration (the loop's decisions live in
+    // __sched_run below): _fd_poll(0) is a pure readiness probe, a negative
+    // timeout blocks until an event; ready waiters are staged C-side and
+    // handed back one by one via _fd_take_woken (call it exactly as many
+    // times as the returned count).
+    extern fun _fd_waiter_count() -> i64;
+    extern fun _fd_poll(timeout_ms: i64) -> i64;
+    extern fun _fd_take_woken() -> mut __Coroutine;
+    // One non-blocking read (<= 32KB): "" = EOF-after-wake or spurious EAGAIN
+    // (re-wait and retry). One non-blocking write: returns the byte count,
+    // 0 = would block (park on _fd_wait_write and retry), -1 = error.
+    extern fun _read_fd(fd: i64) -> string;
+    extern fun _write_fd(fd: i64, data: string) -> i64;
+
+    // The coroutine entry interface: __enter runs on the spawned coroutine's
+    // own stack (void return, single receiver — a stable C-side vtable call).
+    interface __ICoroutineEntry {
+        impl IReferenceType;
+        fun __enter(mut this);
+    }
+
+    #template(T: type)
+    enum FutureState {
+        not_ready;
+        ready: T;
+        finished;
+        ready_finished: T;
+    }
+
+    // A waitable value: poll probes readiness (non-consuming from the
+    // waiter's perspective — implementations decide cursor semantics).
+    // do_wait is the MT condition wait, Mesa-ordered: a ready future
+    // delivers in the CURRENT delta (fast path polls before any filing);
+    // an unready one CLAIMS the future-waiter slot FIRST and re-checks —
+    // a completion whose kick already ran (before the claim) is still
+    // observed by the poll after it, and a completion after the claim is
+    // guaranteed to kick the registered waiter. The old poll-then-file
+    // order lost exactly the wake that ran between the two (the N=4
+    // silent hang). Woken by delivery kick, timer fire or spawn
+    // completion — or spuriously — the loop re-polls.
+    //
+    // NO-CONSUME protocol (mirrors scheduler_mt.penguin): the futures
+    // registration made at entry stays linked for the WHOLE wait — kicks
+    // wake CO_COND waiters but never unlink the entry; only this
+    // coroutine's own exit paths (cancel on ready/throw) unlink it.
+    #template(T: type)
+    interface IFuture {
+        impl IReferenceType;
+        fun poll(this) -> mut FutureState<T>;
+
+        !async fun do_wait(mut this) -> T {
+            let state: mut FutureState<T> = this.poll();
+            if (state is FutureState<T>.ready_finished) {
+                __builtin._mt_kick_futures();
+                return state.ready_finished;
+            }
+            if (state is FutureState<T>.finished) {
+                return state.ready_finished;
+            }
+            __builtin._mt_future_register();
+            while (true) {
+                // The registered poll may throw (channel closed): CANCEL
+                // first — a parked-state throw would leave the coroutine
+                // filed in CO_COND with no park pending, and a later kick
+                // would phantom-queue it mid-execution — then rethrow.
+                try {
+                    state = this.poll();
+                } catch (e) {
+                    __builtin._mt_future_cancel();
+                    __throw_runtime_error(__throw_get_msg(), __throw_get_code());
+                }
+                if (state is FutureState<T>.ready_finished) {
+                    __builtin._mt_future_cancel();
+                    break;
+                }
+                if (state is FutureState<T>.finished) {
+                    __builtin._mt_future_cancel();
+                    break;
+                }
+                __builtin._mt_switch_away();
+                // Woken or spurious: loop and re-poll. The futures entry
+                // is still linked — the next kick finds us again.
+            }
+            if (state is FutureState<T>.ready_finished) {
+                __builtin._mt_kick_futures();
+            }
+            // A `finished` (already-consumed) future returns its stale payload
+            // slot — BabyPenguin returns an uninitialized default there.
+            return state.ready_finished;
+        }
+    }
+
+    // Timer future: `wait n tick` desugars to _after(n).do_wait() — the
+    // deadline is registered with the scheduler; the clock advances when the
+    // simulation is otherwise idle.
+    class _TimerWait {
+        impl IReferenceType;
+        impl ISync;
+        finished: mut bool = false;
+        result_tick: mut i64 = 0;
+
+        impl IFuture<i64> {
+            fun poll(this) -> mut FutureState<i64> {
+                if (__builtin._sim_now() >= this.result_tick) {
+                    return new FutureState<i64>.ready_finished(this.result_tick);
+                }
+                return new FutureState<i64>.not_ready();
+            }
+        }
+    }
+
+    fun _after(n: i64) -> mut _TimerWait {
+        let t: mut _TimerWait = new _TimerWait();
+        t.result_tick = __builtin._sim_now() + n;
+        __builtin._mt_timer_at(t.result_tick);
+        return t;
+    }
+
+    // MT timer registration: `_after` runs on the WAITING coroutine's stack,
+    // so the CURRENT coroutine is exactly the one to wake when the deadline
+    // passes — the C-side table stores (deadline, waiter) pairs and the
+    // delta boundary fires them directly (no per-delta polling, so timer
+    // waits never pin the clock). Entries of a finished coroutine are
+    // purged at its destroy.
+
+    // `wait <n>` under the mt scheduler (the SemanticBindExpressions
+    // lowering calls this instead of _after(n).do_wait()): the runtime sign
+    // branch the design doc's 0.3 节 defines —
+    //   n <  0 : PURE YIELD — _co_yield re-queues the coroutine in the
+    //            CURRENT delta; no time passes, no convergence, the tick is
+    //            not pinned ("wait -1;" — the magnitude is meaningless);
+    //   n >= 0 : the timer condition wait above.
+    // The wait lowering still checks the operand is an integer and coerces
+    // it to i64 before the call.
+    !async fun _mt_wait_ticks(n: i64) -> i64 {
+        if (n < 0) {
+            _co_yield();
+            return _sim_now();
+        }
+        if (n == 0) {
+            // `wait 0;` == bare `wait;` (design 0.3): a barrier at the
+            // CURRENT tick — owed the next delta, pinning the clock. The
+            // timer path cannot express it: _after(0) registers a deadline
+            // equal to now, and do_wait's poll-first fast path would find
+            // it "ready" and return in the SAME delta (a no-op, diverging
+            // from the classic scheduler, BabyPenguin and bare wait).
+            _co_wait();
+            return _sim_now();
+        }
+        // Free form: no virtual clock exists to schedule on — the wait
+        // would park forever (no timer table, no tick to advance).
+        __builtin.eprintln("free scheduler: simulation time is unavailable - `wait n` with n > 0 has no tick to wait on; wait on an Event, a future or an AsyncQueue instead");
+        __builtin.exit(3);
+        return 0;
+    }
+
+    // Generator: the iterable a `fun g() -> IGenerator<T>` returns. The
+    // compiler rewrites such a function into a synthesized ctx object
+    // implementing this interface — the body runs on its own coroutine
+    // (`yield v` publishes v and parks until the next next() call), and
+    // next() drives it (mirrors BabyPenguin's IGenerator<T>, which is an
+    // IIterator<T>; EP has no interface inheritance so IGenerator declares
+    // its own `next` and the for-in desugar accepts it structurally).
+    #template(T: type)
+    interface IGenerator {
+        impl IReferenceType;
+        fun next(mut this) -> Option<T>;
+    }
+
+    // The future behind every `async f(args)` spawn: the synthesized ctx
+    // class's __enter calls complete() with the function's result.
+    #template(R: type)
+    class __SpawnFuture {
+        impl IReferenceType;
+        impl ISync;
+        done: mut bool = false;
+        result: mut Option<R> = new Option<R>.none();
+
+        fun complete(mut this, v: R) {
+            _sync_begin();
+            this.result = new Option<R>.some(v);
+            this.done = true;
+            _sync_end();
+        }
+
+        impl IFuture<R> {
+            fun poll(this) -> mut FutureState<R> {
+                if (this.done && this.result.is_some()) {
+                    return new FutureState<R>.ready_finished(this.result.some);
+                }
+                return new FutureState<R>.not_ready();
+            }
+        }
+    }
+
+    // Unit future for void spawns: `let f = async set_x();` yields one; it
+    // cannot be waited (void has no deliverable value — BabyPenguin's
+    // IFuture<void> gap is intentionally not emulated).
+    class __SpawnUnitFuture {
+        impl IReferenceType;
+        impl ISync;
+        done: mut bool = false;
+
+        fun complete_unit(mut this) {
+            this.done = true;
+        }
+    }
+
+    // ============ Coroutine channel layer (E4 — mirrors BabyPenguin Builtin.penguin) ============
+    // Source-level compatible contract: ISource/ISink/IChannel share names
+    // and shapes with BabyPenguin. EmperorPenguin has no interface
+    // inheritance, so IChannel declares only its own methods (close/
+    // is_closed) and every concrete channel additionally implements
+    // ISource<T>, ISink<T> and IFuture<T> in separate blocks (the same class
+    // shape as BabyPenguin's channels, whose IChannel surface is inherited).
+
+    #template(T: type)
+    class _ChanNode {
+        impl IReferenceType;
+        value: T;
+        next: mut Option<_ChanNode<T>> = new Option<_ChanNode<T>>.none();
+        fun new(mut this, value: T) {
+            this.value = value;
+        }
+    }
+
+    // Linked FIFO queue (core_builtin cannot use _utils containers).
+    #template(T: type)
+    class _ChanQueue {
+        impl IReferenceType;
+        head: mut Option<_ChanNode<T>> = new Option<_ChanNode<T>>.none();
+        tail: mut Option<_ChanNode<T>> = new Option<_ChanNode<T>>.none();
+        count: mut i64 = 0;
+
+        fun new(mut this) {}
+
+        fun size(mut this) -> i64 {
+            return this.count;
+        }
+
+        fun enqueue(mut this, v: T) {
+            let node: mut _ChanNode<T> = new _ChanNode<T>(v);
+            if (this.tail.is_some()) {
+                let t: mut _ChanNode<T> = cast<mut _ChanNode<T>>(this.tail.some);
+                t.next = new Option<_ChanNode<T>>.some(node);
+                this.tail = new Option<_ChanNode<T>>.some(node);
+            } else {
+                this.head = new Option<_ChanNode<T>>.some(node);
+                this.tail = new Option<_ChanNode<T>>.some(node);
+            }
+            this.count = this.count + 1;
+        }
+
+        fun dequeue(mut this) -> Option<T> {
+            if (this.head.is_none()) {
+                return new Option<T>.none();
+            }
+            let h: _ChanNode<T> = this.head.some;
+            let v: T = h.value;
+            this.head = h.next;
+            if (this.head.is_none()) {
+                this.tail = new Option<_ChanNode<T>>.none();
+            }
+            this.count = this.count - 1;
+            return new Option<T>.some(v);
+        }
+    }
+
+    // Linked list with index access (fanout wires / subscribers / sources).
+    #template(T: type)
+    class _ChanList {
+        impl IReferenceType;
+        head: mut Option<_ChanNode<T>> = new Option<_ChanNode<T>>.none();
+        count: mut i64 = 0;
+
+        fun new(mut this) {}
+
+        fun size(mut this) -> i64 {
+            return this.count;
+        }
+
+        fun push(mut this, v: T) {
+            let node: mut _ChanNode<T> = new _ChanNode<T>(v);
+            if (this.head.is_none()) {
+                this.head = new Option<_ChanNode<T>>.some(node);
+                this.count = 1;
+                return;
+            }
+            let cur: mut _ChanNode<T> = cast<mut _ChanNode<T>>(this.head.some);
+            while (cur.next.is_some()) {
+                cur = cast<mut _ChanNode<T>>(cur.next.some);
+            }
+            cur.next = new Option<_ChanNode<T>>.some(node);
+            this.count = this.count + 1;
+        }
+
+        fun at(mut this, index: i64) -> Option<T> {
+            if (index < 0 || index >= this.count) {
+                return new Option<T>.none();
+            }
+            let cur: mut _ChanNode<T> = cast<mut _ChanNode<T>>(this.head.some);
+            let i: mut i64 = 0;
+            while (i < index) {
+                cur = cast<mut _ChanNode<T>>(cur.next.some);
+                i = i + 1;
+            }
+            return new Option<T>.some(cur.value);
+        }
+
+        fun remove_at(mut this, index: i64) {
+            if (index < 0 || index >= this.count) {
+                return;
+            }
+            if (index == 0) {
+                if (this.head.is_some()) {
+                    let h0: _ChanNode<T> = this.head.some;
+                    if (h0.next.is_some()) {
+                        let hn: mut _ChanNode<T> = cast<mut _ChanNode<T>>(h0.next.some);
+                        this.head = new Option<_ChanNode<T>>.some(hn);
+                    } else {
+                        this.head = new Option<_ChanNode<T>>.none();
+                    }
+                    this.count = this.count - 1;
+                }
+                return;
+            }
+            let prev: mut _ChanNode<T> = cast<mut _ChanNode<T>>(this.head.some);
+            let i: mut i64 = 0;
+            while (i < index - 1) {
+                prev = cast<mut _ChanNode<T>>(prev.next.some);
+                i = i + 1;
+            }
+            if (prev.next.is_some()) {
+                let target: _ChanNode<T> = prev.next.some;
+                if (target.next.is_some()) {
+                    let tn: mut _ChanNode<T> = cast<mut _ChanNode<T>>(target.next.some);
+                    prev.next = new Option<_ChanNode<T>>.some(tn);
+                } else {
+                    prev.next = new Option<_ChanNode<T>>.none();
+                }
+            }
+            this.count = this.count - 1;
+        }
+
+        // Rotate the first `k` entries to the back (MultiInput round-robin).
+        fun rotate(mut this, rotations: i64) {
+            if (this.count < 2 || rotations <= 0) {
+                return;
+            }
+            let k: mut i64 = rotations;
+            if (k > this.count) {
+                k = this.count;
+            }
+            let i: mut i64 = 0;
+            while (i < k) {
+                if (this.head.is_none()) {
+                    return;
+                }
+                let h: mut _ChanNode<T> = cast<mut _ChanNode<T>>(this.head.some);
+                if (h.next.is_some()) {
+                    let hn: mut _ChanNode<T> = cast<mut _ChanNode<T>>(h.next.some);
+                    this.head = new Option<_ChanNode<T>>.some(hn);
+                } else {
+                    this.head = new Option<_ChanNode<T>>.none();
+                }
+                h.next = new Option<_ChanNode<T>>.none();
+                if (this.head.is_none()) {
+                    this.head = new Option<_ChanNode<T>>.some(h);
+                    return;
+                }
+                let cur: mut _ChanNode<T> = cast<mut _ChanNode<T>>(this.head.some);
+                while (cur.next.is_some()) {
+                    cur = cast<mut _ChanNode<T>>(cur.next.some);
+                }
+                cur.next = new Option<_ChanNode<T>>.some(h);
+                i = i + 1;
+            }
+        }
+
+        // Iterator surface (for-in desugar is method-shaped): iter()/iter_mut()
+        // grant a cursor over the linked nodes.
+        fun iter(mut this) -> _ChanListIterator<T> {
+            let it: mut _ChanListIterator<T> = new _ChanListIterator<T>(this);
+            return it;
+        }
+
+        fun iter_mut(mut this) -> mut _ChanListIterator<T> {
+            let it: mut _ChanListIterator<T> = new _ChanListIterator<T>(this);
+            return it;
+        }
+    }
+
+    // Cursor over a _ChanList's linked nodes (MultiInput source iteration,
+    // `for (let src in mi.iter())`).
+    #template(T: type)
+    class _ChanListIterator {
+        impl IReferenceType;
+        cur: mut Option<_ChanNode<T>> = new Option<_ChanNode<T>>.none();
+
+        fun new(mut this, list: mut _ChanList<T>) {
+            this.cur = list.head;
+        }
+
+        fun next(mut this) -> Option<T> {
+            if (this.cur.is_none()) {
+                return new Option<T>.none();
+            }
+            let n: _ChanNode<T> = this.cur.some;
+            this.cur = n.next;
+            return new Option<T>.some(n.value);
+        }
+
+        fun iter(this) -> _ChanListIterator<T> {
+            return this;
+        }
+    }
+
+    // ============ Scheduler policy layer (the delta-round loop) ============
+    // Everything that defines the language's concurrency model — delta
+    // rounds, park/resume discipline, virtual-time advance, fd event
+    // injection, quiescence detection — runs as ordinary Penguin code here,
+    // mirroring BabyPenguin's SimScheduler (the reference implementation).
+    // scheduler.c keeps only the context-switch/GC/poll microkernel (see the
+    // externs above); main() calls the C symbol _emperor_sched_run, which
+    // trampolines into __sched_run below.
+
+    // Simulation clock / delta counter. The activity counter and
+    // round-quiet tracking of the classic scheduler are RETIRED here: the
+    // convergence rule ("a delta ends when nothing is runnable") is the
+    // precise version of the old activity gate, and exit no longer guesses
+    // (all-coroutines-done only). The functions stay as no-ops/reads for
+    // source compatibility with code ported from the classic scheduler.
+    let _sim_now_tick: mut i64 = 0;
+    let _sim_round: mut i64 = 0;
+    let _sim_activity_count: mut i64 = 0;
+    let _round_start_activity: mut i64 = 0;
+    let _last_round_quiet: mut bool = false;
+
+    fun _sim_now() -> i64 {
+        return _sim_now_tick;
+    }
+
+    fun _sim_delta() -> i64 {
+        return _sim_round;
+    }
+
+    fun _sim_activity() {
+        // Retired (see above): deliveries no longer gate the clock — the
+        // runnable check at the delta boundary is the gate.
+    }
+
+    fun _sim_settled() -> bool {
+        return false;
+    }
+
+    // ---- The policy layer is THIN (M4a): the C execution kernel owns the
+    // queues, wake routing, timer table and future-waiter set (see the
+    // externs above). What remains here is the boundary's seven steps and
+    // the clock. Worker threads (M4b) plug into _mt_run_delta behind the
+    // same interface — this loop does not change. ----
+
+    // ============ Signal<T>: the deferred-commit component (M6) ============
+    // The design doc's determinism subset in its first real form (§6.4/§8):
+    // write() parks the value NEXT TO the signal; read() always returns the
+    // last COMMITTED value; the delta boundary commits every pending write
+    // in REGISTRATION order (deterministic) and wakes the parked waiters —
+    // so a delta's writes are order-independent by construction ("延迟是
+    // 构件的属性"). One delta of write->read latency, exactly the hardware
+    // "one register stage per clock" model.
+    //
+    // v1 contract: SINGLE-WRITER (multi-writer merge rules are the design
+    // doc's open question 3 — last-writer-wins would be write-order
+    // dependent). NOT ISync: a Signal and its endpoints live in one domain
+    // (Pass 10 treats it as unshareable — coroutines holding one pin).
+    #template(T: type)
+    class Signal {
+        impl IReferenceType;
+        impl ISync;
+
+        // All fields assign in the constructor: mixing a bare generic field
+        // (`committed: T;`) with defaulted siblings trips an emitter gap (the
+        // generic zero-literal splices as EMPTY text -> invalid IR). Bare
+        // everywhere + ctor assignment avoids the path entirely.
+        committed: T;
+        pending: mut Option<T>;
+        // Set at each commit; poll consumes the freshness.
+        fresh: mut bool;
+        in_registry: mut bool;
+        // Registry identity (classes carry no reference equality).
+        sid: i64;
+
+        // NOTE: the parameter cannot be named `initial` — it is a grammar
+        // keyword (initial blocks) and silently parses into empty
+        // expressions (same keyword-as-identifier hole as the `pure` fix).
+        fun new(mut this, init_value: T) {
+            this.committed = init_value;
+            this.pending = new Option<T>.none();
+            this.fresh = false;
+            this.in_registry = false;
+            this.sid = _mt_next_id();
+        }
+
+        fun read(this) -> T {
+            return this.committed;
+        }
+
+        fun write(mut this, v: T) {
+            // Free form: commit INLINE and kick the parked waiters now —
+            // readers observe the write in the SAME convergence round (the
+            // deferred registry path is sim-mt's; it stays below, unused).
+            _sync_begin();
+            this.commit();
+            _sync_end();
+            _mt_kick_futures();
+        }
+
+        fun commit(mut this) {
+            this.in_registry = false;
+            if (this.pending.is_some()) {
+                this.committed = this.pending.some;
+                this.pending = new Option<T>.none();
+                this.fresh = true;
+            }
+        }
+
+        // `wait sig` — FIRST-OBSERVER semantics: poll consumes the
+        // freshness, so the value of the latest UNOBSERVED commit is
+        // delivered (immediately if one is pending, else at the next
+        // boundary's commit + wake). A clocked process
+        // (`while (running) { let v = wait sig; ... }`) therefore observes
+        // exactly one value per edge — its own poll consumed the previous
+        // one. Per-waiter edge capture needs waiter state the generic
+        // IFuture surface cannot carry; that refinement is a later step.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut Signal<T> = cast<mut Signal<T>>(this);
+                if (self.fresh) {
+                    self.fresh = false;
+                    return new FutureState<T>.ready_finished(self.committed);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+
+        // Registry view (any T): the boundary commits through this.
+        impl ISignalCarrier {
+            fun commit_now(mut this) {
+                this.commit();
+            }
+            fun carrier_id(this) -> i64 {
+                return this.sid;
+            }
+            fun is_in_registry(this) -> bool {
+                return this.in_registry;
+            }
+            fun set_in_registry(mut this, v: bool) {
+                this.in_registry = v;
+            }
+        }
+    }
+
+    // Non-generic registry view of a Signal<T> (Penguin has no existentials).
+    interface ISignalCarrier {
+        impl IReferenceType;
+        fun commit_now(mut this);
+        fun carrier_id(this) -> i64;
+        fun is_in_registry(this) -> bool;
+        fun set_in_registry(mut this, v: bool);
+    }
+
+    // Pending-write registry: written on write(), drained at the boundary in
+    // registration order. A signal already registered keeps its slot (single
+    // writer ⇒ at most one pending write).
+    let _sched_signals: mut _ChanList<ISignalCarrier> = new _ChanList<ISignalCarrier>();
+
+    fun __sched_signal_register(c: mut ISignalCarrier) {
+        if (c.is_in_registry()) { return; }
+        c.set_in_registry(true);
+        _sync_begin();
+        _sched_signals.push(c);
+        _sync_end();
+    }
+
+    // ---- Deferred Fifo flush (§8.3) ----
+    // Non-generic registry view; the boundary flushes each registered
+    // channel's pending queue into its committed queue (write order), then
+    // kicks the future waiters (parked readers wake in the next delta at
+    // the same tick).
+    interface IFifoCarrier {
+        impl IReferenceType;
+        fun flush_now(mut this);
+        fun carrier_id(this) -> i64;
+        fun is_in_registry(this) -> bool;
+        fun set_in_registry(mut this, v: bool);
+    }
+
+    let _sched_fifos: mut _ChanList<IFifoCarrier> = new _ChanList<IFifoCarrier>();
+
+    fun __sched_fifo_register(c: mut IFifoCarrier) {
+        if (c.is_in_registry()) { return; }
+        c.set_in_registry(true);
+        _sync_begin();
+        _sched_fifos.push(c);
+        _sync_end();
+    }
+
+    // ---- Deferred LatestChannel commit (§8.2 wire row) ----
+    interface ILatestCarrier {
+        impl IReferenceType;
+        fun commit_now(mut this);
+        fun carrier_id(this) -> i64;
+        fun is_in_registry(this) -> bool;
+        fun set_in_registry(mut this, v: bool);
+    }
+
+    let _sched_latests: mut _ChanList<ILatestCarrier> = new _ChanList<ILatestCarrier>();
+
+    fun __sched_latest_register(c: mut ILatestCarrier) {
+        if (c.is_in_registry()) { return; }
+        c.set_in_registry(true);
+        _sync_begin();
+        _sched_latests.push(c);
+        _sync_end();
+    }
+
+    // Event's deferred wake flag (emit stores deliveries; the boundary's
+    // kick makes them observable next delta).
+    let _sched_deferred_kick: mut bool = false;
+
+    // ---- Component cross-thread lock (ISync claim's substance) ----
+    // The immediate components' mutable surfaces (slots, subscriber lists,
+    // spawn-future results) are written by their endpoints' threads; the
+    // ISync markers claim cross-thread safety and THIS lock is that
+    // claim's substance: test-and-set, never held across a park.
+    // Single-thread gate: at one thread the swap can never contend, and
+    // each hold would burn a full yield round trip — skip the protocol.
+    extern fun _mt_nthreads() -> i64;
+
+    let _sched_sync: mut AtomicBool = new AtomicBool(false);
+
+    extern fun _mt_sync_depth_add(d: i64);
+
+    fun _sync_begin() {
+        if (_mt_nthreads() < 2) { return; }
+        while (_sched_sync.swap(true)) {
+            _co_yield();
+        }
+        _mt_sync_depth_add(1);
+    }
+
+    fun _sync_end() {
+        if (_mt_nthreads() < 2) { return; }
+        _mt_sync_depth_add(-1);
+        _sched_sync.store(false);
+    }
+
+    fun __sched_commit_latests() {
+        let committed_any: mut bool = false;
+        while (_sched_latests.size() > 0) {
+            let c: mut ILatestCarrier = cast<mut ILatestCarrier>(_sched_latests.at(0).some);
+            _sched_latests.remove_at(0);
+            c.commit_now();
+            committed_any = true;
+        }
+        if (committed_any) {
+            _sched_deferred_kick = true;
+        }
+    }
+
+    fun __sched_flush_fifos() {
+        let flushed_any: mut bool = false;
+        while (_sched_fifos.size() > 0) {
+            let f: mut IFifoCarrier = cast<mut IFifoCarrier>(_sched_fifos.at(0).some);
+            _sched_fifos.remove_at(0);
+            f.flush_now();
+            flushed_any = true;
+        }
+        if (flushed_any) {
+            _mt_kick_futures();
+        }
+    }
+
+    // Boundary step 1: commit every pending write in registration order
+    // (deterministic), then wake the parked waiters — they re-poll and see
+    // the fresh committed values in the NEXT delta at the SAME tick.
+    // Settling probe for two-phase clocks (esl.Clock): > 0 while the
+    // current tick still has work in flight — deferred commits pending
+    // (signal/fifo/wire registries, the deferred kick) or any OTHER
+    // coroutine still queued (a woken module that has not run its
+    // evaluate yet). esl.Clock settles `while (__sched_settling() > 0)
+    // wait 0;` before commit_all, so request-response wire chains of any
+    // depth complete within the cycle. Single-thread-safe for ESL: module
+    // processes hold unshareable refs (Events/wires/regs), so Pass 10
+    // pins them to one domain — the queued check cannot miss a coroutine
+    // that is mid-flight on another thread (there is none).
+    fun __sched_settling() -> i64 {
+        // glock FIRST (see scheduler_mt's ordering note): the registry
+        // sizes must be read only after the acquire edge.
+        let n: mut i64 = _mt_runnable();
+        n += cast<i64>(_sched_signals.size());
+        n += cast<i64>(_sched_fifos.size());
+        n += cast<i64>(_sched_latests.size());
+        if (_sched_deferred_kick) { n += 1; }
+        return n;
+    }
+
+    fun __sched_commit_signals() {
+        let committed_any: mut bool = false;
+        while (_sched_signals.size() > 0) {
+            let s: mut ISignalCarrier = cast<mut ISignalCarrier>(_sched_signals.at(0).some);
+            _sched_signals.remove_at(0);
+            s.commit_now();
+            committed_any = true;
+        }
+        if (committed_any) {
+            _mt_kick_futures();
+        }
+    }
+
+    // The MT convergence-delta scheduler loop (main calls it directly as
+    // __builtin___sched_run). One delta tick = one convergence phase run by
+    // the C kernel; the boundary then runs the seven fixed steps of the
+    // design doc (§0.2, docs/zh/wip/concurrent_scheduler.md):
+    //   1. (deferred-commit slot: empty in this version)
+    //   2. fire due timers (deadline <= now) -> wakes their waiters;
+    //   3. anyone runnable (woken waiters, or delta-owed bare-wait parkers
+    //      — the owed list is what PINS the clock: time cannot jump past a
+    //      pending delta request) -> next delta at the SAME tick;
+    //   4. non-blocking fd probe -> woken -> next delta;
+    //   5. future timer pending -> advance the tick to its deadline -> the
+    //      next pass fires it (step 2);
+    //   6. only fd waiters remain -> blocking poll (external input is a
+    //      legitimate steady state, never an exit);
+    //   7. every coroutine finished -> exit; otherwise HANG by design
+    //      (decision E: a parked coroutine with no wake source is not
+    //      distinguished from productive waiting).
+    fun __sched_run() -> i64 {
+        let exit_code: mut i64 = 0;
+        let running: mut bool = true;
+        while (running) {
+            // A new convergence round begins (numbered from 1 — the counter
+            // feeds only the diagnostics and the C-side step budget).
+            _sim_round = _sim_round + 1;
+
+            // ---- ROUND: the C kernel runs to convergence (or exit). ----
+            let r: i64 = _mt_run_delta();
+            if (r == 1) {
+                exit_code = _sched_exit_code();
+                break;
+            }
+
+            // ---- BOUNDARY (free form, §6.7: sim-mt's seven steps minus
+            // the virtual clock): nothing to commit (components are
+            // immediate), no timers to fire or advance. ----
+            // Step 3: owed bare-wait parkers, or anyone an inline wake made
+            // runnable -> next round.
+            if (_mt_owed_count() > 0) {
+                _mt_requeue_owed();
+                continue;
+            }
+            if (_mt_runnable() > 0) {
+                continue;
+            }
+
+            // Step 4: non-blocking fd probe — external events are never
+            // starved.
+            let woken: i64 = _fd_poll(0);
+            if (woken > 0) {
+                _mt_adopt_fd_woken(woken);
+                continue;
+            }
+
+            // Step 6: only fd waiters remain — block for external input
+            // (a server parked on its stdin is a legitimate steady state).
+            if (_fd_waiter_count() > 0) {
+                let woken2: i64 = _fd_poll(-1);
+                _mt_adopt_fd_woken(woken2);
+                continue;
+            }
+
+            // Step 7: every coroutine finished -> exit. Coroutines still
+            // parked with no wake source: HANG (decision E) — a real sleep
+            // keeps the hang silent and free of CPU burn.
+            if (_mt_live_count() == 0) {
+                break;
+            }
+            _mt_note_idle();
+            _sched_msleep(10);
+        }
+
+        // Free every remaining coroutine stack (process is about to exit
+        // or main continues without the scheduler) — parked ones included.
+        _mt_destroy_all();
+        return exit_code;
+    }
+
+    // Sequential-fallback helper (no-ucontext/no-fibers platforms): C's
+    // _co_wait calls this to time-travel the clock to the earliest pending
+    // timer deadline so timer waits still terminate. Never called on
+    // real-switch platforms.
+    fun __sim_time_travel() {
+        let d: i64 = _mt_timer_earliest();
+        if (d > _sim_now_tick) {
+            _sim_now_tick = d;
+            _mt_fire_due(d);
+        }
+    }
+
+    enum FifoPolicy {
+        backpressure;
+        drop;
+
+        fun is_backpressure(this) -> bool {
+            return this is FifoPolicy.backpressure;
+        }
+
+        fun is_drop(this) -> bool {
+            return this is FifoPolicy.drop;
+        }
+    }
+
+    #template(T: type)
+    interface ISource {
+        impl IReferenceType;
+        // Non-blocking probe: take one pending transaction, or none.
+        fun try_poll(mut this) -> Option<T>;
+        // Latest delivered slot, without consuming (none when never written).
+        fun current(this) -> Option<T>;
+    }
+
+    #template(T: type)
+    interface ISink {
+        impl IReferenceType;
+        // Deliver a transaction. On a full backpressuring channel this
+        // suspends until a slot frees up (Go-channel semantics).
+        fun write(mut this, v: T);
+        // Non-blocking escape hatch: false when the channel was full.
+        fun try_write(mut this, v: T) -> bool;
+    }
+
+    // EP has no interface inheritance, so IChannel declares only its own
+    // methods (close/is_closed); every concrete channel additionally
+    // implements ISource<T>, ISink<T> and IFuture<T> in separate blocks (the
+    // same class shape as BabyPenguin's channels, whose IChannel surface is
+    // inherited). Port fields are typed `mut IChannel<T>`; method calls on
+    // them that belong to the source/sink surface (write/try_write/current/
+    // try_poll) are rewritten by the compiler to an explicit interface cast
+    // (same-named methods in two impl blocks of one class are not
+    // expressible in EP, so the surface cannot live on IChannel itself).
+    #template(T: type)
+    interface IChannel {
+        impl IReferenceType;
+        fun close(mut this);
+        fun is_closed(this) -> bool;
+    }
+
+    fun _channel_closed_error() {
+        __throw_runtime_error("channel closed", 100);
+    }
+
+    #template(T: type)
+    class Fifo {
+        impl IReferenceType;
+        impl ISync;
+
+        // DEFERRED COMMIT (design doc §8.1/§8.3): writes land in `pending`
+        // and become visible only when the delta boundary flushes them into
+        // `queue` (in write order — in-domain use is single-threaded, so
+        // the order is deterministic; Fifo is unshareable, all endpoints
+        // pin to one domain). Reads (`wait ch` / try_poll / current) see
+        // only committed values.
+        queue: mut _ChanQueue<T>;
+        pending: mut _ChanQueue<T>;
+        capacity: i64 = 0;
+        policy: FifoPolicy = new FifoPolicy.backpressure();
+        closed: mut bool = false;
+        latest: mut Option<T> = new Option<T>.none();
+        // Backpressure writers parked on "channel not full" — woken (all of
+        // them, list cleared) whenever a take frees a slot; spurious wakes
+        // are absorbed by the write loop's re-check.
+        writers: mut _ChanList<__Coroutine> = new _ChanList<__Coroutine>();
+        in_registry: mut bool = false;
+        fid: i64 = 0;
+
+        fun new(mut this, capacity: i64, policy: mut FifoPolicy) {
+            this.queue = new _ChanQueue<T>();
+            this.pending = new _ChanQueue<T>();
+            this.capacity = capacity;
+            this.policy = policy;
+            this.in_registry = false;
+            this.fid = _mt_next_id();
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun is_full(mut this) -> bool {
+            // Capacity judges the COMMITTED + PENDING count at write time:
+            // the backpressure park is the arbitration (design doc §8.3 —
+            // in-domain write order is deterministic, so no identity
+            // tie-break is needed in v1).
+            return this.queue.size() + this.pending.size() >= this.capacity;
+        }
+
+        fun wake_writers(mut this) {
+            _sync_begin();
+            while (this.writers.size() > 0) {
+                let h: mut __Coroutine = cast<mut __Coroutine>(this.writers.at(0).some);
+                this.writers.remove_at(0);
+                _mt_wake(h);
+            }
+            _sync_end();
+        }
+
+        fun deliver(mut this, v: T) {
+            // Free form: land the value in the committed queue directly and
+            // wake the parked readers now (same convergence round).
+            _sync_begin();
+            this.queue.enqueue(v);
+            this.latest = new Option<T>.some(v);
+            _sync_end();
+            _mt_kick_futures();
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                self.check_closed();
+                if (self.policy.is_drop()) {
+                    // Drop policy: a full channel silently discards the new value.
+                    if (!self.is_full()) {
+                        self.deliver(v);
+                    }
+                    return;
+                }
+                // Backpressure as a CONDITION wait: park without being owed a
+                // delta (bare `wait;` would pin the tick — design doc 0.3),
+                // woken by a take freeing a slot; every wakeup re-checks
+                // close. Same-round resumption once the reader drains.
+                // The fullness CHECK is inside the lock: outside it, a take
+                // could free a slot and wake_writers find this writer not
+                // yet registered — the wake is lost and the writer sleeps
+                // forever (the R2 lost-wake window).
+                while (true) {
+                    _sync_begin();
+                    if (!self.is_full()) {
+                        _sync_end();
+                        break;
+                    }
+                    _mt_park_begin();
+                    self.writers.push(_co_current());
+                    _sync_end();
+                    _mt_switch_away();
+                    self.check_closed();
+                }
+                self.deliver(v);
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                self.check_closed();
+                if (self.is_full()) {
+                    return false;
+                }
+                self.deliver(v);
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                self.check_closed();
+                _sync_begin();
+                let v: Option<T> = self.queue.dequeue();
+                _sync_end();
+                if (v.is_some()) {
+                    // A slot freed: backpressured writers may resume.
+                    self.wake_writers();
+                }
+                return v;
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: Fifo<T> = cast<Fifo<T>>(this);
+                return self.latest;
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                self.closed = true;
+                // Wake everyone parked on this channel so their re-check
+                // observes the close (writers re-check explicitly; readers
+                // re-poll and hit check_closed).
+                self.wake_writers();
+                _mt_kick_futures();
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: Fifo<T> = cast<Fifo<T>>(this);
+                return self.closed;
+            }
+        }
+
+        // `wait fifo` — the next COMMITTED transaction, in commit order.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                self.check_closed();
+                _sync_begin();
+                let v: Option<T> = self.queue.dequeue();
+                _sync_end();
+                if (v.is_some()) {
+                    self.wake_writers();
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+
+        // Boundary flush: pending -> committed (write order), wake readers.
+        fun flush(mut this) {
+            while (this.pending.size() > 0) {
+                this.queue.enqueue(this.pending.dequeue().some);
+            }
+        }
+
+        impl IFifoCarrier {
+            fun flush_now(mut this) {
+                this.in_registry = false;
+                this.flush();
+            }
+            fun carrier_id(this) -> i64 {
+                return this.fid;
+            }
+            fun is_in_registry(this) -> bool {
+                return this.in_registry;
+            }
+            fun set_in_registry(mut this, v: bool) {
+                this.in_registry = v;
+            }
+        }
+    }
+
+    // Wire / diagnostic channel: transaction-stream semantics with an
+    // independent delivery cursor. Writes in the SAME delta round collapse
+    // to the final value (a wire settles to one value per delta), while
+    // writes in different rounds are each delivered, in order, to every
+    // consumer whenever it polls — a late consumer never loses
+    // transactions. A connect-time seed value is delivered at most once and
+    // only while no real write has ever happened: any write supersedes it.
+    // `current()` reads the latest delivered value (or the seed) without
+    // consuming.
+    #template(T: type)
+    class LatestChannel {
+        impl IReferenceType;
+        impl ISync;
+        cid: i64;
+
+        // Committed transactions from earlier rounds (consumed entries
+        // dequeue off the front).
+        committed: mut _ChanQueue<T> = new _ChanQueue<T>();
+        // The current round's write; same-round writes replace it while it
+        // is still unconsumed. Flushed to `committed` when a later round
+        // writes (FIFO order across rounds).
+        pending: mut Option<T> = new Option<T>.none();
+        pending_round: mut i64 = -1;
+        ever_written: mut bool = false;
+        last_value: mut Option<T> = new Option<T>.none();
+        // Connect-time initial value: weak one-shot delivery, superseded by
+        // any real transaction. Only wires granted by subscribe() /
+        // connect_wire mark the seed deliverable (time-0 first-wait
+        // wake-up); elsewhere the seed serves current() bare reads only.
+        seed: mut Option<T> = new Option<T>.none();
+        seed_taken: mut bool = false;
+        seed_deliver: mut bool = false;
+        closed: mut bool = false;
+        in_registry: mut bool = false;
+
+        fun new(mut this) {
+            this.cid = _mt_next_id();
+        }
+
+        fun set_seed(mut this, v: T, deliver: bool) {
+            this.seed = new Option<T>.some(v);
+            this.seed_deliver = deliver;
+        }
+
+        // Whether current() reflects a REAL transaction or a DECLARED
+        // deliverable seed (variable nets, `output p = v`) — as opposed to a
+        // synthesized type-zero seed that only backs bare reads. subscribe()
+        // consults this to decide whether a newly granted wire should wake
+        // its subscriber at time 0: a module that has not written anything
+        // must not deliver its payload zero as a transaction.
+        fun has_live_value(this) -> bool {
+            return this.ever_written || this.seed_deliver;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun push(mut this, v: T) {
+            // Free form: the transaction commits inline — no delta rounds
+            // exist to collapse across. Writers are still single-domain
+            // (Pass 10), so arrival order remains the write order.
+            _sync_begin();
+            this.committed.enqueue(v);
+            this.ever_written = true;
+            this.last_value = new Option<T>.some(v);
+            _sync_end();
+            _mt_kick_futures();
+        }
+
+        // Advance the cursor: oldest undelivered COMMITTED transaction,
+        // else the one-shot seed (only before any real write), else none.
+        // The pending write is DEFERRED: it becomes a transaction only at
+        // the delta boundary (commit_now) — a wire settles to one value per
+        // delta and readers observe it the next delta at the same tick.
+        fun take(mut this) -> Option<T> {
+            let head: Option<T> = this.committed.dequeue();
+            if (head.is_some()) {
+                return head;
+            }
+            if (!this.ever_written && this.seed.is_some() && !this.seed_taken && this.seed_deliver) {
+                this.seed_taken = true;
+                return this.seed;
+            }
+            return new Option<T>.none();
+        }
+
+        // Boundary commit: the delta's collapsed pending write becomes a
+        // real transaction; readers (woken by the boundary kick) observe it
+        // in the next delta at the same tick.
+        fun commit_pending(mut this) {
+            this.in_registry = false;
+            if (this.pending.is_some()) {
+                this.committed.enqueue(this.pending.some);
+                this.pending = new Option<T>.none();
+            }
+        }
+
+        impl ILatestCarrier {
+            fun commit_now(mut this) {
+                this.commit_pending();
+            }
+            fun carrier_id(this) -> i64 {
+                return this.cid;
+            }
+            fun is_in_registry(this) -> bool {
+                return this.in_registry;
+            }
+            fun set_in_registry(mut this, v: bool) {
+                this.in_registry = v;
+            }
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                self.check_closed();
+                // Deferred: push registers for the boundary commit; the
+                // boundary's deferred kick wakes the parked readers.
+                self.push(v);
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                self.check_closed();
+                self.push(v);
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                self.check_closed();
+                return self.take();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: LatestChannel<T> = cast<LatestChannel<T>>(this);
+                if (self.last_value.is_some()) {
+                    return self.last_value;
+                }
+                return self.seed;
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: LatestChannel<T> = cast<LatestChannel<T>>(this);
+                return self.closed;
+            }
+        }
+
+        // v1 waiters share this channel's single cursor (competing
+        // consumers, like any standalone channel). Broadcast fan-out with
+        // per-consumer cursors is what an output port's subscribe() wires
+        // and Event.connect_wire() grant.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                self.check_closed();
+                let v: Option<T> = self.take();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Two-source merge (fan-in): transactions arrive in arrival order across
+    // both sources. Source-only in v1 (writes go to the channels it merges).
+    #template(T: type)
+    class MergeChannel {
+        impl IReferenceType;
+        impl ISync;
+
+        a: mut ISource<T>;
+        b: mut ISource<T>;
+        closed: mut bool = false;
+
+        fun new(mut this, a: mut ISource<T>, b: mut ISource<T>) {
+            this.a = a;
+            this.b = b;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun poll_once(mut this) -> Option<T> {
+            let va: Option<T> = this.a.try_poll();
+            if (va.is_some()) {
+                return va;
+            }
+            return this.b.try_poll();
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut MergeChannel<T> = cast<mut MergeChannel<T>>(this);
+                self.check_closed();
+                return self.poll_once();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: MergeChannel<T> = cast<MergeChannel<T>>(this);
+                return self.a.current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut MergeChannel<T> = cast<mut MergeChannel<T>>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: MergeChannel<T> = cast<MergeChannel<T>>(this);
+                return self.closed;
+            }
+        }
+
+        // `wait merge` — the next transaction across either source.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut MergeChannel<T> = cast<mut MergeChannel<T>>(this);
+                self.check_closed();
+                let v: Option<T> = self.poll_once();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Permanently idle source: the placeholder behind an unconnected input
+    // port without a default. Polls never deliver (wait parks — the routine
+    // contributes identical rounds and ends at quiescence, per the "unbound
+    // input wait blocks, it does not crash" rule), current() is none, and
+    // writes are rejected.
+    #template(T: type)
+    class _NeverSource {
+        impl IReferenceType;
+        impl ISync;
+
+        fun new(mut this) {}
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                return false;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Late-binding relay: the object behind a passed-through input port
+    // (connect(this.x, inner.x)). The class construct wires inner.x to this
+    // view BEFORE the enclosing instance's own input is connected from the
+    // outside; every poll/current/close re-reads the upstream FIELD, so the
+    // real source is picked up whenever the outer connect binds it.
+    // (EP adaptation: IChannel carries only close/is_closed — source/sink-
+    // surface calls on the upstream field go through explicit interface casts.)
+    #template(T: type)
+    class _LateSource {
+        impl IReferenceType;
+        impl ISync;
+
+        upstream: mut IChannel<T> = new _NeverSource<T>();
+
+        fun new(mut this) {}
+
+        // The outer connect calls this with the real source (wire/channel).
+        fun bind(mut this, src: mut IChannel<T>) {
+            this.upstream = src;
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut _LateSource<T> = cast<mut _LateSource<T>>(this);
+                return cast<mut ISource<T>>(self.upstream).try_poll();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: _LateSource<T> = cast<_LateSource<T>>(this);
+                return cast<ISource<T>>(self.upstream).current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut _LateSource<T> = cast<mut _LateSource<T>>(this);
+                self.upstream.close();
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: _LateSource<T> = cast<_LateSource<T>>(this);
+                return self.upstream.is_closed();
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut _LateSource<T> = cast<mut _LateSource<T>>(this);
+                return cast<mut IFuture<T>>(self.upstream).poll();
+            }
+        }
+    }
+
+    // Constant payload source: an input port's default when left unconnected.
+    // current() always yields the constant; it never delivers a transaction
+    // (wait parks forever — the port is unconnected) and writes are invalid.
+    #template(T: type)
+    class ConstantSource {
+        impl IReferenceType;
+        impl ISync;
+
+        value: T;
+        closed: mut bool = false;
+
+        fun new(mut this, value: T) {
+            this.value = value;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                _channel_closed_error();
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                _channel_closed_error();
+                return false;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                return new Option<T>.none();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: ConstantSource<T> = cast<ConstantSource<T>>(this);
+                return new Option<T>.some(self.value);
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut ConstantSource<T> = cast<mut ConstantSource<T>>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: ConstantSource<T> = cast<ConstantSource<T>>(this);
+                return self.closed;
+            }
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Output-port fanout hub: the module's single driver writes here; every
+    // connected input gets its OWN wire via subscribe() (independent delivery
+    // cursors — each subscriber receives every transaction in order), while
+    // the hub's own slot stream serves direct `wait out_port` /
+    // `out_port.try_poll()` readers at the wiring level (one shared cursor,
+    // competing consumers). The declared default / type zero value lives in
+    // the slot as a weak seed: bare reads before any write return it, and
+    // subscribe() seeds new wires from it (time-0 first-wait wake-up).
+    #template(T: type)
+    class _Fanout {
+        impl IReferenceType;
+        impl ISync;
+
+        wires: mut _ChanList<LatestChannel<T>> = new _ChanList<LatestChannel<T>>();
+        slot: mut LatestChannel<T> = new LatestChannel<T>();
+        closed: mut bool = false;
+
+        fun new(mut this) {}
+
+        // The hub slot's seed: an EXPLICIT declared default (`output p = v`)
+        // is a weak deliverable transaction (time-0 first-wait wake-up,
+        // superseded by any real write); a synthesized type-zero seed only
+        // backs current() bare reads — direct `wait port` parks until the
+        // module actually writes.
+        fun set_seed(mut this, v: T, deliver: bool) {
+            this.slot.set_seed(v, deliver);
+        }
+
+        fun subscribe(mut this) -> mut LatestChannel<T> {
+            let w: mut LatestChannel<T> = new LatestChannel<T>();
+            // Connect-time seeding: a REAL past transaction or a DECLARED
+            // default (a variable net's current value, an output port's
+            // `= v` default) becomes the new wire's DELIVERABLE seed — the
+            // subscriber's first `wait` wakes immediately at time 0 (Q3),
+            // and any real write supersedes it. A synthesized type-zero
+            // seed backs current() bare reads ONLY: delivering it would
+            // wake every subscriber with a garbage empty transaction at
+            // time 0 (e.g. an idle StdioStream echoing "" before its first
+            // chunk arrives).
+            let cur: Option<T> = this.slot.current();
+            if (cur.is_some()) {
+                w.set_seed(cur.some, this.slot.has_live_value());
+            }
+            this.wires.push(w);
+            return w;
+        }
+
+        fun check_closed(mut this) {
+            if (this.closed) {
+                _channel_closed_error();
+            }
+        }
+
+        fun write_all(mut this, v: T) {
+            this.slot.push(v);
+            let wi: mut i64 = 0;
+            while (wi < this.wires.size()) {
+                let w: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this.wires.at(wi).some);
+                w.write(v);
+                wi = wi + 1;
+            }
+            // The hub slot itself is directly waitable (`wait out_port`).
+            _mt_kick_futures();
+        }
+
+        impl ISink<T> {
+            fun write(this: mut ISink<T>, v: T) {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                self.write_all(v);
+            }
+
+            fun try_write(this: mut ISink<T>, v: T) -> bool {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                self.write_all(v);
+                return true;
+            }
+        }
+
+        impl ISource<T> {
+            fun try_poll(this: mut ISource<T>) -> Option<T> {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                return self.slot.take();
+            }
+
+            fun current(this: ISource<T>) -> Option<T> {
+                let self: _Fanout<T> = cast<_Fanout<T>>(this);
+                return self.slot.current();
+            }
+        }
+
+        impl IChannel<T> {
+            fun close(this: mut IChannel<T>) {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.closed = true;
+            }
+
+            fun is_closed(this: IChannel<T>) -> bool {
+                let self: _Fanout<T> = cast<_Fanout<T>>(this);
+                return self.closed;
+            }
+        }
+
+        // Directly waitable: consumes the hub's own slot stream (single
+        // shared cursor for wiring-level readers). Module-to-module wiring
+        // goes through subscribe(), which grants each input an independent
+        // cursor.
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut _Fanout<T> = cast<mut _Fanout<T>>(this);
+                self.check_closed();
+                let v: Option<T> = self.slot.take();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Dynamic fan-in: a port-like object accepting N connects. `wait mi`
+    // returns the next transaction across ANY connected source — the scan
+    // starts where the previous one stopped (rotating), so a busy source
+    // cannot starve the others.
+    #template(T: type)
+    class MultiInput {
+        impl IReferenceType;
+        impl ISync;
+
+        sources: mut _ChanList<ISource<T>> = new _ChanList<ISource<T>>();
+
+        fun new(mut this) {}
+
+        // Register a source view (the connect desugaring calls this).
+        fun add(mut this, source: mut ISource<T>) {
+            this.sources.push(source);
+        }
+
+        fun size(mut this) -> u64 {
+            return cast<u64>(this.sources.size());
+        }
+
+        // Non-blocking probe across every registered source, round-robin:
+        // after a hit, the producing source and everything skipped this
+        // round move to the back, so a busy source cannot starve the rest.
+        fun try_poll_any(mut this) -> Option<T> {
+            let n: i64 = this.sources.size();
+            if (n == 0) {
+                return new Option<T>.none();
+            }
+            let skipped: mut i64 = 0;
+            let i: mut i64 = 0;
+            while (i < n) {
+                let s: mut ISource<T> = cast<mut ISource<T>>(this.sources.at(i).some);
+                let v: Option<T> = s.try_poll();
+                if (v.is_some()) {
+                    this.sources.rotate(skipped + 1);
+                    return v;
+                }
+                skipped = skipped + 1;
+                i = i + 1;
+            }
+            return new Option<T>.none();
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut MultiInput<T> = cast<mut MultiInput<T>>(this);
+                let v: Option<T> = self.try_poll_any();
+                if (v.is_some()) {
+                    return new FutureState<T>.ready_finished(v.some);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+
+        // `for (let src : mut ISource<T> in mi.iter())` — iterate the
+        // registered source views.
+        fun iter(mut this) -> _ChanListIterator<ISource<T>> {
+            return this.sources.iter();
+        }
+
+        fun iter_mut(mut this) -> mut _ChanListIterator<ISource<T>> {
+            return this.sources.iter_mut();
+        }
+    }
+
+    // ============ Event (anonymous broadcast) ============
+    // First-class broadcast hub replacing the old event/emit/on keywords. An
+    // event is an ordinary value: store it in a global, a class field or a
+    // local, pass it to free functions, emit from anywhere. Any number of
+    // waiters may park on one event and every emit reaches ALL of them —
+    // each `wait ev` parks on its own one-slot subscription created by the
+    // compiler's wait rewrite (the constructor subscribes). Values emitted
+    // while nobody is waiting are lost (broadcast, not queueing — use Fifo
+    // for store-and-forward), and two emits before a waiter re-parks
+    // collapse to the last value, like a wire.
+    #template(T: type)
+    class _EventSubscription {
+        impl IReferenceType;
+        impl ISync;
+
+        // Identity for unsubscribe (no reference-equality operator on classes).
+        sid: i64 = 0;
+        ev: mut Event<T>;
+        value: mut Option<T> = new Option<T>.none();
+
+        fun new(mut this, ev: mut Event<T>) {
+            this.sid = _event_sub_next_id();
+            this.ev = ev;
+            ev.subscribe(this);
+        }
+
+        fun deliver(mut this, v: T) {
+            this.value = new Option<T>.some(v);
+        }
+
+        impl IFuture<T> {
+            fun poll(this: IFuture<T>) -> mut FutureState<T> {
+                let self: mut _EventSubscription<T> = cast<mut _EventSubscription<T>>(this);
+                if (self.value.is_some()) {
+                    let v: T = self.value.some;
+                    self.value = new Option<T>.none();
+                    self.ev.unsubscribe(self.sid);
+                    return new FutureState<T>.ready_finished(v);
+                }
+                return new FutureState<T>.not_ready();
+            }
+        }
+    }
+
+    // Atomic (scheduler.c): coroutines on different threads may subscribe
+    // concurrently — the plain global counter would race.
+    fun _event_sub_next_id() -> i64 {
+        return _mt_next_id();
+    }
+
+    #template(T: type)
+    class Event {
+        impl IReferenceType;
+        impl ISync;
+
+        subscribers: mut _ChanList<_EventSubscription<T>> = new _ChanList<_EventSubscription<T>>();
+        // Wires granted to connected input ports (connect(ev, f.x)): unlike
+        // a parked wait's one-shot subscription, a wire stays registered and
+        // its own delivery cursor governs when the consumer sees a value.
+        wires: mut _ChanList<LatestChannel<T>> = new _ChanList<LatestChannel<T>>();
+
+        fun new(mut this) {}
+
+        fun emit(mut this, v: T) {
+            _sync_begin();
+            let i: mut i64 = 0;
+            while (i < this.subscribers.size()) {
+                let s: mut _EventSubscription<T> = cast<mut _EventSubscription<T>>(this.subscribers.at(i).some);
+                s.deliver(v);
+                i = i + 1;
+            }
+            _sync_end();
+            let w: mut i64 = 0;
+            while (w < this.wires.size()) {
+                let ch: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this.wires.at(w).some);
+                ch.write(v);
+                w = w + 1;
+            }
+            // Free form: the deliveries are observable NOW — kick the
+            // parked waiters immediately (same convergence round).
+            _mt_kick_futures();
+        }
+
+        fun subscribe(mut this, s: mut _EventSubscription<T>) {
+            _sync_begin();
+            this.subscribers.push(s);
+            _sync_end();
+        }
+
+        // The connect desugaring calls this: one fresh wire per connected
+        // input (fan-out with independent cursors, like an output hub).
+        fun connect_wire(mut this) -> mut LatestChannel<T> {
+            let w: mut LatestChannel<T> = new LatestChannel<T>();
+            this.wires.push(w);
+            return w;
+        }
+
+        fun unsubscribe(mut this, sid: i64) {
+            let i: mut i64 = 0;
+            while (i < this.subscribers.size()) {
+                let cur: Option<_EventSubscription<T>> = this.subscribers.at(i);
+                if (cur.is_some()) {
+                    if (cur.some.sid == sid) {
+                        this.subscribers.remove_at(i);
+                        return;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+
+    // ============ AsyncQueue<T>: the free-form cross-thread pipe (§8) ============
+    // free-mt's "immediate + locked" component: an unbounded MPMC queue
+    // guarded by a spinlock (AtomicBool test-and-set; contention backs off
+    // with a pure yield — the lock is NEVER held across a park). Takers
+    // that find the queue empty park as CONDITION waiters (no round owed)
+    // and are woken by enqueue. ISync: Pass 10 lets coroutines holding one
+    // cross threads (this is THE sanctioned cross-thread channel; the
+    // immediate Signal/Fifo/Latest/Event stay single-domain).
+    #template(T: type)
+    class AsyncQueue {
+        impl IReferenceType;
+        impl ISync;
+
+        lock: mut AtomicBool;
+        items: mut _ChanQueue<T>;
+        // Parked takers (guarded by `lock`): woken (all of them, list
+        // cleared) on enqueue; a wake that finds the queue empty again
+        // simply re-parks — spurious wakes are absorbed by the take loop.
+        waiters: mut _ChanList<__Coroutine>;
+        qid: i64 = 0;
+
+        fun new(mut this) {
+            this.lock = new AtomicBool(false);
+            this.items = new _ChanQueue<T>();
+            this.waiters = new _ChanList<__Coroutine>();
+            this.qid = _mt_next_id();
+        }
+
+        fun lock_acquire(mut this) {
+            // Test-and-set with a yield backoff: a failed swap left the
+            // lock held by someone else — yield the round and retry. The
+            // critical sections are a handful of list ops, so spins are
+            // rare even at N threads.
+            while (this.lock.swap(true)) {
+                _co_yield();
+            }
+        }
+
+        fun lock_release(mut this) {
+            this.lock.store(false);
+        }
+
+        fun wake_waiters_locked(mut this) {
+            while (this.waiters.size() > 0) {
+                let h: mut __Coroutine = cast<mut __Coroutine>(this.waiters.at(0).some);
+                this.waiters.remove_at(0);
+                _mt_wake(h);
+            }
+        }
+
+        fun size(mut this) -> i64 {
+            this.lock_acquire();
+            let n: i64 = this.items.size();
+            this.lock_release();
+            return n;
+        }
+
+        // Producer side: enqueue and wake every parked taker.
+        fun enqueue(mut this, v: T) {
+            this.lock_acquire();
+            this.items.enqueue(v);
+            this.wake_waiters_locked();
+            this.lock_release();
+        }
+
+        // Non-blocking probe: one item or none.
+        fun try_poll(mut this) -> Option<T> {
+            this.lock_acquire();
+            let v: Option<T> = this.items.dequeue();
+            this.lock_release();
+            return v;
+        }
+
+        // Consumer side: park as a condition waiter until an enqueue
+        // delivers. The park protocol mirrors Fifo's backpressured
+        // writers: park_begin BEFORE publishing the handle (no lost
+        // wake), switch away, and the waker's _mt_wake re-queues us.
+        fun take(mut this) -> T {
+            let v: mut Option<T> = new Option<T>.none();
+            while (v.is_none()) {
+                this.lock_acquire();
+                v = this.items.dequeue();
+                if (v.is_none()) {
+                    // Publish the waiter handle while still holding the
+                    // lock, THEN release and park — an enqueue in between
+                    // sees the handle and wakes us (park_begin already
+                    // claimed the parked state, so the wake cannot be
+                    // lost).
+                    _mt_park_begin();
+                    this.waiters.push(_co_current());
+                }
+                this.lock_release();
+                if (v.is_none()) {
+                    _mt_switch_away();
+                }
+            }
+            return v.some;
+        }
+    }
+}

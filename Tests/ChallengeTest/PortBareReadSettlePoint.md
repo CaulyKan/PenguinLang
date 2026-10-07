@@ -1,6 +1,6 @@
 # PortBareReadSettlePoint
 ## Description
-Design (Q1): a port read is a settle point — after 'x = 2' the bare read of f2.y first lets the current time's propagation settle (f1 forwards 2, f2 forwards 2), then samples the slot: the canonical Q1 example's println form prints 2. Ordinary variable reads keep their next-tick semantics; only port reads settle. `wait change(port)` still samples the raw level every round (edge detection, not a settle point).
+Design (Q1): a port read is a settle point — after 'x = 2' the bare read of f2.y first lets the current time's propagation settle (f1 forwards 2, f2 forwards 2), then samples the slot: the canonical Q1 example's println form prints 2. Ordinary variable reads keep their next-tick semantics; only port reads settle. (Historical note: `wait change(port)` used to sample the raw level every round — that form is REMOVED in the concurrency redesign M0; this test's `wait this.x` is a transaction wait, which was never a settle point.)
 
 ## Apply To
 * BabyPenguin

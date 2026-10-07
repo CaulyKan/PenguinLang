@@ -53,6 +53,7 @@ namespace esl {
 
     class Bus {
         impl IReferenceType;
+        impl ISync;
 
         // Attached slaves in registration order + their address nibbles
         // (addr[31:28]); slave_at scans the pairs. Undecoded addresses read

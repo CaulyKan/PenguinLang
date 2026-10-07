@@ -1,6 +1,6 @@
 # WaitCondition
 ## Description
-`wait <condition>` is a level-sensitive wait: the routine parks and the condition is re-evaluated every scheduler round until it holds (replaces the old `on <expr>` routines).
+The condition-wait idiom migrated to the event form: `wait <condition>` is REMOVED (a bool operand has no wake source — the writer of the condition cannot know who waits on it; concurrency redesign M0). The setter prints, emits on an Event; the waiter parks on the event and prints when the value arrives — the same observable ordering the level-sensitive form had.
 
 ## Apply To
 * BabyPenguin
@@ -8,22 +8,23 @@
 
 ## Test Code
 ```
-let a : mut i32 = 0;
+let ev : mut __builtin.Event<i64> = new __builtin.Event<i64>();
 
 initial {
-    wait 2 tick;
-    a = 5;
+    wait 2;
     println("set");
+    ev.emit(5);
 }
 
 initial {
-    wait a == 5;
+    let v : i64 = wait ev;
     println("seen");
 }
 ```
 
 ## Compile
 Args: `--enable-coroutine`
+Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

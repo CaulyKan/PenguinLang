@@ -2938,40 +2938,11 @@ namespace BabyPenguin.SemanticInterface
                         }
                         else if (waitExpression.IsChangeUnit)
                         {
-                            // `wait change(x)` — edge detection: park until the
-                            // watched expression's value differs from its entry
-                            // sample (level re-sampled every scheduler round,
-                            // like the condition form); yields the new value.
-                            // Port expressions sample the RAW slot (no settle):
-                            // the idiom this sugars (`let v = x; while (x == v)
-                            // { wait x; }`) watches the instantaneous level, and
-                            // settle-point granularity would miss single-round
-                            // pulses.
-                            var watched = waitExpression.ChangeWatchedExpression;
-                            ISymbol ReadWatched()
-                            {
-                                if (watched.GetEffectiveExpression() is MemberAccessExpression wma
-                                    && IsPortMemberAccess(wma, out _, out var wMember, out var wMeta))
-                                {
-                                    var wOwner = AddExpression(wma.BaseExpression!, false);
-                                    var wVar = AllocTempSymbol(wMeta.PayloadType.WithMutability(Mutability.Auto), watched.SourceLocation);
-                                    EmitPortSlotReadRaw(wOwner, wMember, wMeta, wVar, watched.SourceLocation);
-                                    return wVar;
-                                }
-                                return AddExpression(watched, false);
-                            }
-                            var sampleVar = ReadWatched();
-                            var beginLabel = CreateLabel();
-                            var endLabel = CreateLabel();
-                            AddInstruction(new NopInstuction(waitExpression.SourceLocation).WithLabel(beginLabel));
-                            var curVar = ReadWatched();
-                            var diffVar = AllocTempSymbol(Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), waitExpression.SourceLocation);
-                            AddInstruction(new BinaryOperationInstruction(waitExpression.SourceLocation, BinaryOperatorEnum.NotEqual, sampleVar, curVar, diffVar));
-                            AddInstruction(new GotoInstruction(waitExpression.SourceLocation, endLabel, diffVar, true));
-                            AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
-                            AddInstruction(new GotoInstruction(waitExpression.SourceLocation, beginLabel));
-                            AddInstruction(new NopInstuction(waitExpression.SourceLocation.EndLocation).WithLabel(endLabel));
-                            AddAssignmentExpression(new(curVar), to, isVariableInitialize, null, waitExpression.SourceLocation);
+                            // `wait change(x)` REMOVED (concurrency redesign M0): same
+                            // no-wake-source hole as wait <condition>.
+                            throw new BabyPenguinException(
+                                "wait change(x) is removed: wait on an Event, a channel, a future or a port transaction instead",
+                                waitExpression.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                         }
                         else if (waitExpression.Expression.GetEffectiveExpression() is MemberAccessExpression waitMa
                             && IsPortMemberAccess(waitMa, out _, out var waitPortField, out var waitPortMeta))
@@ -3005,19 +2976,12 @@ namespace BabyPenguin.SemanticInterface
                             }
                             else if (waitExpType.IsBoolType)
                             {
-                                // `wait <condition>`: level-sensitive wait — park for one
-                                // scheduler round, re-evaluate, repeat until the condition
-                                // holds. A condition that never becomes true contributes
-                                // identical rounds and ends at quiescence (like every
-                                // other parked waiter).
-                                var beginLabel = CreateLabel();
-                                var endLabel = CreateLabel();
-                                AddInstruction(new NopInstuction(waitExpression.SourceLocation).WithLabel(beginLabel));
-                                var condVar = AddExpression(waitExpression.Expression, false);
-                                AddInstruction(new GotoInstruction(waitExpression.SourceLocation, endLabel, condVar, true));
-                                AddInstruction(new ReturnInstruction(waitExpression.SourceLocation, null, ReturnStatus.Blocked));
-                                AddInstruction(new GotoInstruction(waitExpression.SourceLocation, beginLabel));
-                                AddInstruction(new NopInstuction(waitExpression.SourceLocation.EndLocation).WithLabel(endLabel));
+                                // `wait <condition>` REMOVED (concurrency redesign M0):
+                                // a bool operand has no wake source — the writer of the
+                                // condition cannot know who waits on it.
+                                throw new BabyPenguinException(
+                                    "wait <condition> is removed: wait on an Event, a channel, a future or a port transaction instead",
+                                    waitExpression.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
                             }
                             else
                             {

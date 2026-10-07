@@ -219,11 +219,11 @@ Generators need coroutine support (`--enable-coroutine` on EmperorPenguin).
 
 ## Coroutines and Time
 
-`async expr` spawns a function as a concurrent job and returns an `IFuture<T>`; `wait` parks the current routine until a future completes, a condition holds, an event fires, or a duration elapses:
+`async expr` spawns a function as a concurrent job and returns an `IFuture<T>`; `wait` parks the current routine until a future completes, an event fires, a channel delivers, or a duration elapses:
 
 ```penguin
 fun work() -> i32 {
-    wait 2 tick;
+    wait 2;
     return 42;
 }
 
@@ -235,7 +235,7 @@ initial {
 }
 
 initial {
-    wait 1 tick;
+    wait 1;
     println("tick 1");
 }
 ```
@@ -248,7 +248,7 @@ tick 1
 wait done 42
 ```
 
-because `wait 2 tick` suspends `work` on the simulation clock while the other routine advances to tick 1. PenguinLang's scheduler is cooperative and single-threaded; all routines share one discrete clock measured in ticks. This is the foundation for writing simulations and RTL-style module systems — see [Async, Timing and Modules](./AsyncTimingAndModularity.md).
+because `wait 2` suspends `work` on the simulation clock while the other routine advances to tick 1. PenguinLang's scheduler is cooperative and single-threaded; all routines share one discrete clock measured in ticks. This is the foundation for writing simulations and RTL-style module systems — see [Async, Timing and Modules](./AsyncTimingAndModularity.md).
 
 ## Where to Go Next
 

@@ -9,11 +9,11 @@ All initial routines complete after their timers fire; the scheduler quiesces an
 ## Test Code
 ```
 initial {
-    wait 1 tick;
+    wait 1;
     println("A");
 }
 initial {
-    wait 2 tick;
+    wait 2;
     println("B");
 }
 ```

@@ -13,11 +13,11 @@ EmperorPenguin 用**绑定器脱糖加有栈协程（纤程）**实现 async/wai
 | 源形式 | 脱糖 |
 |---|---|
 | `wait;` | `__builtin._co_wait()` |
-| `wait n tick;` / `wait <int expr>;` | `_after(n).do_wait()` |
-| `wait change(x)` | `{ let __wait_sample = x; while (x == __wait_sample) { _co_wait(); } x }` |
-| `wait <bool condition>;` | `while (!cond) { _co_wait(); }` |
+| `wait <int expr>;` | `_after(n).do_wait()` |
 | `wait ev`（`Event<T>`） | `cast<mut IFuture<T>>(new _EventSubscription<T>(ev)).do_wait()` |
 | `wait <IFuture>` / `wait <port>` | 转换 + `.do_wait()`（`mk_do_wait_call`，134–143 行） |
+
+bool 操作数与 `change(x)` 操作数是编译错误（`E_TYPE_MISMATCH`）：操作数必须是整数（定时器）、`Event`、`IFuture`、通道或端口。
 
 端口裸读沉淀点与读权限矩阵在同一遍处理（端口通道字段经同一 future 机制读取）。
 
@@ -46,6 +46,31 @@ EmperorPenguin 用**绑定器脱糖加有栈协程（纤程）**实现 async/wai
 **`std/penguin/scheduler.penguin`**（约 1578 行）——用 PenguinLang 写的策略层，与 BabyPenguin 的 SimScheduler 一比一镜像：就绪/下一 delta 队列、`_sched_timers` + `_timer_at`/`_timers_fire`、`_sim_now`/`_sim_delta`/`_sim_activity`/`_sim_settled`、以每协程指纹组合在两个相同的空闲回合上判静默（`__sched_run` 555 行起；头注释："Structurally 1:1 with the old C loop"），以及静默时阻塞在 `poll()` 而非退出的 fd 等待者（`_fd_wait_read`/`_fd_wait_write`）——stdio 语言服务器依赖的机制。
 
 该分层镜像 BabyPenguin：微内核拥有栈与切换（必须由 C 完成）；调度策略（delta、定时器、静默）是 Penguin 层库代码，靠跨编译器 async/timing 测试类（`Tests/AsyncTest/`、`Tests/TimingTest/`、`Tests/PortTest/`、`Tests/ChannelTest/`——全部在 BabyPenguin 与 Pass3 上以逐字节一致的期望运行）保持两个运行时一致且可测。
+
+## 多线程调度器（`--enable-multithread-scheduler`）
+
+`main.penguin` 交换自动装载的策略：`std/penguin/scheduler_mt.penguin` 替换 `scheduler.penguin`（公共面不变、命名空间相同，发射器零改动）。收敛式 delta 语义——每 delta 完全收敛、边界七步、所有协程结束才退出——定义在设计文档 `docs/zh/wip/concurrent_scheduler.md`。`wait <n>` 降低到 `__builtin._mt_wait_ticks(n)`（`SemanticBindExpressions.bind_timer_wait`）：`n < 0` 纯让出（`_co_yield`，仍在当前 delta 内可运行）；`n == 0` 经 `_co_wait()` 停靠，与裸 `wait;` 完全一致（定时器路径表达不了它——`_after(0)` 注册的截止点等于当前时刻，`do_wait` 的先 poll 快路径会在同一 delta 内当作"就绪"直接返回、变成空操作；由 `Tests/MtSchedulerTest/MtWaitZeroEqualsBare.md` 钉住）；`n > 0` 走定时器条件等待。
+
+### 停顿诊断（设计文档第 12 章："不要无声挂起"）
+
+两类停顿由 `std/c/scheduler.c` 中的预算皮带来诊断，而不是永远无声挂起：
+
+| 类别 | 检测方式 | 环境旋钮（默认） | 退出码 |
+|---|---|---|---|
+| (a) 单个 delta 永不收敛——互相唤醒的活锁或 `while (!cond) wait -1;` 自旋 | 当前 delta 内的恢复次数超过步数预算（`mt_run_one` 计数，`_emperor_mt_run_delta` 每 delta 重置） | `EMPEROR_SCHED_STEP_BUDGET`（20,000,000；0 关闭） | 60 |
+| (b) 时钟被钉住——delta 持续收敛但时间等待者一直 pending、没有任何定时器触发；典型是 `while (!cond) wait;`（`wait 0;` 自旋同理） | 连续收敛的 delta 数带着 pending 未触发的定时器（`_emperor_mt_fire_due` 只在定时器以**严格更晚**的截止点触发时重置计数——真正的时钟进展，`wait 0` 重复注册同一截止点不算） | `EMPEROR_SCHED_PIN_BUDGET`（20,000,000；0 关闭） | 61 |
+
+两者都向 stderr 打一条诊断（`emperor sched: stall (exit N): …`，含疑似源码模式与存活协程数），并经由与 `exit()` 相同的通道停止程序。它们是皮带不是检测器：合法的长 delta（立即可见容器的深流水线）或长时间同 tick 搅动（大延迟流水线）与默认值差着数量级——`Tests/MtSchedulerTest/MtStallBudgetsQuiet.md` 用总量超过预算的紧皮带运行以钉住重置逻辑。不含让出点的纯 `while (true) {}` 不会被捕获（没有任何恢复返回调度器）——与今天一致。测试：`MtStallLivelockDiag`（60）、`MtStallClockPinnedDiag`（61）。
+
+### 分配硬上限压力阀（设计文档 10.1：M5 v0）
+
+一个 delta 可以任意长，而回收只在边界停世界进行——mt 内核下（poll 在并行窗口中推迟到边界）紧循环分配的协程会把堆无限撑大。分配器带一个硬上限（`std/c/gc.c`）：下一次分配的 charge 会越限时，触碰者停靠在"等回收"上（`_emperor_sched_alloc_park`，CO_COND 状态、**不计入可运行**），全体分配阻塞时 delta 自然收敛到边界、停世界收集、释放停靠者、分配重试——"全阻塞"的含义是"现在就回收"，既不死锁也不 OOM。
+
+- 旋钮：`EMPEROR_GC_HARD_CAP`（字节；缺省 8 GiB——远高于任何真实负载（自举峰值约 0.6 GiB）而失控分配风暴会停靠而不是吃光机器；显式 `0` = 不限）。
+- **确定性 OOM（退出码 62），不是皮带**：边界收集后若"活集 + 最小待决 charge"仍放不下（`_emperor_gc_cap_blocks`，停靠表跟踪最小 charge），任何收集都永远无法解除阻塞——经 `exit()` 通道报告并停止。判定必须含 charge：`活集 > 上限` 单独不够，停靠者会卡在"活集"与"活集+charge"的缝隙里（实测一个保活循环恰好停在 cap−48 处永久停靠、每次收集零释放）。单次分配本身就大于上限同理立即 62。
+- 作用域：阀门只在 mt 内核下停靠；经典调度器 / 主栈策略代码 / 顺序回退平台上分配照常进行（上限在那里只是名义值，增长仍由既有内联应急收集与目标节奏约束——经典路径行为与改动前逐字节一致，`MtGcHardCapClassicAdvisory` 钉住）。分配检查在分配器锁之外（并发的越限余量 = 每线程一个在飞 charge，阀门语义可接受）。
+- 顺带修复：8×目标应急收集在并行窗口内不再内联执行（内联标记会与 worker 变更器竞争）——推迟到边界，窗口内的增长由硬上限约束。
+- 测试：`MtGcHardCapParkCollect`（4 路并行 churn 穿过 256KB 上限正常完成、校验和不変）、`MtGcHardCapOom`（保活 62）、`MtGcHardCapSingleAllocOom`（单次超限 62）、`MtGcHardCapZeroUnlimited`（显式 0 = 不限）。
 
 ## 与 GC 的交互
 

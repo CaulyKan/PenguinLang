@@ -1,6 +1,6 @@
 # WaitConditionNeverTrue
 ## Description
-A condition that never becomes true ends the program at quiescence: the parked waiter contributes identical rounds (no progress, no activity), so the scheduler terminates normally — same rule as every other blocked waiter (waiting is a legal final state, not an error).
+The never-satisfied condition migrated to a blocked channel wait (`wait <condition>` is REMOVED — concurrency redesign M0). A consumer blocked forever on an empty channel with no producers is quiescence, not a hang: the program ends normally with exit code 0 — waiting is a legal final state, not an error.
 
 ## Apply To
 * BabyPenguin
@@ -8,17 +8,23 @@ A condition that never becomes true ends the program at quiescence: the parked w
 
 ## Test Code
 ```
-let a : mut i32 = 0;
+let q : mut __builtin.Fifo<i64> = new __builtin.Fifo<i64>(1, new __builtin.FifoPolicy.backpressure());
 
 initial {
     println("start");
-    wait a == 99;
+    let v : i64 = wait q;
     println("never");
+}
+
+initial {
+    wait 5;
+    exit(0);
 }
 ```
 
 ## Compile
 Args: `--enable-coroutine`
+Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

@@ -16,7 +16,7 @@ initial {
     println(cast<string>(a) + cast<string>(b) + cast<string>(c));
 }
 initial {
-    wait 1 tick;
+    wait 1;
     q.write(7);
     q.write(7);
     q.write(8);

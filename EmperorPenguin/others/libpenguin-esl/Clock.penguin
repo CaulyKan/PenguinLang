@@ -11,14 +11,14 @@
 //                              module then re-parks; it must not wait on
 //                              anything else inside evaluate (that is the
 //                              ESL contract).
-//     2. wait 0 tick         — let this time's propagation settle.
+//     2. wait 0               — let this time's propagation settle.
 //     3. commit_all()        — atomically commit every registered register
 //                              (in -> out / flush-default / hold). Because
 //                              evaluate only ever reads committed state and
 //                              writes the in side, module wakeup ORDER is
 //                              irrelevant — same non-blocking-assignment
 //                              determinism as an HDL simulator.
-//     4. cycles += 1; after_commit hook (stop check) ; wait 1 tick.
+//     4. cycles += 1; after_commit hook (stop check) ; wait 1.
 //
 // Combinational paths are plain function calls during evaluate (e.g. the
 // Bus arbitration below); wakeup-order independence is guaranteed by deriving
@@ -48,6 +48,7 @@ namespace esl {
 
     class Clock {
         impl IReferenceType;
+        impl ISync;
 
         evt: mut Event<i64> = new Event<i64>();
         regs: mut Vector<IReg> = new Vector<IReg>();
@@ -86,14 +87,24 @@ namespace esl {
                 if (this.cycles > 0) {
                     this.evt.emit(this.cycles);
                 }
-                wait 0 tick;
+                // Settle: one beat always (the classic scheduler delivers
+                // immediately — this beat is the historical single wait 0),
+                // then extra beats while the tick still has work in flight
+                // (deferred wire commits pending or a woken module still
+                // queued) — under the deferred (mt) semantics a
+                // request-response wire chain of depth D needs D beats, so
+                // commit_all must wait for quiescence, not a fixed count.
+                wait 0;
+                while (__builtin.__sched_settling() > 0) {
+                    wait 0;
+                }
                 this.commit_all();
                 this.cycles = this.cycles + 1;
                 if (this.hook.is_some()) {
                     let stop: bool = this.hook.some.after_commit();
                     if (stop) { return; }
                 }
-                wait 1 tick;
+                wait 1;
             }
         }
     }

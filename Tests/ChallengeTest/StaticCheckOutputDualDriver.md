@@ -20,7 +20,7 @@ construct {
   let o : mut Outer = new Outer();
   connect(s, o.x);
 }
-initial { wait 1 tick; s.write(1); wait 3 tick; println("survived"); exit(0); }
+initial { wait 1; s.write(1); wait 3; println("survived"); exit(0); }
 ```
 
 ## Compile

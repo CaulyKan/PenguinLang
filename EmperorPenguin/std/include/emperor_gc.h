@@ -16,11 +16,19 @@ void _emperor_gc_remove_root(void** root);
  * pending flag. Cheap no-op otherwise. */
 void _emperor_gc_poll(void);
 
-/* The current stack's precise frame-chain head (emitted code links a
+/* The CURRENT STACK's precise frame-chain head (emitted code links a
  * per-function EmperorGcFrame onto it; the scheduler swaps it per
- * coroutine — see gc.c). */
-extern void* _emperor_gc_frame_head;
+ * coroutine — see gc.c). THREAD-LOCAL: the mt kernel switches coroutines
+ * in parallel on N workers and each thread's main stack carries its OWN
+ * chain — a plain global made the per-coroutine swap in _co_switch_in
+ * clobber heads across threads (mixed chains → CORRUPT REF-MAP aborts,
+ * reliably at EMPEROR_THREADS=8). Emitted code goes through the two
+ * accessors below (a thread_local global cannot be referenced from the
+ * IR: JIT modules would resolve it to a non-aliasing emutls clone). */
+extern _Thread_local void* _emperor_gc_frame_head;
 extern int _emperor_gc_want_collect;
+void* _emperor_gc_frame_get(void);
+void _emperor_gc_frame_set(void* head);
 
 /* Register/unregister a RAW (non-GC) buffer whose CONTENTS include pointers
  * to GC objects (std container element storage). The collector scans every

@@ -108,6 +108,165 @@ namespace __builtin {
         }
     }
 
+    // ---- ISync: the confinement lattice's trust marker ----
+    // A class implementing ISync declares "my methods may be called from
+    // any thread; I synchronize internally" (Pass 10's Sync(T),
+    // docs/zh/wip/concurrent_scheduler.md §4.1). v1 implementors: the
+    // atomics below. Channels gain it conditionally in M6.
+    interface ISync { impl IReferenceType; }
+
+    // ---- Ownership<T>: explicit exclusive transfer (design doc §9) ----
+    // The ONLY sanctioned way to move a reference across a thread boundary
+    // (Pass 10 treats Ownership<U> as Shareable for ANY U — the
+    // construction check guarantees the wrapped graph has no aliases).
+    //
+    // CONSTRUCTION: `new Ownership<T>(v)` — the binder enforces
+    // whole-graph freshness on v (a `new` expression, or another
+    // Ownership's `.move()` result). Direct field access is FORBIDDEN
+    // (the `__` prefix is the convention); `.move()` is the only way out.
+    // CONSUMPTION: `.move()` returns the payload and consumes the wrapper;
+    // a second `.move()` is a runtime error. v1 keeps the state in a
+    // plain field — cross-thread traffic only exists under
+    // --enable-multithread-scheduler, and the flag-then-swap window is
+    // closed by making the flag i64 with an atomic CAS when the two-tier
+    // heap lands (v1 = single heap, zero-copy, per the design doc's v0).
+    #template(T: type)
+    class Ownership {
+        impl IReferenceType;
+        impl ISync;
+        __payload: mut Option<T>;
+        __state: mut i64;
+
+        fun new(mut this, v: T) {
+            this.__payload = new Option<T>.some(v);
+            this.__state = 1;
+        }
+
+        fun is_owned(this) -> bool {
+            return this.__state == 1;
+        }
+
+        fun move(mut this) -> T {
+            if (this.__state == 0) {
+                __throw_runtime_error("Ownership.move on an already-consumed wrapper", 101);
+            }
+            this.__state = 0;
+            let v: T = this.__payload.some;
+            this.__payload = new Option<T>.none();
+            return v;
+        }
+    }
+
+    // ---- Native atomics (multi-thread scheduler M1; see
+    // docs/zh/wip/concurrent_scheduler.md §12) ----
+    // The atomic cell lives OUTSIDE the GC heap (plain malloc in
+    // core_builtin.c) keyed by the integer handle; the wrapper's
+    // IMemoryDispose frees the cell when the GC sweeps it. Available under
+    // BOTH schedulers (single-threaded CAS loops are legal today); cross-
+    // thread safety arrives with the sim-mt scheduler. AtomicI64's method
+    // surface mirrors BabyPenguin's builtin (swap/compare_exchange/
+    // fetch_add return the ORIGINAL value).
+    extern fun atomic_i64_new(v: i64) -> i64;
+    extern fun atomic_i64_free(h: i64);
+    extern fun atomic_i64_load(h: i64) -> i64;
+    extern fun atomic_i64_store(h: i64, v: i64);
+    extern fun atomic_i64_swap(h: i64, v: i64) -> i64;
+    extern fun atomic_i64_cas(h: i64, expected: i64, v: i64) -> i64;
+    extern fun atomic_i64_add(h: i64, v: i64) -> i64;
+    extern fun atomic_u64_new(v: u64) -> u64;
+    extern fun atomic_u64_free(h: u64);
+    extern fun atomic_u64_load(h: u64) -> u64;
+    extern fun atomic_u64_store(h: u64, v: u64);
+    extern fun atomic_u64_swap(h: u64, v: u64) -> u64;
+    extern fun atomic_u64_cas(h: u64, expected: u64, v: u64) -> u64;
+    extern fun atomic_u64_add(h: u64, v: u64) -> u64;
+    extern fun atomic_bool_new(v: bool) -> i64;
+    extern fun atomic_bool_free(h: i64);
+    extern fun atomic_bool_load(h: i64) -> bool;
+    extern fun atomic_bool_store(h: i64, v: bool);
+    extern fun atomic_bool_swap(h: i64, v: bool) -> bool;
+
+    class AtomicI64 {
+        impl IReferenceType;
+        impl ISync;
+        cell: i64 = 0;
+        fun new(mut this, value: i64) {
+            this.cell = atomic_i64_new(value);
+        }
+        fun load(this) -> i64 {
+            return atomic_i64_load(this.cell);
+        }
+        fun store(mut this, value: i64) {
+            atomic_i64_store(this.cell, value);
+        }
+        fun swap(mut this, value: i64) -> i64 {
+            return atomic_i64_swap(this.cell, value);
+        }
+        fun compare_exchange(mut this, current_val: i64, new_val: i64) -> i64 {
+            return atomic_i64_cas(this.cell, current_val, new_val);
+        }
+        fun fetch_add(mut this, value: i64) -> i64 {
+            return atomic_i64_add(this.cell, value);
+        }
+        impl IMemoryDispose {
+            fun dispose_mem(mut this) {
+                atomic_i64_free(this.cell);
+            }
+        }
+    }
+
+    class AtomicU64 {
+        impl IReferenceType;
+        impl ISync;
+        cell: u64 = 0;
+        fun new(mut this, value: u64) {
+            this.cell = atomic_u64_new(value);
+        }
+        fun load(this) -> u64 {
+            return atomic_u64_load(this.cell);
+        }
+        fun store(mut this, value: u64) {
+            atomic_u64_store(this.cell, value);
+        }
+        fun swap(mut this, value: u64) -> u64 {
+            return atomic_u64_swap(this.cell, value);
+        }
+        fun compare_exchange(mut this, current_val: u64, new_val: u64) -> u64 {
+            return atomic_u64_cas(this.cell, current_val, new_val);
+        }
+        fun fetch_add(mut this, value: u64) -> u64 {
+            return atomic_u64_add(this.cell, value);
+        }
+        impl IMemoryDispose {
+            fun dispose_mem(mut this) {
+                atomic_u64_free(this.cell);
+            }
+        }
+    }
+
+    class AtomicBool {
+        impl IReferenceType;
+        impl ISync;
+        cell: i64 = 0;
+        fun new(mut this, value: bool) {
+            this.cell = atomic_bool_new(value);
+        }
+        fun load(this) -> bool {
+            return atomic_bool_load(this.cell);
+        }
+        fun store(mut this, value: bool) {
+            atomic_bool_store(this.cell, value);
+        }
+        fun swap(mut this, value: bool) -> bool {
+            return atomic_bool_swap(this.cell, value);
+        }
+        impl IMemoryDispose {
+            fun dispose_mem(mut this) {
+                atomic_bool_free(this.cell);
+            }
+        }
+    }
+
     class __ExternImpl {}
 
     #template(T: type)

@@ -700,7 +700,22 @@ class IRGenerator {
         if (expr.callee_symbol.is_some()) {
             let sym: BoundSymbol = expr.callee_symbol.some;
             if (sym is BoundSymbol.function_sym) {
-                let iname: string = sym.function_sym.full_name;
+                let iname: mut string = sym.function_sym.full_name;
+                // Pass 10 (confinement analysis): a stealable spawn site's
+                // ctx class routes to the stealable runtime variant.
+                if (iname == "__builtin._co_spawn_entry") {
+                    if (cast<i64>(expr.arguments.size()) == 1) {
+                        let at0: BoundType = expr.arguments.at(cast<u64>(0)).some.get_bound_type();
+                        if (at0.type_definition.is_some()) {
+                            let d0: BoundDefinition = at0.type_definition.some;
+                            if (d0 is BoundDefinition.class_def) {
+                                if (concurrency_ctx_stealable(d0.class_def.full_name)) {
+                                    iname = "__builtin._co_spawn_entry_stealable";
+                                }
+                            }
+                        }
+                    }
+                }
                 if (iname == "<intrinsic>.address_of") {
                     let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
                     let operand: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
@@ -941,6 +956,30 @@ class IRGenerator {
         let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
         if (let sym := expr.callee_symbol.some) {
             let func_name: mut string = this.clean_function_name(sym.get_full_name());
+            // Pass 10 (confinement analysis): a stealable spawn site's ctx
+            // class routes to the stealable runtime variant (spawn-time
+            // distribution + stealing read the bit).
+            if (func_name == "__builtin._co_spawn_entry") {
+                if (cast<i64>(expr.arguments.size()) == 1) {
+                    // The argument EXPRESSION binds to the parameter's
+                    // interface type (__ICoroutineEntry) — the LOCAL's own
+                    // type (via its symbol) still names the ctx class.
+                    let arg0e: BoundExpression = concurrency_unwrap_cast(
+                        expr.arguments.at(cast<u64>(0)).some);
+                    let at0: mut BoundType = arg0e.get_bound_type();
+                    if (arg0e is BoundExpression.identifier) {
+                        let sym0: Option<BoundSymbol> = arg0e.identifier.symbol;
+                        if (sym0.is_some()) {
+                            if (sym0.some is BoundSymbol.variable) {
+                                at0 = sym0.some.variable.bound_type;
+                            }
+                        }
+                    }
+                    if (concurrency_ctx_stealable_bt(at0)) {
+                        func_name = "__builtin._co_spawn_entry_stealable";
+                    }
+                }
+            }
             if (has_generic_receiver) {
                 let mangled_class: string = this.mangle_generic_name(template_class_name_full, generic_args_list);
                 func_name = this.replace_in_func_name(func_name, template_class_name, mangled_class);
@@ -1465,6 +1504,11 @@ class IRGenerator {
             let _ = this.lower_expression(expr.body.some);
         }
         if (!this.builder.func.has_terminator()) {
+            // Loop back-edge safepoint (M7 free-mt GC): a tight no-call
+            // loop must still reach the poll — the STW escalation and the
+            // hard-cap valve both hinge on every runnable coroutine
+            // eventually parking.
+            this.builder.emit_gc_poll(loc);
             this.builder.emit_br(header_lbl, loc);
         }
         this.builder.emit_label(exit_lbl);

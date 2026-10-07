@@ -1,0 +1,114 @@
+// RiscvCore.penguin — one RV32I pipeline core, self-contained.
+//
+// Everything below the SoC top that used to live in main.penguin's
+// construct block: the three-stage pipeline (Fetch/Decode/Execute), the
+// regfile, the per-core PRIVATE memory system (ROM firmware + data RAM on
+// the core's own Bus) and the if_id / id_ex pipes. Cores are INDEPENDENT
+// by construction — private bus, private memories — so a multi-core SoC
+// has no cross-core arbitration and each core's cycle count is a function
+// of its own program alone (deterministic regardless of scheduler or
+// thread placement). Core 0 additionally carries the UART (nibble 3).
+//
+// The input-port wiring (clk fan-out, pipe handoffs, the writeback wire)
+// stays in main.penguin's construct block — `connect` is elaboration
+// syntax; this class only builds and exposes the ports.
+//
+// Result protocol for non-interactive cores: the firmware leaves its
+// checksum at RAM word 0 and a done flag (1) at word 1; word 2 is
+// elaboration-preloaded with the loop count (per-core workload shaping
+// without needing R-type arithmetic — the ISA subset has no `add reg,reg`).
+
+namespace tinyriscv {
+
+    using esl;
+    using std;
+
+    class RiscvCore {
+        impl __builtin.IReferenceType;
+
+        id: i64;
+        regs: mut RegFile;
+        rom: mut Rom;
+        ram: mut Ram;
+        bus: mut Bus;
+        if_pipe: mut Pipe<FetchPacket>;
+        id_pipe: mut Pipe<DecPacket>;
+        ctrl: mut Ctrl;
+        fetch: mut Fetch;
+        decode: mut Decode;
+        execute: mut Execute;
+        uart: mut Option<Uart> = new Option<Uart>.none();
+
+        // with_uart: attach the UART model at nibble 3 (core 0 only — the
+        // console is a shared peripheral in spirit, but exactly one core
+        // owns it here). loop_count: the value preloaded at RAM word 2
+        // (read by the compute firmware as its iteration bound).
+        fun new(mut this, clk: mut Clock, id: i64, firmware: string,
+                loop_count: i64, with_uart: bool) {
+            this.id = id;
+
+            this.regs = new RegFile(clk);
+
+            this.rom = new Rom(1024);
+            let idx: mut i64 = 0;
+            for (let line: string in firmware.split("\n")) {
+                let v: Option<i64> = parse_int(line);
+                if (v.is_some()) {
+                    this.rom.set_word(cast<u64>(idx), cast<u32>(v.some));
+                    idx = idx + 1;
+                }
+            }
+            this.ram = new Ram(clk, 4096);
+            this.ram.set_word(cast<u64>(2), cast<u32>(loop_count));
+            if (with_uart) {
+                this.uart = new Option<Uart>.some(new Uart());
+            }
+
+            this.bus = new Bus();
+            this.bus.attach_indexed(this.rom);
+            this.bus.attach_indexed(this.ram);
+            if (this.uart.is_some()) {
+                this.bus.attach_indexed(cast<mut Uart>(this.uart.some));
+            }
+            this.bus.set_decoder(new MmioDecoder());
+
+            this.if_pipe = new Pipe<FetchPacket>(clk);
+            this.id_pipe = new Pipe<DecPacket>(clk);
+
+            this.ctrl = new Ctrl(this.id_pipe, this.regs);
+
+            this.fetch = new Fetch(clk, this.bus, this.if_pipe, this.ctrl);
+            this.decode = new Decode(this.id_pipe, this.ctrl);
+            this.execute = new Execute(this.regs, this.bus);
+
+            // RIB m0 arbitration probe: EX owns this core's bus this cycle.
+            this.bus.set_m0(this.execute);
+        }
+
+        fun core_id(this) -> i64 {
+            return this.id;
+        }
+
+        fun regfile(this) -> mut RegFile {
+            return this.regs;
+        }
+
+        fun data_ram(this) -> mut Ram {
+            return this.ram;
+        }
+
+        fun core_uart(this) -> mut Option<Uart> {
+            return this.uart;
+        }
+
+        // The compute firmware's done handshake: flag word == 1.
+        fun compute_done(this) -> bool {
+            return this.ram.read_word(cast<u32>(4)) == cast<u32>(1);
+        }
+
+        fun compute_result(this) -> u32 {
+            return this.ram.read_word(cast<u32>(0));
+        }
+    }
+
+}

@@ -1,6 +1,6 @@
 # TickInterleave
 ## Description
-Two initial routines wait different tick counts. The shorter timer fires first, proving tick-based ordering.
+Two initial routines wait different counts. The shorter timer fires first, proving tick-based ordering.
 
 ## Apply To
 * BabyPenguin
@@ -9,11 +9,11 @@ Two initial routines wait different tick counts. The shorter timer fires first, 
 ## Test Code
 ```
 initial {
-    wait 1 tick;
+    wait 1;
     println("A");
 }
 initial {
-    wait 2 tick;
+    wait 2;
     println("B");
 }
 ```
