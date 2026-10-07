@@ -356,9 +356,10 @@ inst8=%sum:i64 = ASSIGN %t2
 inst9=%t3:i64 = CONST 1
 inst10=%t4:i64 = BINOP add %i, %t3
 inst11=%i:i64 = ASSIGN %t4
-inst12=BR while0
-inst13=while_exit2:
-inst14=RET %sum")]
+inst12=GC_POLL
+inst13=BR while0
+inst14=while_exit2:
+inst15=RET %sum")]
     public void TestWhileExpr() => _batch.Value.Assert();
 
     #endregion
@@ -495,9 +496,10 @@ inst14=%sum:i64 = ASSIGN %t5
 inst15=%t6:i64 = CONST 1
 inst16=%t7:i64 = BINOP add %i, %t6
 inst17=%i:i64 = ASSIGN %t7
-inst18=BR while0
-inst19=while_exit2:
-inst20=RET %sum")]
+inst18=GC_POLL
+inst19=BR while0
+inst20=while_exit2:
+inst21=RET %sum")]
     public void TestBreak() => _batch.Value.Assert();
 
     [Fact]
@@ -534,9 +536,10 @@ inst14=BR while0
 inst15=merge3:
 inst16=%t7:i64 = BINOP add %sum, %i
 inst17=%sum:i64 = ASSIGN %t7
-inst18=BR while0
-inst19=while_exit2:
-inst20=RET %sum")]
+inst18=GC_POLL
+inst19=BR while0
+inst20=while_exit2:
+inst21=RET %sum")]
     public void TestContinue() => _batch.Value.Assert();
 
     #endregion
@@ -694,9 +697,10 @@ inst19=merge3:
 inst20=%t9:i64 = CONST 1
 inst21=%t10:i64 = BINOP add %i, %t9
 inst22=%i:i64 = ASSIGN %t10
-inst23=BR while0
-inst24=while_exit2:
-inst25=RET %result")]
+inst23=GC_POLL
+inst24=BR while0
+inst25=while_exit2:
+inst26=RET %result")]
     public void TestComplexNested() => _batch.Value.Assert();
 
     #endregion
@@ -1170,10 +1174,11 @@ inst5=while_body1:
 inst6=%t3:i64 = CONST 1
 inst7=%t4:i64 = BINOP sub %t0, %t3
 inst8=%t0:i64 = ASSIGN %t4
-inst9=BR while0
-inst10=while_exit2:
-inst11=%t5 = NEW_ENUM enum<Option>.none
-inst12=RET %t5")]
+inst9=GC_POLL
+inst10=BR while0
+inst11=while_exit2:
+inst12=%t5 = NEW_ENUM enum<Option>.none
+inst13=RET %t5")]
     public void TestEnumWithWhileLoop() => _batch.Value.Assert();
 
     #endregion

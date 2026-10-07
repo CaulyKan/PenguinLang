@@ -360,6 +360,7 @@ while_body1:
   %tmp_3 = load i64, ptr %i.addr
   %t4 = add i64 %tmp_3, %t3
   store i64 %t4, ptr %i.addr
+  call void @_emperor_gc_poll()
   br label %while0
 while_exit2:
   %tmp_4 = load i64, ptr %sum.addr
@@ -838,6 +839,7 @@ merge3:
   %tmp_4 = load i64, ptr %i.addr
   %t7 = add i64 %tmp_4, %t6
   store i64 %t7, ptr %i.addr
+  call void @_emperor_gc_poll()
   br label %while0
 while_exit2:
   %tmp_5 = load i64, ptr %sum.addr
