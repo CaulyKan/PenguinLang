@@ -457,7 +457,16 @@ static void gc_region_map_del(void* base) {
  * premature frees); found by TSan on the mt scheduler, 2026-10-05. The
  * collector itself runs at the all-parked boundary, where no mutator can
  * contend. */
+#if defined(EMPEROR_WIN) || defined(_WIN32)
+/* SRWLOCK like gc_alloc_mutex above: program links carry no -lwinpthread. */
+static SRWLOCK gc_region_mutex = SRWLOCK_INIT;
+#define GC_REGION_LOCK() AcquireSRWLockExclusive(&gc_region_mutex)
+#define GC_REGION_UNLOCK() ReleaseSRWLockExclusive(&gc_region_mutex)
+#else
 static pthread_mutex_t gc_region_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define GC_REGION_LOCK() pthread_mutex_lock(&gc_region_mutex)
+#define GC_REGION_UNLOCK() pthread_mutex_unlock(&gc_region_mutex)
+#endif
 
 static void gc_scan_add_locked(void* base, size_t bytes) {
     if (!base || bytes == 0) return;
@@ -484,16 +493,16 @@ static void gc_scan_add_locked(void* base, size_t bytes) {
 }
 
 void _emperor_gc_scan_add(void* base, size_t bytes) {
-    pthread_mutex_lock(&gc_region_mutex);
+    GC_REGION_LOCK();
     gc_scan_add_locked(base, bytes);
-    pthread_mutex_unlock(&gc_region_mutex);
+    GC_REGION_UNLOCK();
 }
 
 /* Typed buffer registration (phase 3b) — same registry, precise layout. */
 void _emperor_gc_track_buffer(void* base, uint64_t count, uint64_t stride,
                               const int32_t* elem_map) {
     if (!base || stride == 0 || !elem_map) return;
-    pthread_mutex_lock(&gc_region_mutex);
+    GC_REGION_LOCK();
     /* Zero the buffer at registration. _malloc returns recycled memory
      * whose capacity tail still holds the arena's previous contents —
      * including stale pointers into the young generation that pass the
@@ -510,7 +519,7 @@ void _emperor_gc_track_buffer(void* base, uint64_t count, uint64_t stride,
     r->elem_count = count;
     r->elem_stride = stride;
     r->elem_map = elem_map;
-    pthread_mutex_unlock(&gc_region_mutex);
+    GC_REGION_UNLOCK();
 }
 
 void _emperor_gc_untrack_buffer(void* base) {
@@ -518,7 +527,7 @@ void _emperor_gc_untrack_buffer(void* base) {
 }
 
 void _emperor_gc_scan_remove(void* base) {
-    pthread_mutex_lock(&gc_region_mutex);
+    GC_REGION_LOCK();
     size_t i = gc_region_map_find(base);
     if (i == (size_t)-1) {
         /* No hash index (grow failed) or unregistered base: linear fallback. */
@@ -526,7 +535,7 @@ void _emperor_gc_scan_remove(void* base) {
             if (_emperor_gc_scan_regions[i].base == (char*)base) break;
         }
         if (i == _emperor_gc_scan_region_count) {
-            pthread_mutex_unlock(&gc_region_mutex);
+            GC_REGION_UNLOCK();
             return;
         }
     } else if (i >= _emperor_gc_scan_region_count ||
@@ -537,7 +546,7 @@ void _emperor_gc_scan_remove(void* base) {
             if (_emperor_gc_scan_regions[i].base == (char*)base) break;
         }
         if (i == _emperor_gc_scan_region_count) {
-            pthread_mutex_unlock(&gc_region_mutex);
+            GC_REGION_UNLOCK();
             return;
         }
     }
@@ -548,13 +557,13 @@ void _emperor_gc_scan_remove(void* base) {
     }
     gc_region_map_del(base);
     _emperor_gc_scan_region_count--;
-    pthread_mutex_unlock(&gc_region_mutex);
+    GC_REGION_UNLOCK();
 }
 
 /* Narrow a registered region's live range (coroutine stacks: live_lo moves to
  * the coroutine's parked sp; raising it past dead frames is the point). */
 void _emperor_gc_scan_set_live(void* base, void* live_lo) {
-    pthread_mutex_lock(&gc_region_mutex);
+    GC_REGION_LOCK();
     size_t i = gc_region_map_find(base);
     if (i == (size_t)-1 || i >= _emperor_gc_scan_region_count ||
         _emperor_gc_scan_regions[i].base != (char*)base) {
@@ -562,7 +571,7 @@ void _emperor_gc_scan_set_live(void* base, void* live_lo) {
             if (_emperor_gc_scan_regions[i].base == (char*)base) break;
         }
         if (i == _emperor_gc_scan_region_count) {
-            pthread_mutex_unlock(&gc_region_mutex);
+            GC_REGION_UNLOCK();
             return;
         }
     }
@@ -578,7 +587,7 @@ void _emperor_gc_scan_set_live(void* base, void* live_lo) {
     lo = (char*)((uintptr_t)lo & ~((uintptr_t)sizeof(void*) - 1));
     if (lo < _emperor_gc_scan_regions[i].base) lo = _emperor_gc_scan_regions[i].base;
     _emperor_gc_scan_regions[i].live_lo = lo;
-    pthread_mutex_unlock(&gc_region_mutex);
+    GC_REGION_UNLOCK();
 }
 
 /* ---- Precise frame roots ----
@@ -2330,9 +2339,9 @@ static void* gc_alloc_locked(int size, int is_string) {
 static int64_t _gc_stw_ms = -1;      /* -1 unparsed */
 static int64_t _gc_stw_first_seen = 0; /* ms timestamp, 0 = not pending */
 static int64_t _gc_stw_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    /* Via _gc_st_ns_now: its Windows path is QPC — clock_gettime maps to
+     * winpthread's clock_gettime64 on llvm-mingw (see its comment above). */
+    return (int64_t)(_gc_st_ns_now() / 1000000);
 }
 
 void _emperor_gc_poll(void) {

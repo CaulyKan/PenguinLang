@@ -2790,6 +2790,9 @@ static void* mt_watchdog_main(void* arg) {
     }
     return NULL;
 }
+#else
+/* No watchdog on Windows (see above); keep the shared call site compiling. */
+#define mt_watchdog_note_converge() ((void)0)
 #endif /* !EMPEROR_WIN_FIBERS */
 
 static void mt_workers_start(void) {
