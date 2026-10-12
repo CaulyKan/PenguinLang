@@ -4,7 +4,7 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 
 ## The Markdown Test Suite (`Tests/`)
 
-~627 cases in 34 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (2838 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
+673 cases in 38 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (2866 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
 
 ### Case format
 
@@ -29,15 +29,15 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 
 ### Runner architecture (`Tests/Program.cs`)
 
-* `Main` (line 26): parse options → locate repo root (`LocateRepoRoot`, 305; sets `PENGUIN_ROOT`) → discover/parse `.md` → build work items (test × compiler) → `BootstrapGuard.Check` (114; **exit 2** if `build/bootstrap/pass2|pass3` missing — the runner never bootstraps) → auto-build the BabyPenguin Release DLL if missing (**exit 3** on failure) → create `build/testruns/<timestamp>/` → load baseline → `Parallel.ForEachAsync` over test groups (171). Exit codes: 0 all pass, 1 any fail/error, 2 bootstrap guard, 3 BabyPenguin build failure.
-* **Compilers** (`BuildBackends`, 349; `ICompilerBackend`, 1392): `BabyPenguinBackend` (`dotnet BabyPenguin.dll -q <src>`, interpreted, line 1455), `BabyPenguinCsBackend` (`--backend=cs`, 1480), `EmperorOnVmBackend` (Pass1: `dotnet BabyPenguin.dll -q EmperorPenguinPass1.penguins -- <args> <src>`, 1504), `EmperorNativeBackend` (Pass2/3: `build/bootstrap/passN <args> <src>`, 1538), `PrebuiltExeBackend` (copy an exe, plus sibling `.penguin-lib`s for rpath, 1579).
-* **Linking** (`EmperorLink`, 1414): the Emperor backends only emit `.ll`; the runner links via the `emperor_penguin` script — `emperor_penguin link <out>.ll -o <out>` for exes (consumer-lib closure from the `<out>.libs` side file) and `emperor_penguin link-lib <base>.ll <base>.libmeta -o <out>.penguin-lib` for libraries.
+* `Main` (line 26): parse options → locate repo root (`LocateRepoRoot`, 327; sets `PENGUIN_ROOT`) → discover/parse `.md` → build work items (test × compiler) → `BootstrapGuard.Check` (2180; **exit 2** if `build/bootstrap/pass2|pass3` missing — the runner never bootstraps) → auto-build the BabyPenguin Release DLL if missing (**exit 3** on failure) → create `build/testruns/<timestamp>/` → load baseline → `Parallel.ForEachAsync` over test groups (193). Exit codes: 0 all pass, 1 any fail/error, 2 bootstrap guard, 3 BabyPenguin build failure.
+* **Compilers** (`BuildBackends`, 371; `ICompilerBackend`, 1414): `BabyPenguinBackend` (`dotnet BabyPenguin.dll -q <src>`, interpreted, line 1477), `BabyPenguinCsBackend` (`--backend=cs`, 1502), `EmperorOnVmBackend` (Pass1: `dotnet BabyPenguin.dll -q EmperorPenguinPass1.penguins -- <args> <src>`, 1526), `EmperorNativeBackend` (Pass2/3: `build/bootstrap/passN <args> <src>`, 1560), `PrebuiltExeBackend` (copy an exe, plus sibling `.penguin-lib`s for rpath, 1601).
+* **Linking** (`EmperorLink`, 1436): the Emperor backends only emit `.ll`; the runner links via the `emperor_penguin` script — `emperor_penguin link <out>.ll -o <out>` for exes (consumer-lib closure from the `<out>.libs` side file) and `emperor_penguin link-lib <base>.ll <base>.libmeta -o <out>.penguin-lib` for libraries.
 * **Artifacts**: per-combo workdir `build/testruns/<ts>/<compiler>/<category>/<test>/` with `source.penguin`, `out.exe`/`combined.ll`, `compile.log`, `run.log`, `result.json`. Every spawned stage process gets `TMPDIR = workdir` so the emperor_penguin script's temp artifacts land in the combo dir.
-* **Metrics**: per stage duration (Stopwatch) and **peak RSS by polling `/proc/<pid>/status` VmHWM every 40 ms** (`ReadVmHwm`, 1371).
-* **MemGate** (399–551): FIFO admission control on estimated peak RSS before spawning (Heavy 5 GiB for pass2/3 meta compiles, Light 512 MiB, live floor 1.5 GiB `MemAvailable`, 15-min give-up) — prevents the OOM killer (exit 137) under oversubscribed parallelism; also caps `--parallel`.
+* **Metrics**: per stage duration (Stopwatch) and **peak RSS by polling `/proc/<pid>/status` VmHWM every 40 ms** (`ReadVmHwm`, 1393).
+* **MemGate** (421–573): FIFO admission control on estimated peak RSS before spawning (Heavy 5 GiB for pass2/3 meta compiles, Light 512 MiB, live floor 1.5 GiB `MemAvailable`, 15-min give-up) — prevents the OOM killer (exit 137) under oversubscribed parallelism; also caps `--parallel`.
 * **Baselines**: `build/testruns/latest.json` (default comparison), `--compare-with none|latest|<path>`; `--baseline` records the run as the new baseline (plain runs never overwrite it). Diffs flag new failures/passes/skips and time/memory regressions (`--time-regression-pct`, `--mem-regression-pct`, both default 50%).
-* **Reporting**: `SummaryReporter.WriteHtml` (2301) — a self-contained `summary.html` (stat cards, per-compiler pass %, filterable table, per-stage detail overlays, dark mode); `WriteJson` (2771) writes `summary.json`.
-* Options (574–627): `--compilers`, `--filter <glob|substr>`, `--probe` (ignore Apply To), `--parallel <n>` (default cores−1), `--timeout-compile 600`, `--timeout-run 60`, `--env KEY=VAL` (e.g. `EMPEROR_GC_MODE=greentea`), `--baseline`, regression thresholds.
+* **Reporting**: `SummaryReporter.WriteHtml` (2323) — a self-contained `summary.html` (stat cards, per-compiler pass %, filterable table, per-stage detail overlays, dark mode); `WriteJson` (2799) writes `summary.json`.
+* Options (596–648): `--compilers`, `--filter <glob|substr>`, `--probe` (ignore Apply To), `--parallel <n>` (default cores−1), `--timeout-compile 600`, `--timeout-run 60`, `--env KEY=VAL` (e.g. `EMPEROR_GC_MODE=greentea`), `--baseline`, regression thresholds.
 
 ### In-process unit tests
 

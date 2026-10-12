@@ -72,7 +72,7 @@ build/bootstrap/pass3 hello.penguin -o hello.ll-out
 ./build/linux/emperor_penguin link-lib foo.ll foo.libmeta -o foo.penguin-lib
 ```
 
-常用 flag：`-enable-meta` 链接 LLVM ORC JIT 运行时（由含 `#fun` 源码构建的编译器需要）；`--disable-coroutine` 关闭 async/wait 支持（默认开启）；`-g`（或 `--debug`）在 `.ll` 中输出 DWARF 调试信息，链接后的二进制可在 gdb 中映射回 `.penguin` 源码——`break <函数名>`、`file.penguin:<行号>` 断点、`info args` / `info locals`、`print obj->field` 都能解析到 penguin 源码；在完整模式下传入（`emperor_penguin -g hello.penguin -o hello`），或传给裸 emitter 后再链接；`-target=win64` 交叉链接 Windows 二进制（Linux 宿主，经 llvm-mingw）；`--lib <dir>/x.penguin-lib` 以共享库为编译目标；`--emitter <path>` 覆盖编译器二进制。`--help` 打印完整选项表（模式、脚本 flag、全部转发的语义 flag、环境变量）。环境变量：`EMPEROR_EMITTER`、`CLANG`、`LLVM_CONFIG`、`OPT`、`MINGW_PREFIX`。
+常用 flag：`-enable-meta` 链接 LLVM ORC JIT 运行时（由含 `#fun` 源码构建的编译器需要）；`--disable-coroutine` 关闭 async/wait 支持（默认开启）；`--enable-multithread-scheduler` 把自动加载的协程运行时换成收敛式 delta 多线程调度器（隐含 `--enable-coroutine`；经 `EMPEROR_THREADS=N` 启用工作线程）；`--enable-free-mt` 改为加载自由形态运行时——无虚拟时钟、组件立即化、跨线程走 `AsyncQueue<T>`（隐含 `--enable-coroutine`；两者详见 [EmperorPenguin Async](../impl-notes/30_EmperorPenguinAsync.md)）；`-g`（或 `--debug`）在 `.ll` 中输出 DWARF 调试信息，链接后的二进制可在 gdb 中映射回 `.penguin` 源码——`break <函数名>`、`file.penguin:<行号>` 断点、`info args` / `info locals`、`print obj->field` 都能解析到 penguin 源码；在完整模式下传入（`emperor_penguin -g hello.penguin -o hello`），或传给裸 emitter 后再链接；`-target=win64` 交叉链接 Windows 二进制（Linux 宿主，经 llvm-mingw）；`--lib <dir>/x.penguin-lib` 以共享库为编译目标；`--emitter <path>` 覆盖编译器二进制。`--help` 打印完整选项表（模式、脚本 flag、全部转发的语义 flag、环境变量）。环境变量：`EMPEROR_EMITTER`、`CLANG`、`LLVM_CONFIG`、`OPT`、`MINGW_PREFIX`。
 
 ### std 动态库（`--enable-std`，默认开）
 
