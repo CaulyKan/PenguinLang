@@ -471,6 +471,130 @@
       - 结论不变：≤4 核 mt-N1 最优；≥8 核 classic 最优；N>1 恒亏；free-mt 适用
         无时钟负载（FreeMtBusyGc）。
 
+- [x] **known-open 全部关闭（2026-10-12 复审，HEAD bbb9e61a，完善计划批次 1）**：
+      ① WaitChangePort 形态 pass3-mt 永久挂起（上记"已知 mt 缺口"）：**已修复**
+      ——24ceba1f 停靠归档协议五连环洞修复顺带治愈；pass3 +
+      `--enable-multithread-scheduler` 运行正确（输出两行 `edge1` / `false`，
+      与 BabyPenguin 种子先行语义一致），EMPEROR_THREADS=4/8 共 8/8 全对；钉死为
+      TimingTest/WaitChangePortMt，原 WaitChangePort.md 的 NOTE 已删。
+      ② tinyriscv N8 丢 'r'/差一拍（残余①'/①'，~1/12 复现率）：**未再复现**
+      ——42 次锤击（8 核 × EMPEROR_THREADS=8）全对，输出唯一 md5、48614 周期
+      恒定；known-open 记录关闭（无哨兵可写——形态是"偶发交错差异"且已消失，
+      TinyRiscvMultiCoreMt 钉死确定输出侧）。门禁：make bootstrap 收敛
+      （exe 0c43dc04 / lib 469c3f6b）、WaitChangePort 三变体 3/3。
+      后续完善工作（kick 定向化、glock 去中心化、CI 网等）见
+      `.agents/plans/mt-scheduler-completion.md`。
+
+- [x] **free-mt N>1 三连 bug 修复（2026-10-12，完善计划批次 2 的 CI 网在本地预验证时抓到）**：
+      做批次 2 的"mt/free 子集 ambient EMPEROR_THREADS=4"步骤本地预跑，
+      FreeMtEventImmediate 以 ~15%/run 失败（exit 63 丢唤醒）。30 轮循环放大
+      形态（每轮两订阅者两发射）+ QLOG 回放 + 构件仪器化三轮定位，**三个独立
+      根因**（外加一个顺带的 TSan 债）：
+      ① **free-mt Event.unsubscribe 无锁**（scheduler_free.penguin 从 mt 策略
+      派生时丢了 `_sync_begin/_end`——mt 版有锁）：waiter 的 poll-time 退订与
+      另一 waiter 的 poll/subscribe 并发改 `_ChanList`——丢一次删除 + 丢一次
+      push，emit 把值投给**已退订的旧订阅**而新订阅从未入表（仪器化实测
+      DELIVER sid=2 而 waiter 轮询 sid=4）。修复：镜像 mt 版持锁。
+      ② **pop→RUNNING 窗口的幻影复活破坏轮屏障**：`mt_runq_pop_locked`（持
+      glock 出队）与 `_co_switch_in` 的 CO_RUNNING 置位（锁外）之间，wake 读到
+      停靠者陈旧的 CO_COND →"生效"→ 给一个**即将恢复的协程**压第二个幻影；
+      恢复后 `_mt_future_cancel` 因状态是 RUNNING（≠RUNNABLE）跳过摘除 →
+      陈旧幻影残留（queued=1）→ 下一次 `wait 0` 的 owed 归档被拒（site 13
+      dup refused）→ 协程被自己的幻影**同轮复活**，轮屏障失效 → 发射早于
+      重订阅 → 事件丢失 → 永久停靠（exit 63）。修复：pop 时在**同一临界区**
+      内声明 CO_RUNNING（wake 在窗口内看到 RUNNING → 无操作——即将到来的
+      恢复-重轮询吸收该唤醒；所有停靠路径自声明状态，状态阶梯不受影响）+
+      cancel 以 `queued` 标志（而非状态）为判据摘幻影（兜底）。
+      ③ **co_all_head 无锁变异**（既有隐患，被 30 轮放大暴露）：co_create 建链
+      （spawn 线程）与 _emperor_co_destroy 摘链（收割线程）都在 delta 中段、
+      任意线程并发执行，裸奔；两次并发摘链丢更新 → 链上残留已 munmap 节点 →
+      边界自愈/idle-dump/destroy-all 走进去 SIGSEGV（coredump 定位：
+      mt_scan_lost_parked → co_state_get 已释放栈）。修复：mt_co_all_link/
+      unlink 在 mt_kernel_seen 时持 glock（经典/内核前单线程路径免锁）。
+      ④ **TSan 债（顺带清偿）**：gc_poll（回边安全点，2026-10-07 引入——晚于
+      10-05 的 TSan 验收，从未被扫）的 `_gc_stw_first_seen`/`_gc_st_polls`/
+      `_emperor_gc_last_collect_site`/`_gc_stw_ms`/stress 计数全是普通读写，
+      全线程每 poll 必写——TSan 34K 报告；连同 `mt_live_count`（create/destroy
+      双侧普通 ++/--）一并 RELAXED 原子化。**注意**：TSan 发现竞争时进程退出码
+      是 66（TSan 自身 exitcode），与调度器的状态阶梯断言 exit 66 撞号——排查
+      时先看 stderr 有无 "park-state invariant violated" 再定性。
+      **验证**：30 轮循环形态修复前 17%/run 失败（63/124/139 混合）→ 修复后
+      200/200；FreeMtEventImmediate 改为 30 轮 + Run Env EMPEROR_THREADS=4
+      钉死（红 20/20 → 绿 100/100）；子集 N=1/N=4 全绿；tinyriscv N8 锤 15/15；
+      shuffle 种子 1/7/42 全绿；free-mt Event TSan N=4 10/10 零报告。
+
+- [x] **定向唤醒（2026-10-12，完善计划批次 3.1，设计 §12"定向唤醒"）**：
+      EMPEROR_SCHED_STATS=1 计数器（scheduler.c，destroy_all 时打印）画像
+      mt-N4 8 核 tinyriscv：deltas=248667、kicks=1584299（6.4 次/delta）、
+      kick_wakes=12122000（**49 次/delta**）、switchins=21358025（86 次/delta）
+      ——wake-all 的 `_mt_kick_futures` 让一半以上上下文切换是"唤醒→重轮询→
+      再停靠"空转；strace 确认 futex 498 万次占 99.98% 系统调用时间。
+      **实现**（两策略同步）：IFuture 增 `register_waiter(this)`（默认 no-op，
+      poll 同款不可变接收者 + cast<mut> 惯用法）；do_wait 在 register 后、
+      首次注册轮询前发布（交付竞态发布：要么唤醒方见句柄、要么随后的轮询
+      见值——无丢失唤醒）；组件自带 `waiters: _ChanList<__Coroutine>`（推广
+      Fifo.writers/AsyncQueue.waiters 的成熟模式），清空式唤醒（_mt_wake 对
+      非 COND 协程是无操作，陈旧句柄安全且被下次唤醒清空，列表天然有界）：
+      - free-mt（立即）：Event.emit/Signal.write/Fifo.deliver/LatestChannel.push
+        内联唤醒自己的等待者；SpawnFuture.complete 直接唤醒 joiner（同收敛轮）。
+      - sim-mt（延迟）：唤醒放进边界的 commit_now/flush_now（Signal/Fifo/
+        LatestChannel 各自的载体提交路径）；SpawnFuture.complete 仍是同 delta
+        直唤；Event 保持 `_sched_deferred_kick` 边界全局 kick（订阅者价值内联、
+        唤醒延迟——语义不变）；边界三处全局 kick 保留为安全网（定向唤醒已把
+        真实等待者翻成 RUNNABLE，全局 kick 只剩表扫描零唤醒）。
+      - do_wait 出口路径的全局 kick 删除（消费型组件的副作用唤醒在 poll 内：
+        Fifo 的 wake_writers；Signal 首观察者不该唤醒他人；SpawnFuture/Latest
+        非消费式）——旧出口 kick 每次成功等待都全员重轮询。
+      **效果**（8 核 tinyriscv，交错 ×5 中位）：deltas −20%、kicks −94%、
+      kick_wakes −85%、switchins −85%；时序 **mt-N1 7036→4330ms（−12% vs
+      classic 4938，8 核下首次全面跑赢）**、mt-N4 15105→6881ms（N=8 不再差
+      一个量级）；输出 48614 周期逐字节不变。
+      **门禁**：MtSchedulerTest 29/29 × N=1/N=4、FreeMtTest 6/6 × N=1/N=4、
+      TinyRiscv 4/4、N8 锤 15/15 唯一 md5、shuffle 种子 1/7/42、free-mt Event
+      100/100、（全矩阵/TSan 见提交信息）。
+      **3.2（glock 去中心化）重新评估**：ESL 负载可偷宽度仅 4/17（其余模块
+      持不可共享引用钉死），mt-N4 的剩余差距 = 每 delta 屏障税 + glock 争用
+      （3.25M switchins ≈ 7M 队列操作全走单锁）；但唤醒/幻影协议的状态检查与
+      队列操作必须同临界区（wake 的 check+push vs cancel 的 check+take），
+      分片锁需要重建整套幻影协议（epoch/无锁队列），是计划估计的 1–2 周级
+      内核重构，不是今日的收尾项。mt-N1 已在所有核数跑赢 classic——批次 3 的
+      主要用户可见目标已达成。
+
+- [x] **新调度器验证测试套（2026-10-13，+12 用例）——首日再揪四个真 bug**：
+      新增 MtSchedulerTest ×8：MtSignalTwoTakersSum（首观察者竞争、单次等待
+      + 和不变量 30）、MtEventManyWaiters（4 可偷等待者 ×3 订阅、N=4、250；
+      双 `wait 0` 步进——§7.1 契约下发射方须让等待者完成重订阅，N=1 队列序
+      天然安全、N>1 跨线程必须显式结算轮）、MtLatestTransactionStream
+      （逐 delta 事务流 1/2/3→6）、MtWireCollapseTwoTakers（同 delta 坍缩 +
+      双 taker 竞争、和 5）、MtDoubleJoinFuture（future 非消费、重复 wait→14，
+      BabyPenguin 双钉）、MtNestedAsyncChain（async 套 async 套 async→3，
+      BabyPenguin 双钉）、MtTimerJoinInterplay（定时器→spawn 完成→joiner
+      唤醒链 @5，BabyPenguin 双钉）、MtSpawnChurnParallel（100 批 ×4 并行
+      纯计算 async、400 生命周期、N=4、159600）。FreeMtTest ×4：
+      FreeMtSignalRound/FreeMtFifoRound/FreeMtLatestRound（轮屏障哨兵族——
+      各立即构件的 wait 0 步进 + 双写 + 双单等 taker，30 轮，990）+
+      FreeMtSpawnChurn（free 形态 churn、无时钟、159600）。
+      **首日战果（全部由新用例暴露、当即修复）**：
+      ① **定向唤醒重发布洞**：register_waiter 原在 do_wait 循环外发布一次，
+      清空式唤醒后"空手重停"的竞争失败者（首观察者输家）不再列表内——
+      下次交付唤醒空表、丢失唤醒（两 taker 竞争挂起）。第一版修复（每迭代
+      重发布）暴露 ② 并引入 N=4 回退（每等待迭代两次额外 _sync 争用让步，
+      switchins 3.25M→10.5M、mt-N1 4.3s→5.8s+）——正解是**组件层 no-consume
+      协议**（与 C 侧 futures 同构：唤醒遍历不摘链、_mt_wake 对非 COND 无
+      操作、发布一次、退出按 seq 摘除——退出摘除是必须的：满足退出的等待者
+      句柄留在表里，协程销毁后下次唤醒读已释放内存=UAF 段错误）。
+      ③ **free-mt Signal.write 自 654c21a0 起丢值**（commit 空 pending——
+      写入从未进 pending 就提交；free-mt 此前无任何 Signal 值交付测试）。
+      ④ **free-mt Signal.poll 无锁消费 fresh**（ISync 构件、两个被同一提交
+      唤醒的等待者并发 check-then-clear 双消费同一值、另一值丢失：
+      980/990 错果）→ fresh 改 AtomicBool.swap；**free-mt LatestChannel.take
+      无锁 dequeue** 同病（并发弹出同一节点： 970/990）→ 对齐 mt 版加 _sync。
+      教训：**free-mt 的"立即 + ISync"构件每个读写面都要按跨线程审**——
+      mt 版单域构件的无锁面拷贝过来就是竞态；无交付测试的构件面等于未验证。
+      门禁：Mt 48/48（baby+pass3）、pass3 ambient N=4 37/37、Free 10/10 ×
+      N=1/N=4、signal-round 90/90（3 新编译 ×30）、LatestRound runner 6/6、
+      tinyriscv mt 输出 48614 精确 + N=4 switchins 恢复 3.25M。
+
 ## 后续阶段（本计划之外）
 
 - M1 原子量/互斥；M3 微内核逐线程化；M4 多线程 worker + 边界屏障；M5 GC；M6 Signal/延迟 Fifo；

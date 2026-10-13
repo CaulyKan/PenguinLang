@@ -1,11 +1,14 @@
 # 并发调度器设计（WIP）：自动多线程调度
 
-> 状态：**实现中（work in progress）**。里程碑 M0–M6 已在 `feature/multithread-scheduler`
-> 分支落地：M0 语义统一（含 BabyPenguin 的 C# 调度器 SimScheduler 重写，2026-10-03）、
+> 状态：**实现中（work in progress）**。里程碑 M0–M7 已全部实质落地并合入 master
+> （654c21a0）：M0 语义统一（含 BabyPenguin 的 C# 调度器 SimScheduler 重写，2026-10-03）、
 > M1 原子量、M2 lite 封闭分析、M3 微内核逐线程化、M4b 多线程 worker（EMPEROR_THREADS）、
-> M5 v0 垃圾回收（单堆 + 分配锁 + 边界 STW + 压力阀）、M6 延迟构件族（Signal/延迟
-> Fifo/LatestChannel/Event）+ `--shuffle-deltas` + `Ownership` v1。未做：M5 v1（两堆 +
-> 移交点复制）与 M7（自由形态 free-mt）。
+> M5 垃圾回收 v0（单堆 + 分配锁 + 边界 STW + 压力阀）+ v1 第一级（每线程 span arena +
+> 无锁小对象快路径，C 运行时 -O2 默认）、M6 延迟构件族（Signal/延迟 Fifo/LatestChannel/
+> Event）+ `--shuffle-deltas` + `Ownership` v1（含线性局部逃逸分析）、M7 free-mt v1
+> （`--enable-free-mt`：立即构件 + AsyncQueue + poll 升级 STW + 循环回边安全点）。
+> 未做：M5 v1 第二级（双域两堆 + 移交点复制，§10.3–10.6）与可扩展性收尾
+> （kick 定向化、glock 去中心化——mt N>1 仍恒亏，见 §7.3 实现注）。
 >
 > **原生侧的新语义经 `--enable-multithread-scheduler` 启用**（装载 scheduler_mt.penguin）；
 > 原生默认仍是经典调度器（scheduler.penguin，旧语义，第 2 章"现状"描述的就是它），直到
@@ -865,6 +868,37 @@ free-mt 里禁用延迟构件（只用"立即 + 加锁"的容器），或者接�
 > N=1/2/4 下零数据竞争告警、输出逐字节一致。过程修复：GC 扫描区域注册表
 > 加锁（此前完全无锁，见 §12.1 第 8 条）+ 协议字段全量原子化。
 
+> **实现状态（2026-10-06～07，唤醒归档协议根因修复）**：N=8 的"吞吐坍塌"复审
+> 定性为**错结果**（提前结束/丢字符/时钟冻结），根因是"协程已注册、正执行
+> poll"窗口与 park 路径之间的五个连环洞（switch_away 不声明状态、kick_futures
+> 无条件消费、owed/运行队列共享 qnext、poll 让步吞掉幻影队列项、between-delta
+> 拒绝停泊），全部修复（24ceba1f）：挂起必带 park 态、futures 注册幂等 +
+> no-consume 协议（64a73086：futures 表项是整个 do_wait 的停靠归档而非一次性
+> 令牌，kick 只翻 CO_COND→RUNNABLE 不摘链——停泊的注册等待者**构造上可寻**，
+> 自愈修复从"每 ~16 周期一次"降为纯安全网）、owed 独立链、边界自愈（残余
+> 交错从丢失降级为一拍延迟）、状态阶梯显式断言（exit 66）。示例层配套：
+> drain-exit 等**发送完成**而非仿真时间（29ab2f15）、settle 探针先取 glock
+> 再读共享态（a5f28fbd）。free-mt 侧补 poll 升级 STW + 循环回边安全点
+> （c62e2316）。
+> **复验（2026-10-12，HEAD bbb9e61a）**：此前两条 known-open 均已治愈——
+> ① WaitChangePort 形态（二次端口事务等待 + 定时器写入）在 pass3-mt 下永久
+> 挂起：已修复（EMPEROR_THREADS=4/8 共 8/8 正确），钉死为
+> TimingTest/WaitChangePortMt；② tinyriscv N8 丢字符/差一拍（~1/12 复现率）：
+> 42 次锤击 0 复现（输出唯一 md5、48614 周期恒定），known-open 关闭。
+> **遗留（开放）**：mt N>1 恒亏（8 核 classic 4930ms vs mt-N4 15105ms）——
+> 兜底 kick 的定向化与 glock 去中心化是下一阶段（§12 两处"后置"项）。
+>
+> **实现状态（2026-10-12 晚，定向唤醒落地）**：§12 的"兜底 kick 定向化"已
+> 完成——IFuture.register_waiter 让组件（Signal/Fifo/LatestChannel/Event/
+> SpawnFuture）维护自己的停靠等待者表，交付（或延迟构件的边界提交）只唤醒
+> **本组件**的等待者；EMPEROR_SCHED_STATS 计数器显示 8 核 tinyriscv 的
+> kick_wakes 从 1212 万（49 次/delta）降到 180 万、上下文切换降 85%。时序：
+> **mt-N1 4330ms 首次在 8 核全面跑赢 classic 4938ms（−12%）**，mt-N4
+> 15105→6881ms。同日修复三个 N>1 竞态（free-mt Event 退订无锁、pop→RUNNING
+> 幻影窗口破坏轮屏障、co_all_head 无锁摘链 SIGSEGV——§12.1 教训 11/12）。
+> 剩余：glock 去中心化（需重建幻影协议临界区，1–2 周级）与 ESL 之外负载的
+> 可偷宽度。
+
 ### 7.4 退出与挂起
 
 只有一种情况会自动退出：**所有协程都结束了**。除此之外：
@@ -1288,6 +1322,50 @@ initial {                                        // 线程 B（接收方）
    两个并发 add 会写同一槽位且计数 +2 丢一个区域 = 未注册的协程栈不被扫描
    = 存活对象被提前回收。修复：gc.c 专用 region mutex（教训中的教训：被加锁
    函数有三个早退路径，第一版全部持锁 return——第二次调用必死锁）。
+9. **唤醒归档的五个连环洞（2026-10-06，N=8 错结果根因）**。"协程已注册、
+   正执行 poll"的窗口与 park 路径之间没有原子性：① `mt_switch_away` 不声明
+   状态就挂起（争用让步把 CO_COND 覆写成 CO_YIELD → 状态阶梯 fallthrough 误
+   归裸 wait，钉死时钟）；② kick 无条件消费 futures 表项（让步中的等待者被
+   吃掉 → 丢唤醒）；③ owed 与运行队列共享 qnext（双重归档自环链）；④
+   register→poll→park 中 poll 让步吞掉唤醒的幻影队列项（park 时两处归档皆
+   空 → NOWHERE 丢模块）；⑤ between-delta 谓词拒绝在队列非空时停泊（无痕
+   忙自旋烧满核）。修复模式：**挂起必带 park 态**（切换点声明 CO_COND）、
+   **注册幂等 + 归档与令牌分离**（见第 10 条）、**每条链表专用链接字段**
+   （qnext/onext/fnext 各管各的）、**边界自愈兜底**（把"停泊却无处可寻"
+   修复为一次伪唤醒——do_wait 按设计容忍伪唤醒，残余交错从丢失降级为一拍
+   延迟）、**状态阶梯显式断言**（exit 66，宁可炸也不 fallthrough）。
+10. **no-consume futures 协议（2026-10-07，64a73086）**。futures 表项是等待者
+    整个 do_wait 的**停靠归档**，不是一次性消费令牌：kick 只把 CO_COND 翻成
+    RUNNABLE（队列推送），**绝不摘链**——表项只由等待者自己的退出路径
+    （unregister/cancel/destroy）在锁内摘除。旧"消费-再注册"握手有一条修
+    不死的缝：任何背着 runner 摘链的路径都会留下 in_futures=1 却无处可寻的
+    协程（每 ~16 周期一次的自愈轮询，修复晚于管线深度时就是丢字符误执行）。
+    表项常驻后，**停泊的注册等待者构造上可寻**；`state == CO_COND` 就是
+    "需要唤醒"的纪元标记。
+11. **pop→RUNNING 的幻影窗口（2026-10-12，free-mt exit 63/轮屏障失效）**。
+    `mt_runq_pop_locked` 持 glock 出队，`_co_switch_in` 的 CO_RUNNING 置位却在
+    锁外——两步之间的 wake 读到合法幻影停靠者**陈旧的 CO_COND**，"生效"并
+    给一个即将恢复的协程再压一个幻影；恢复者的 cancel 因状态已是 RUNNING
+    （≠ RUNNABLE）跳过摘除，陈旧幻影残留（queued=1）。下一次裸 `wait 0` 的
+    owed 归档被"dup refused"拒绝，协程被自己的陈旧幻影**同轮复活**——轮
+    屏障被破坏，发射可以早于 waiter 重订阅，事件丢失、协程永久停靠。修复
+    模式：**出队与 RUNNING 声明同一临界区**（wake 在窗口内看到 RUNNING →
+    无操作，即将到来的恢复-重轮询按 Mesa 语义吸收它）；cancel 改按
+    `queued` 标志摘幻影（RUNNING 协程带队列项 = 不变式破坏，一律修复）。
+    顺带：策略文件派生（mt→free-mt）时逐函数核对锁纪律——unsubscribe
+    就是在派生时丢了 `_sync_begin`（mt 版有、free 版无），单靠 review 不会
+    发现，靠的是"ambient EMPEROR_THREADS=4 跑全部子集"这一步。
+12. **co_all_head 是全线程共享的链表（2026-10-12，SIGSEGV）**。co_create
+    建链在 spawn 线程、_emperor_co_destroy 摘链在收割线程，都在 delta 中段
+    并发；无锁变异下两次并发摘链丢更新，链上残留已 munmap 的节点，边界
+    自愈/idle-dump/destroy-all 的下一次遍历读已释放内存（coredump 定位
+    mt_scan_lost_parked → co_state_get）。修复：mt_kernel_seen 后建链/摘链
+    持 glock（经典路径与内核启动前的 main 单线程免锁）。同类教训：**全线程
+    可达的记账字段一律 RELAXED 原子**——gc_poll 的 STW 时钟/轮询计数/
+    采集点、mt_live_count 都是回边安全点普及后才变热的，普通读写被 TSan
+    一次抓了 3.4 万条；且注意 **TSan 的进程退出码是 66**，与调度器状态阶梯
+    断言的 exit 66 撞号——先看 stderr 的 "park-state invariant violated"
+    再定性。
 
 ---
 
@@ -1394,7 +1472,7 @@ delta 边界七步收口）；垃圾回收用"本地堆 + 共享堆"两级并且
 | M4 | sim-mt：**收敛式 delta**（就绪即恢复 + 跨线程收敛判定 + 边界七步）、条件同步的通道族、创建协议（可偷标记 + 条件加锁的结果容器）、`--threads=N` | `--threads=1` 与 sim 逐字节一致；13.2 节审计在新调度器上重做完成 |
 | M5 | 垃圾回收：v0（单堆 + 分配锁 + 边界停世界 + 分配阻塞算停靠）→ v1（两个堆 + 移交点复制）。**v0 已落地**（分配锁/边界 STW 随 M4b；压力阀 2026-10-03） | 压测与基准；TSAN 零报告 |
 | M6 | `Signal<T>` 与延迟版 `Fifo`（含多写者合并规则）；`--shuffle-deltas` 检测器；`Ownership`（含整张图新鲜性检查）；公开同步 API | 检测器在 CI 跑多轮种子；相位无关用例的集合比较 |
-| M7 | 自由形态（free-mt）、循环回边安全暂停点、`AsyncQueue`、挂起诊断、文档与性能报告 | 全绿 |
+| M7 | 自由形态（free-mt）、循环回边安全暂停点、`AsyncQueue`、挂起诊断、文档与性能报告。**v1 已落地（2026-10-04/07）**：`--enable-free-mt`（立即构件 + AsyncQueue + `wait n>0` 运行期拒绝）、发射器循环回边 GC_POLL 安全点、poll 升级 STW；EMPEROR_HANG_WATCHDOG 转储是挂起诊断的起点（完整版"还有哪些协程在等什么"未做）；文档与性能报告待定稿批次 | FreeMtTest 全绿；FreeMtBusyGc（忙服务 GC）；TSan 清零 |
 
 每个阶段独立分支 + 提交（见 AGENTS.md 的工作流）；M1/M2/M3 可与 M0 之后并行推进（M2 依赖
 M0 定稿的诊断口径）。

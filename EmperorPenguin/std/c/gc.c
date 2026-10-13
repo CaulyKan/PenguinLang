@@ -829,7 +829,7 @@ static void _gc_st_report(void) {
         "gc stats: allocs=%zu (%.2f MiB) live_peak=%.2f MiB polls=%llu\n",
         _gc_st_allocs, _gc_st_alloc_bytes / 1048576.0,
         _gc_st_live_peak / 1048576.0,
-        (unsigned long long)_gc_st_polls);
+        (unsigned long long)__atomic_load_n(&_gc_st_polls, __ATOMIC_RELAXED));
 }
 
 
@@ -1464,7 +1464,7 @@ static void gc_collect_greentea(int emergency) {
     if (_emperor_gc_disabled) return;
     if (!_emperor_gc_stack_bottom || _emperor_gc_collecting) return;
     _emperor_gc_collecting = 1;
-    _emperor_gc_collect_count++;
+    __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
     uint64_t _gc_st_t0 = 0;
     if (_gc_timing) { _gc_st_t0 = _gc_st_ns_now(); _gc_st_fulls++; }
 
@@ -1649,7 +1649,7 @@ static EMPEROR_NO_ASAN void gc_collect_main(void) {
     }
     /* Conservative mode: the inline sequential full collect below. */
     _emperor_gc_collecting = 1;
-    _emperor_gc_collect_count++;
+    __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
     uint64_t _gc_st_t0 = 0;
     if (_gc_timing) { _gc_st_t0 = _gc_st_ns_now(); _gc_st_fulls++; }
 
@@ -2345,17 +2345,23 @@ static int64_t _gc_stw_now_ms(void) {
 }
 
 void _emperor_gc_poll(void) {
-    if (_gc_timing) _gc_st_polls++;
+    /* Every field this touches runs on EVERY coroutine from EVERY thread —
+     * plain accesses here are write-write/read-write races by construction
+     * (TSan flagged the whole family when the back-edge safepoint made
+     * polls ubiquitous). All bookkeeping: RELAXED is the right order. */
+    if (_gc_timing) __atomic_fetch_add(&_gc_st_polls, 1, __ATOMIC_RELAXED);
     if (_emperor_gc_mode_conservative || _emperor_gc_collecting ||
         !_emperor_gc_stack_bottom || _emperor_gc_disabled) {
         return;
     }
     if (_emperor_gc_stress_every) {
-        if (_emperor_gc_stress_max && _emperor_gc_collect_count >= _emperor_gc_stress_max) {
-            _emperor_gc_stress_every = 0; /* budget exhausted — normal polls */
-        } else if (++_emperor_gc_stress_counter >= _emperor_gc_stress_every) {
-            _emperor_gc_stress_counter = 0;
-            _emperor_gc_last_collect_site = __builtin_return_address(0);
+        if (_emperor_gc_stress_max &&
+            __atomic_load_n(&_emperor_gc_collect_count, __ATOMIC_RELAXED) >= _emperor_gc_stress_max) {
+            __atomic_store_n(&_emperor_gc_stress_every, 0, __ATOMIC_RELAXED); /* budget exhausted — normal polls */
+        } else if (__atomic_fetch_add(&_emperor_gc_stress_counter, 1, __ATOMIC_RELAXED) + 1 >=
+                   __atomic_load_n(&_emperor_gc_stress_every, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&_emperor_gc_stress_counter, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);
             __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED); /* stress = full collection */
             if (_emperor_sched_parallel_active()) {
                 /* Parallel delta in flight: workers hold coroutine stacks
@@ -2368,25 +2374,28 @@ void _emperor_gc_poll(void) {
         return;
     }
     if (!__atomic_load_n(&_emperor_gc_want_collect, __ATOMIC_RELAXED)) {
-        _gc_stw_first_seen = 0; /* flag drained — re-arm the age clock */
+        __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED); /* flag drained — re-arm the age clock */
         return;
     }
-    _emperor_gc_last_collect_site = __builtin_return_address(0);
+    __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);
     if (_emperor_sched_parallel_active()) {
-        if (_gc_stw_ms < 0) {
+        int64_t stw_ms = __atomic_load_n(&_gc_stw_ms, __ATOMIC_RELAXED);
+        if (stw_ms < 0) {
             const char* v = getenv("EMPEROR_GC_STW_MS");
-            _gc_stw_ms = (v && v[0] != '\0') ? atoll(v) : 250;
+            stw_ms = (v && v[0] != '\0') ? atoll(v) : 250;
+            __atomic_store_n(&_gc_stw_ms, stw_ms, __ATOMIC_RELAXED);
         }
-        if (_gc_stw_ms > 0) {
-            if (_gc_stw_first_seen == 0) {
-                _gc_stw_first_seen = _gc_stw_now_ms();
-            } else if (_gc_stw_now_ms() - _gc_stw_first_seen > _gc_stw_ms) {
+        if (stw_ms > 0) {
+            int64_t first = __atomic_load_n(&_gc_stw_first_seen, __ATOMIC_RELAXED);
+            if (first == 0) {
+                __atomic_store_n(&_gc_stw_first_seen, _gc_stw_now_ms(), __ATOMIC_RELAXED);
+            } else if (_gc_stw_now_ms() - first > stw_ms) {
                 extern int _emperor_sched_stw_park(void);
                 if (_emperor_sched_stw_park()) {
                     /* Resumed by the boundary's post-collection unpark. */
                 }
-                _gc_stw_first_seen = 0; /* re-arm (flag may still be set —
-                                           the next poll re-ages it) */
+                __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED); /* re-arm (flag may still be set —
+                                               the next poll re-ages it) */
             }
         }
         return; /* deferred to the boundary (escalation parks + returns) */
@@ -2399,7 +2408,7 @@ void _emperor_gc_poll(void) {
 void _emperor_gc_collect_now(void) {
     if (_emperor_gc_disabled || !_emperor_gc_stack_bottom) return;
     if (__atomic_load_n(&_emperor_gc_want_collect, __ATOMIC_RELAXED)) {
-        _emperor_gc_last_collect_site = __builtin_return_address(0);
+        __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);
         gc_collect_auto();
     }
 }

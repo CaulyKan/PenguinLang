@@ -76,6 +76,37 @@ jobs:
       # self-contained interactive report at build/testruns/<timestamp>/summary.html
       # (uploaded below, also when the suite exits non-zero).
       run: make test
+    - name: MT scheduler regression net (EMPEROR_THREADS=4 + shuffle seeds)
+      # The mt / free-mt kernels run at EMPEROR_THREADS=1 in the main suite
+      # except where a test pins its own Run Env. This net covers the rest:
+      #   1. both scheduler-test categories at ambient EMPEROR_THREADS=4 —
+      #      the parallel window (steal routing, component locks, wakeup
+      #      archiving, concurrent coroutine teardown). This exact step
+      #      caught two kernel bugs before they shipped: the free-mt Event
+      #      unsubscribe running without the component lock (lost
+      #      emission -> lost wake, exit 63) and the all-coroutines list
+      #      being linked/unlinked lock-free from every thread (concurrent
+      #      destroys left a freed node on the chain -> boundary self-heal
+      #      SIGSEGV).
+      #   2. the order-perturbation detector (--shuffle-deltas), 3 seeds,
+      #      single worker: deferred-commit shapes are order-immune by
+      #      design. MtWaitZeroEqualsBare is excluded (--exclude) because
+      #      it legitimately pins delta-internal FIFO order — shuffling is
+      #      SUPPOSED to change that (design doc 6.x: determinism is a
+      #      program property, provided by deferred components).
+      run: |
+        dotnet run --project Tests/PenguinTestRunner.csproj -- \
+          --filter "MtSchedulerTest/" --compilers pass3 --compare-with none
+        dotnet run --project Tests/PenguinTestRunner.csproj -- \
+          --filter "FreeMtTest/" --compilers pass3 --compare-with none
+        for seed in 1 7 42; do
+          EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=$seed \
+            dotnet run --project Tests/PenguinTestRunner.csproj -- \
+            --filter "MtSchedulerTest/Mt" --exclude "MtWaitZeroEqualsBare" \
+            --compilers pass3 --compare-with none
+        done
+      env:
+        EMPEROR_THREADS: 4
     - name: Upload test report
       if: always()
       uses: actions/upload-artifact@v4

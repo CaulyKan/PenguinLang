@@ -342,6 +342,7 @@ dotnet run --project Tests/PenguinTestRunner -- [options] [filter]
 |---|---|---|
 | `--compilers babypenguin,pass1,pass2,pass3[,all]` | each test's Apply To | Restrict to these compilers (intersected with Apply To). |
 | `--filter <glob\|substr>` | all | Select files, e.g. `CalculationTest/*` or `AddTest`. |
+| `--exclude <glob\|substr>` | none | Drop matching files (applied after `--filter`). The CI shuffle-deltas step uses it to skip tests that legitimately pin delta-internal FIFO order (shuffling is *supposed* to change those). |
 | `--probe` | off | Ignore Apply To and run the selected compilers on every test — use to discover cross-compiler agreement before expanding Apply To. |
 | `--parallel <n>` | cores−1 | Max concurrent (test × compiler) combinations. |
 | `--timeout-compile <s>` | 600 | Per-case compile timeout. |

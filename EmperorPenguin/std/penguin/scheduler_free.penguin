@@ -181,17 +181,39 @@ namespace __builtin {
     interface IFuture {
         impl IReferenceType;
         fun poll(this) -> mut FutureState<T>;
+        // DIRECTED WAKE: a component with a concrete delivery side
+        // (channel/Event/Signal/SpawnFuture) overrides these to publish
+        // the parked waiter into its OWN list; the delivery then wakes
+        // exactly those handles (_mt_wake) instead of the global
+        // wake-all (_mt_kick_futures), which re-polls every parked
+        // waiter in the program per delivery (measured: 12.1M spurious
+        // wakes / 21M switch-ins on 8-core tinyriscv). The publish runs
+        // BEFORE the first registered poll — a delivery racing the
+        // publish either finds the handle (wake) or the poll that
+        // follows sees the value; no lost wake. Default: no-op — custom
+        // futures keep the global kick sources (spawn completion,
+        // boundary flush).
+        fun register_waiter(this) {}
+        fun unregister_waiter(this) {}
 
         !async fun do_wait(mut this) -> T {
             let state: mut FutureState<T> = this.poll();
             if (state is FutureState<T>.ready_finished) {
-                __builtin._mt_kick_futures();
                 return state.ready_finished;
             }
             if (state is FutureState<T>.finished) {
                 return state.ready_finished;
             }
             __builtin._mt_future_register();
+            // Publish ONCE — the component lists are NO-CONSUME (the same
+            // protocol as the C-side futures set): a wake walks the list
+            // and _mt_wake's each entry (a no-op unless CO_COND) WITHOUT
+            // unlinking, so a woken waiter that re-parks empty-handed (the
+            // first-observer loser) stays findable; only this coroutine's
+            // own exits unregister. The per-iteration re-publish this
+            // replaced contended the component spinlock twice per wait
+            // round (8M extra yield-requeues on 8-core tinyriscv N=4).
+            this.register_waiter();
             while (true) {
                 // The registered poll may throw (channel closed): CANCEL
                 // first — a parked-state throw would leave the coroutine
@@ -200,14 +222,17 @@ namespace __builtin {
                 try {
                     state = this.poll();
                 } catch (e) {
+                    this.unregister_waiter();
                     __builtin._mt_future_cancel();
                     __throw_runtime_error(__throw_get_msg(), __throw_get_code());
                 }
                 if (state is FutureState<T>.ready_finished) {
+                    this.unregister_waiter();
                     __builtin._mt_future_cancel();
                     break;
                 }
                 if (state is FutureState<T>.finished) {
+                    this.unregister_waiter();
                     __builtin._mt_future_cancel();
                     break;
                 }
@@ -215,9 +240,12 @@ namespace __builtin {
                 // Woken or spurious: loop and re-poll. The futures entry
                 // is still linked — the next kick finds us again.
             }
-            if (state is FutureState<T>.ready_finished) {
-                __builtin._mt_kick_futures();
-            }
+            // No exit kick: every component that CONSUMES on poll wakes
+            // its own side effects (Fifo's poll wakes backpressured
+            // writers; Signal is first-observer — other waiters must sleep
+            // until the NEXT write; SpawnFuture/LatestChannel polls are
+            // non-consuming). The old global wake-all here re-polled every
+            // parked waiter in the program per successful wait.
             // A `finished` (already-consumed) future returns its stale payload
             // slot — BabyPenguin returns an uninitialized default there.
             return state.ready_finished;
@@ -309,11 +337,22 @@ namespace __builtin {
         impl ISync;
         done: mut bool = false;
         result: mut Option<R> = new Option<R>.none();
+        // Parked `wait f` joiners (directed wake — see IFuture).
+        waiters: mut _ChanList<__Coroutine>;
+
+        fun new(mut this) {
+            this.waiters = new _ChanList<__Coroutine>();
+        }
 
         fun complete(mut this, v: R) {
             _sync_begin();
             this.result = new Option<R>.some(v);
             this.done = true;
+            let wi: mut i64 = 0;
+            while (wi < this.waiters.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
+                wi = wi + 1;
+            }
             _sync_end();
         }
 
@@ -323,6 +362,16 @@ namespace __builtin {
                     return new FutureState<R>.ready_finished(this.result.some);
                 }
                 return new FutureState<R>.not_ready();
+            }
+            fun register_waiter(this) {
+                let self: mut __SpawnFuture<R> = cast<mut __SpawnFuture<R>>(this);
+                _sync_begin();
+                self.waiters.push(_co_current());
+                _sync_end();
+            }
+            fun unregister_waiter(this) {
+                let self: mut __SpawnFuture<R> = cast<mut __SpawnFuture<R>>(this);
+                _waiter_list_remove(self.waiters);
             }
         }
     }
@@ -617,11 +666,18 @@ namespace __builtin {
         // everywhere + ctor assignment avoids the path entirely.
         committed: T;
         pending: mut Option<T>;
-        // Set at each commit; poll consumes the freshness.
-        fresh: mut bool;
+        // Set at each commit; poll consumes the freshness. ATOMIC: the
+        // free form's Signal is ISync, so two waiters woken by one commit
+        // can poll concurrently — an unlocked check-then-clear let BOTH
+        // consume (one value delivered twice, the other lost: the 980/990
+        // FreeMtSignalRound corruption). The swap is the consume: exactly
+        // one caller sees true.
+        fresh: mut AtomicBool;
         in_registry: mut bool;
         // Registry identity (classes carry no reference equality).
         sid: i64;
+        // Parked `wait sig` waiters (directed wake — see IFuture).
+        waiters: mut _ChanList<__Coroutine>;
 
         // NOTE: the parameter cannot be named `initial` — it is a grammar
         // keyword (initial blocks) and silently parses into empty
@@ -629,9 +685,20 @@ namespace __builtin {
         fun new(mut this, init_value: T) {
             this.committed = init_value;
             this.pending = new Option<T>.none();
-            this.fresh = false;
+            this.fresh = new AtomicBool(false);
             this.in_registry = false;
             this.sid = _mt_next_id();
+            this.waiters = new _ChanList<__Coroutine>();
+        }
+
+        fun wake_waiters(mut this) {
+            _sync_begin();
+            let wi: mut i64 = 0;
+            while (wi < this.waiters.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
+                wi = wi + 1;
+            }
+            _sync_end();
         }
 
         fun read(this) -> T {
@@ -639,13 +706,18 @@ namespace __builtin {
         }
 
         fun write(mut this, v: T) {
-            // Free form: commit INLINE and kick the parked waiters now —
+            // Free form: commit INLINE and wake the parked waiters now —
             // readers observe the write in the SAME convergence round (the
             // deferred registry path is sim-mt's; it stays below, unused).
+            // The value MUST be parked into pending before commit() — the
+            // original body committed an EMPTY pending, silently discarding
+            // every write (free-mt had no Signal value-delivery test until
+            // FreeMtSignalRound exposed it).
             _sync_begin();
+            this.pending = new Option<T>.some(v);
             this.commit();
             _sync_end();
-            _mt_kick_futures();
+            this.wake_waiters();
         }
 
         fun commit(mut this) {
@@ -653,7 +725,7 @@ namespace __builtin {
             if (this.pending.is_some()) {
                 this.committed = this.pending.some;
                 this.pending = new Option<T>.none();
-                this.fresh = true;
+                this.fresh.store(true);
             }
         }
 
@@ -668,11 +740,20 @@ namespace __builtin {
         impl IFuture<T> {
             fun poll(this: IFuture<T>) -> mut FutureState<T> {
                 let self: mut Signal<T> = cast<mut Signal<T>>(this);
-                if (self.fresh) {
-                    self.fresh = false;
+                if (self.fresh.swap(false)) {
                     return new FutureState<T>.ready_finished(self.committed);
                 }
                 return new FutureState<T>.not_ready();
+            }
+            fun register_waiter(this) {
+                let self: mut Signal<T> = cast<mut Signal<T>>(this);
+                _sync_begin();
+                self.waiters.push(_co_current());
+                _sync_end();
+            }
+            fun unregister_waiter(this) {
+                let self: mut Signal<T> = cast<mut Signal<T>>(this);
+                _waiter_list_remove(self.waiters);
             }
         }
 
@@ -988,6 +1069,30 @@ namespace __builtin {
         fun is_closed(this) -> bool;
     }
 
+
+    // Directed-wake bookkeeping: remove the CURRENT coroutine's handle from
+    // a component waiter list (identity = _co_seq — classes carry no
+    // reference equality). Called on every do_wait exit: the loop-top
+    // publish leaves the handle in the list even when the poll that
+    // follows finds the value, and a satisfied waiter's coroutine may be
+    // DESTROYED before the next wake — a lingering handle would have the
+    // waker's _mt_wake read freed memory (use-after-munmap).
+    fun _waiter_list_remove(list: mut _ChanList<__Coroutine>) {
+        _sync_begin();
+        let seq: i64 = _co_seq(_co_current());
+        let i: mut i64 = 0;
+        while (i < list.size()) {
+            let h: mut __Coroutine = cast<mut __Coroutine>(list.at(i).some);
+            if (_co_seq(h) == seq) {
+                list.remove_at(i);
+                _sync_end();
+                return;
+            }
+            i = i + 1;
+        }
+        _sync_end();
+    }
+
     fun _channel_closed_error() {
         __throw_runtime_error("channel closed", 100);
     }
@@ -1013,6 +1118,10 @@ namespace __builtin {
         // them, list cleared) whenever a take frees a slot; spurious wakes
         // are absorbed by the write loop's re-check.
         writers: mut _ChanList<__Coroutine> = new _ChanList<__Coroutine>();
+        // Parked `wait fifo` readers (directed wake — see IFuture): woken
+        // (all, list cleared) by deliver; spurious wakes re-check and
+        // re-park.
+        readers: mut _ChanList<__Coroutine> = new _ChanList<__Coroutine>();
         in_registry: mut bool = false;
         fid: i64 = 0;
 
@@ -1055,8 +1164,12 @@ namespace __builtin {
             _sync_begin();
             this.queue.enqueue(v);
             this.latest = new Option<T>.some(v);
+            let wi: mut i64 = 0;
+            while (wi < this.readers.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.readers.at(wi).some));
+                wi = wi + 1;
+            }
             _sync_end();
-            _mt_kick_futures();
         }
 
         impl ISink<T> {
@@ -1132,7 +1245,13 @@ namespace __builtin {
                 // observes the close (writers re-check explicitly; readers
                 // re-poll and hit check_closed).
                 self.wake_writers();
-                _mt_kick_futures();
+                _sync_begin();
+                            let wi: mut i64 = 0;
+                            while (wi < self.readers.size()) {
+                                _mt_wake(cast<mut __Coroutine>(self.readers.at(wi).some));
+                                wi = wi + 1;
+                            }
+                _sync_end();
             }
 
             fun is_closed(this: IChannel<T>) -> bool {
@@ -1154,6 +1273,16 @@ namespace __builtin {
                     return new FutureState<T>.ready_finished(v.some);
                 }
                 return new FutureState<T>.not_ready();
+            }
+            fun register_waiter(this) {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                _sync_begin();
+                self.readers.push(_co_current());
+                _sync_end();
+            }
+            fun unregister_waiter(this) {
+                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
+                _waiter_list_remove(self.readers);
             }
         }
 
@@ -1215,9 +1344,22 @@ namespace __builtin {
         seed_deliver: mut bool = false;
         closed: mut bool = false;
         in_registry: mut bool = false;
+        // Parked `wait ch` takers (directed wake — see IFuture).
+        waiters: mut _ChanList<__Coroutine>;
 
         fun new(mut this) {
             this.cid = _mt_next_id();
+            this.waiters = new _ChanList<__Coroutine>();
+        }
+
+        fun wake_waiters(mut this) {
+            _sync_begin();
+            let wi: mut i64 = 0;
+            while (wi < this.waiters.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
+                wi = wi + 1;
+            }
+            _sync_end();
         }
 
         fun set_seed(mut this, v: T, deliver: bool) {
@@ -1249,8 +1391,12 @@ namespace __builtin {
             this.committed.enqueue(v);
             this.ever_written = true;
             this.last_value = new Option<T>.some(v);
+            let wi: mut i64 = 0;
+            while (wi < this.waiters.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
+                wi = wi + 1;
+            }
             _sync_end();
-            _mt_kick_futures();
         }
 
         // Advance the cursor: oldest undelivered COMMITTED transaction,
@@ -1259,14 +1405,22 @@ namespace __builtin {
         // the delta boundary (commit_now) — a wire settles to one value per
         // delta and readers observe it the next delta at the same tick.
         fun take(mut this) -> Option<T> {
+            // Under _sync (as in the mt policy): the channel is ISync in the
+            // free form, and two woken takers racing an unlocked dequeue
+            // popped the SAME node (one transaction delivered twice, its
+            // sibling lost — the FreeMtLatestRound 970/990 corruption).
+            _sync_begin();
             let head: Option<T> = this.committed.dequeue();
             if (head.is_some()) {
+                _sync_end();
                 return head;
             }
             if (!this.ever_written && this.seed.is_some() && !this.seed_taken && this.seed_deliver) {
                 this.seed_taken = true;
+                _sync_end();
                 return this.seed;
             }
+            _sync_end();
             return new Option<T>.none();
         }
 
@@ -1278,6 +1432,7 @@ namespace __builtin {
             if (this.pending.is_some()) {
                 this.committed.enqueue(this.pending.some);
                 this.pending = new Option<T>.none();
+                this.wake_waiters();
             }
         }
 
@@ -1354,6 +1509,16 @@ namespace __builtin {
                     return new FutureState<T>.ready_finished(v.some);
                 }
                 return new FutureState<T>.not_ready();
+            }
+            fun register_waiter(this) {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                _sync_begin();
+                self.waiters.push(_co_current());
+                _sync_end();
+            }
+            fun unregister_waiter(this) {
+                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
+                _waiter_list_remove(self.waiters);
             }
         }
     }
@@ -1656,6 +1821,8 @@ namespace __builtin {
         }
 
         fun write_all(mut this, v: T) {
+            // slot.push and every wire write wake their OWN parked waiters
+            // (directed) — no global kick needed.
             this.slot.push(v);
             let wi: mut i64 = 0;
             while (wi < this.wires.size()) {
@@ -1663,8 +1830,6 @@ namespace __builtin {
                 w.write(v);
                 wi = wi + 1;
             }
-            // The hub slot itself is directly waitable (`wait out_port`).
-            _mt_kick_futures();
         }
 
         impl ISink<T> {
@@ -1810,6 +1975,7 @@ namespace __builtin {
         sid: i64 = 0;
         ev: mut Event<T>;
         value: mut Option<T> = new Option<T>.none();
+        // Published into ev.waiters at register_waiter (directed wake).
 
         fun new(mut this, ev: mut Event<T>) {
             this.sid = _event_sub_next_id();
@@ -1832,6 +1998,18 @@ namespace __builtin {
                 }
                 return new FutureState<T>.not_ready();
             }
+            fun register_waiter(this) {
+                // Park on the EVENT's list, not the subscription's: emit
+                // delivers per subscription but wakes the event's waiters.
+                let self: mut _EventSubscription<T> = cast<mut _EventSubscription<T>>(this);
+                _sync_begin();
+                self.ev.waiters.push(_co_current());
+                _sync_end();
+            }
+            fun unregister_waiter(this) {
+                let self: mut _EventSubscription<T> = cast<mut _EventSubscription<T>>(this);
+                _waiter_list_remove(self.ev.waiters);
+            }
         }
     }
 
@@ -1847,6 +2025,8 @@ namespace __builtin {
         impl ISync;
 
         subscribers: mut _ChanList<_EventSubscription<T>> = new _ChanList<_EventSubscription<T>>();
+        // Parked `wait ev` waiters (directed wake — see IFuture).
+        waiters: mut _ChanList<__Coroutine> = new _ChanList<__Coroutine>();
         // Wires granted to connected input ports (connect(ev, f.x)): unlike
         // a parked wait's one-shot subscription, a wire stays registered and
         // its own delivery cursor governs when the consumer sees a value.
@@ -1869,9 +2049,16 @@ namespace __builtin {
                 ch.write(v);
                 w = w + 1;
             }
-            // Free form: the deliveries are observable NOW — kick the
-            // parked waiters immediately (same convergence round).
-            _mt_kick_futures();
+            // Free form: the deliveries are observable NOW — wake the
+            // parked waiters immediately (same convergence round). Directed:
+            // only THIS event's waiters (stale handles no-op in _mt_wake).
+            _sync_begin();
+            let wi: mut i64 = 0;
+            while (wi < this.waiters.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
+                wi = wi + 1;
+            }
+            _sync_end();
         }
 
         fun subscribe(mut this, s: mut _EventSubscription<T>) {
@@ -1889,17 +2076,26 @@ namespace __builtin {
         }
 
         fun unsubscribe(mut this, sid: i64) {
+            // MUST hold _sync: poll (waiter's thread) unsubscribes when it
+            // consumes a delivery, concurrently with other waiters' polls
+            // and with subscribe/emit — an unlocked remove_at races the
+            // list (lost removal AND lost push observed as a delivered
+            // value landing on a stale subscription while the fresh one
+            // never registers — the lost-wake exit 63 shape).
+            _sync_begin();
             let i: mut i64 = 0;
             while (i < this.subscribers.size()) {
                 let cur: Option<_EventSubscription<T>> = this.subscribers.at(i);
                 if (cur.is_some()) {
                     if (cur.some.sid == sid) {
                         this.subscribers.remove_at(i);
+                        _sync_end();
                         return;
                     }
                 }
                 i = i + 1;
             }
+            _sync_end();
         }
     }
 
@@ -1946,10 +2142,10 @@ namespace __builtin {
         }
 
         fun wake_waiters_locked(mut this) {
-            while (this.waiters.size() > 0) {
-                let h: mut __Coroutine = cast<mut __Coroutine>(this.waiters.at(0).some);
-                this.waiters.remove_at(0);
-                _mt_wake(h);
+            let wi: mut i64 = 0;
+            while (wi < this.waiters.size()) {
+                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
+                wi = wi + 1;
             }
         }
 

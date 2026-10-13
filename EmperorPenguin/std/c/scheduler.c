@@ -403,6 +403,26 @@ static int sched_exit_requested = 0; /* MT_ALD/MT_AST only */
 static int sched_exit_code = 0;
 /* Live coroutines (created minus destroyed) — the mt kernel's exit check. */
 static int64_t mt_live_count = 0;
+/* EMPEROR_SCHED_STATS=1 counters (printed at destroy_all) — the N>1
+ * performance picture in one line: boundaries, wake fan-out, parks. */
+static int64_t mt_st_deltas = 0, mt_st_kicks = 0, mt_st_kick_wakes = 0;
+static int64_t mt_st_between_parks = 0, mt_st_switchins = 0, mt_st_selfheal = 0;
+static int64_t mt_st_wake_noop = 0, mt_st_suppressed = 0;
+static int64_t mt_st_wake_effective = 0;
+static int mt_stats_on = -1;
+static void mt_st_init(void) {
+    /* Idempotent lazy init from any thread: CAS the -1 sentinel (a plain
+     * read/write pair here is itself a TSan report — the counters exist
+     * to run UNDER the race detector). */
+    if (__atomic_load_n(&mt_stats_on, __ATOMIC_RELAXED) >= 0) return;
+    const char* v = getenv("EMPEROR_SCHED_STATS");
+    int parsed = (v && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    int expect = -1;
+    __atomic_compare_exchange_n(&mt_stats_on, &expect, parsed, 0,
+                                __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+static void mt_st_add_heal(int n) { if (n <= 0) return; mt_st_init(); if (mt_stats_on == 1) __atomic_fetch_add(&mt_st_selfheal, n, __ATOMIC_RELAXED); }
+static void mt_st_inc(int64_t* c) { mt_st_init(); if (mt_stats_on == 1) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED); }
 
 /* ---- Stall diagnostics (design doc ch.12: "two stall classes, never a
  * silent hang") ----
@@ -648,9 +668,15 @@ static void co_win_trampoline(void* arg) {
 
 static int co_seq_counter = 0;
 
+/* Forward decls (defined beside _emperor_co_destroy): the all-coroutines
+ * list link/unlink are glock-guarded once the mt kernel is up — they run
+ * concurrently from every thread mid-delta. */
+static void mt_co_all_link(EmperorCoroutine* co);
+static void mt_co_all_unlink(EmperorCoroutine* co);
+
 static EmperorCoroutine* co_create_queued(void (*entry)(void*), int auto_inbox) {
     if (tls_thread_index < 0) sched_thread_register();
-    mt_live_count++;
+    __atomic_fetch_add(&mt_live_count, 1, __ATOMIC_RELAXED); /* every thread creates/destroys */
     EmperorCoroutine* co;
 #if defined(EMPEROR_UCONTEXT)
     size_t total = EMPEROR_CO_STACK_SIZE;
@@ -731,8 +757,7 @@ static EmperorCoroutine* co_create_queued(void (*entry)(void*), int auto_inbox) 
     _emperor_gc_scan_add((char*)co,
                          ((sizeof(EmperorCoroutine) + 7u) & ~(size_t)7u));
 #endif
-    co->all_next = co_all_head;
-    co_all_head = co;
+    mt_co_all_link(co);
     if (auto_inbox) {
         inbox_push(co);
     }
@@ -749,20 +774,24 @@ static EmperorCoroutine* co_create(void (*entry)(void*)) {
  * not outlive the stack it points at (the use-after-munmap class). */
 static void mt_unfile_runq_phantom(EmperorCoroutine* co);
 
+/* The all-coroutines list is mutated from EVERY thread: co_create links on
+ * the spawning thread, _emperor_co_destroy unlinks on whichever thread
+ * reaped the finished coroutine — both MID-DELTA, concurrently. An
+ * unguarded unlink pair loses an update and leaves a munmap'd node on the
+ * chain; the next boundary self-heal / idle-dump / destroy-all walk reads
+ * freed memory (the free-mt Event-hammer SIGSEGVs). Single-threaded
+ * callers (classic scheduler, pre-kernel main) skip the lock: the mt
+ * kernel's first entry sets mt_kernel_seen, and no second thread exists
+ * before that. (Defined beside mt_unfile_runq_phantom, after the glock
+ * section — see the forward decls above co_create_queued.) */
+
 void _emperor_co_destroy(void* handle) {
     EmperorCoroutine* co = (EmperorCoroutine*)handle;
-    mt_live_count--;
+    __atomic_fetch_add(&mt_live_count, -1, __ATOMIC_RELAXED); /* every thread destroys */
     mt_unfile_runq_phantom(co);
     /* Unlink from the all-coroutines list before anything is freed: the GC
      * frame walk must not see a destroyed coroutine's saved chain. */
-    EmperorCoroutine** pp = &co_all_head;
-    while (*pp) {
-        if (*pp == co) {
-            *pp = co->all_next;
-            break;
-        }
-        pp = &(*pp)->all_next;
-    }
+    mt_co_all_unlink(co);
     _emperor_gc_remove_root(&co->entry_arg);
     _emperor_gc_scan_remove(co->block); /* NULL: fiber never ran — no stack region */
 #if defined(EMPEROR_UCONTEXT)
@@ -789,8 +818,9 @@ int64_t _emperor_co_seq(void* handle) {
  * coroutine runs. */
 int64_t _emperor_co_switch_in(void* handle) {
     EmperorCoroutine* co = (EmperorCoroutine*)handle;
+    mt_st_inc(&mt_st_switchins);
     sched_current = co;
-    co->lib_park = 0; /* resumed: any park-window claim is spent; the next
+    __atomic_store_n(&co->lib_park, 0, __ATOMIC_RELAXED); /* resumed: any park-window claim is spent; the next
                          park re-claims (park_begin / future_register) */
     co_state_set(co, CO_RUNNING);
     co_owner_set(co, tls_thread_index); /* decision A: first runner owns it forever */
@@ -1452,7 +1482,7 @@ static void mt_stall_abort(int code, const char* what, const char* hint) {
         fflush(stdout);
         fprintf(stderr, "emperor sched: stall (exit %d): %s\n", code, what);
         fprintf(stderr, "  %s; %lld coroutine(s) live. Raise the matching EMPEROR_SCHED_*_BUDGET knob to lengthen the leash, or set it to 0 to disable.\n",
-                hint, (long long)mt_live_count);
+                hint, (long long)__atomic_load_n(&mt_live_count, __ATOMIC_RELAXED));
         fflush(stderr);
     }
     sched_exit_code = code;
@@ -1582,6 +1612,7 @@ static void mt_runq_push_locked(int slot, EmperorCoroutine* co) {
          * wake). Any other combination is the kernel-invariant break the
          * qlog site 4 event flags for the replay. */
         mt_qlog_add(co, 1, 1, 4);
+        mt_st_inc(&mt_st_suppressed);
         mt_trace("double push suppressed co=%d(seq) state=%d", co->seq, co_state_get(co));
         return; /* double insert — see the struct's comment */
     }
@@ -1619,6 +1650,23 @@ static EmperorCoroutine* mt_runq_pop_locked(int slot) {
     co->qnext = NULL;
     mt_qlog_add(co, 1, 0, 2);
     co->queued = 0;
+    /* Claim RUNNING under the SAME lock as the dequeue: without this, a
+     * wake landing between the pop (lock released) and _co_switch_in's
+     * state set (outside any lock) still reads the pre-pop CO_COND of a
+     * legally-phantomed parker, "takes effect", and queues a SECOND
+     * phantom for a coroutine that is already being resumed. The resumed
+     * do_wait's cancel sees CO_RUNNING (not CO_RUNNABLE) and skips the
+     * unlink, so the stale entry survives with queued=1 — the next
+     * bare `wait 0` then refuses its owed filing (dup) and the stale
+     * phantom resurrects the coroutine MID-ROUND: the round barrier is
+     * violated, an emit can run before the waiter re-subscribes, the
+     * emission is lost and the waiter parks forever (free-mt exit 63
+     * lost-wake). With the claim here, a wake in the window sees
+     * CO_RUNNING and no-ops — the imminent resume's re-poll subsumes it.
+     * Every park path re-declares its own state (CO_PARKED in _co_wait,
+     * CO_COND at mt_switch_away, CO_YIELD, CO_FINISHED), so clobbering
+     * the parked state here cannot corrupt run_one's status ladder. */
+    co_state_set(co, CO_RUNNING);
     return co;
 }
 
@@ -1666,6 +1714,44 @@ static EmperorCoroutine* mt_runq_take_locked(int slot, EmperorCoroutine* target)
  * coroutine would be a use-after-free for every later kick. Under the
  * classic scheduler no run queues exist (mt_kernel_seen is 0) and this is a
  * no-op. */
+static void mt_co_all_link(EmperorCoroutine* co) {
+    if (!__atomic_load_n(&mt_kernel_seen, __ATOMIC_RELAXED)) {
+        co->all_next = co_all_head;
+        co_all_head = co;
+        return;
+    }
+    mt_glock_init();
+    MT_LOCK(mt_glock);
+    co->all_next = co_all_head;
+    co_all_head = co;
+    MT_UNLOCK(mt_glock);
+}
+
+static void mt_co_all_unlink(EmperorCoroutine* co) {
+    if (!__atomic_load_n(&mt_kernel_seen, __ATOMIC_RELAXED)) {
+        EmperorCoroutine** pp = &co_all_head;
+        while (*pp) {
+            if (*pp == co) {
+                *pp = co->all_next;
+                break;
+            }
+            pp = &(*pp)->all_next;
+        }
+        return;
+    }
+    mt_glock_init();
+    MT_LOCK(mt_glock);
+    EmperorCoroutine** pp = &co_all_head;
+    while (*pp) {
+        if (*pp == co) {
+            *pp = co->all_next;
+            break;
+        }
+        pp = &(*pp)->all_next;
+    }
+    MT_UNLOCK(mt_glock);
+}
+
 static void mt_unfile_runq_phantom(EmperorCoroutine* co) {
     if (!__atomic_load_n(&mt_kernel_seen, __ATOMIC_RELAXED)) return;
     mt_glock_init();
@@ -1749,7 +1835,7 @@ static void mt_park_begin(void) {
         fflush(stdout);
         exit(1);
     }
-    self->lib_park = 1;
+    __atomic_store_n(&self->lib_park, 1, __ATOMIC_RELAXED);
     co_state_set(self, CO_COND);
     char marker;
     self->sp_park = (char*)&marker;
@@ -1808,6 +1894,7 @@ static void mt_switch_away(void) {
  * CO_COND entry can still carry an earlier wake's phantom queue entry
  * (queued=1) — that entry IS this wake's filing. */
 static void mt_wake_locked(EmperorCoroutine* co) {
+    mt_st_inc(&mt_st_wake_effective);
     mt_qlog_add(co, 0, 0, 10); /* wake took effect */
     co_state_set(co, CO_RUNNABLE);
     int slot = co_owner_get(co);
@@ -1838,6 +1925,7 @@ void _emperor_mt_wake(void* handle) {
         return;
     }
     mt_qlog_add(co, 0, 0, 11); /* wake no-op (state not CO_COND) */
+    mt_st_inc(&mt_st_wake_noop);
     MT_UNLOCK(mt_glock);
 }
 
@@ -1903,7 +1991,12 @@ void _emperor_mt_future_cancel(void) {
     EmperorCoroutine* self = sched_current;
     mt_glock_init();
     MT_LOCK(mt_glock);
-    if (co_state_get(self) == CO_RUNNABLE) {
+    if (co_state_get(self) == CO_RUNNABLE || self->queued) {
+        /* The queued check is the invariant net: a RUNNING coroutine must
+         * not carry a run-queue entry — any survivor is a stale phantom
+         * from a wake that raced the pop (pre-dating the pop-claim fix),
+         * and leaving it set would refuse the next owed filing and
+         * resurrect the coroutine mid-round. */
         for (int i = 0; i < sched_thread_count; i++) {
             mt_runq_take_locked(i, self);
         }
@@ -1942,10 +2035,12 @@ void _emperor_mt_kick_futures(void) {
     mt_glock_init();
     MT_LOCK(mt_glock);
     int64_t kicked = 0;
+    mt_st_inc(&mt_st_kicks);
     for (EmperorCoroutine* co = mt_futures_head; co; co = co->fnext) {
         if (co_state_get(co) == CO_COND) {
             mt_qlog_add(co, 0, 0, 8); /* kick wakes (entry stays linked) */
             mt_wake_locked(co);
+            mt_st_inc(&mt_st_kick_wakes);
             kicked++;
         }
     }
@@ -2174,7 +2269,7 @@ int64_t _emperor_mt_runnable(void) {
 }
 
 int64_t _emperor_mt_live_count(void) {
-    return mt_live_count;
+    return __atomic_load_n(&mt_live_count, __ATOMIC_RELAXED);
 }
 
 /* Policy-side _sched_sync gating: at one thread the spinlock can never
@@ -2214,7 +2309,7 @@ void _emperor_mt_dump_parked(const char* reason) {
     fflush(stdout);
     fprintf(stderr,
             "[idle-dump] %s: live=%lld threads=%d delta_running=%d stop=%d idle=%d between=%d\n",
-            reason, (long long)mt_live_count, mt_nthreads, MT_ALD(mt_delta_running),
+            reason, (long long)__atomic_load_n(&mt_live_count, __ATOMIC_RELAXED), mt_nthreads, MT_ALD(mt_delta_running),
             MT_ALD(mt_stop), MT_ALD(mt_idle_count), MT_ALD(mt_between_count));
     MT_LOCK(mt_glock);
     for (int i = 0; i < sched_thread_count; i++) {
@@ -2923,6 +3018,7 @@ int64_t _emperor_mt_run_delta(void) {
 
     mt_delta_loop(); /* main participates */
     mt_watchdog_note_converge();
+    mt_st_inc(&mt_st_deltas);
     mt_trace("delta converged (stop=%d)", MT_ALD(mt_stop));
     /* Barrier release: wait until every straggler has EXITED idle_wait
      * (count back to zero) — only then are the workers truly parked in
@@ -3062,7 +3158,7 @@ static void mt_scan_lost_parked(void) {
         int st = co_state_get(co);
         if (st != CO_COND && st != CO_PARKED) continue;
         if (co->queued || co->on_owed) continue; /* findable */
-        if (co->lib_park) continue; /* filed on a Penguin-side waiter list
+        if (__atomic_load_n(&co->lib_park, __ATOMIC_RELAXED)) continue; /* filed on a Penguin-side waiter list
                                        (Fifo backpressure) — not ours to
                                        heal */
         if (mt_co_findable_locked(co)) continue;
@@ -3101,6 +3197,7 @@ static void mt_scan_lost_parked(void) {
         repaired++;
     }
     MT_UNLOCK(mt_glock);
+    mt_st_add_heal(repaired);
     if (repaired > 0) mt_trace("lost-repair n=%d", repaired);
 }
 
@@ -3108,6 +3205,20 @@ static void mt_scan_lost_parked(void) {
  * and stop the workers. */
 void _emperor_mt_destroy_all(void) {
     mt_trace("destroy_all");
+    mt_st_init();
+    if (__atomic_load_n(&mt_stats_on, __ATOMIC_RELAXED) == 1) {
+        fprintf(stderr, "[sched-stats] deltas=%lld kicks=%lld kick_wakes=%lld wake_eff=%lld switchins=%lld between_parks=%lld wake_noops=%lld suppressed=%lld selfheal=%lld\n",
+                (long long)__atomic_load_n(&mt_st_deltas, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_kicks, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_kick_wakes, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_wake_effective, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_switchins, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_between_parks, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_wake_noop, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_suppressed, __ATOMIC_RELAXED),
+                (long long)__atomic_load_n(&mt_st_selfheal, __ATOMIC_RELAXED));
+        fflush(stderr);
+    }
     mt_glock_init();
     MT_LOCK(mt_glock);
     MT_AST(mt_stop, 1);

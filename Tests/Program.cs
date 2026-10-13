@@ -42,6 +42,8 @@ public static class Program
         var allFiles = DiscoverMdFiles(testsDir);
         if (opts.Filter != null)
             allFiles = allFiles.Where(f => MatchesFilter(f, testsDir, opts.Filter)).ToList();
+        if (opts.Exclude != null)
+            allFiles = allFiles.Where(f => !MatchesFilter(f, testsDir, opts.Exclude)).ToList();
 
         if (allFiles.Count == 0)
         {
@@ -579,6 +581,10 @@ public sealed class Options
     public bool Help;
     public HashSet<CompilerKind>? Compilers;
     public string? Filter;
+    /// <summary>Drop files matching this glob/substr AFTER --filter — used by the
+    /// CI shuffle-deltas step to skip tests that legitimately pin delta-internal
+    /// order (shuffling is supposed to change those).</summary>
+    public string? Exclude;
     public bool Probe;
     public int Parallel = Math.Max(1, Environment.ProcessorCount - 1);
     public int TimeoutCompileSec = 600;
@@ -615,6 +621,7 @@ public sealed class Options
                         break;
                     }
                 case "--filter": o.Filter = Val(); if (o.Filter == null) return null; break;
+                case "--exclude": o.Exclude = Val(); if (o.Exclude == null) return null; break;
                 case "--probe": o.Probe = true; break;
                 case "--parallel": { var v = Val(); if (v == null || !int.TryParse(v, out o.Parallel)) { Console.Error.WriteLine("bad --parallel"); return null; } break; }
                 case "--timeout-compile": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutCompileSec)) { Console.Error.WriteLine("bad --timeout-compile"); return null; } break; }
@@ -679,6 +686,9 @@ public sealed class Options
           --compilers babypenguin,pass1,pass2,pass3,prebuilt
                                   Limit to these compilers (default: each test's Apply To).
           --filter <glob|substr>  Select Tests/ files, e.g. CalculationTest/* or AddTest.
+          --exclude <glob|substr> Drop files matching this (applied after --filter) —
+                                  e.g. the shuffle-deltas step excludes tests that
+                                  legitimately pin delta-internal FIFO order.
           --probe                 Ignore Apply To; run the selected compilers & report matches.
           --parallel <n>          Max concurrent combos (default: cores-1; memory
                                    gate additionally limits by estimated peak RSS).
