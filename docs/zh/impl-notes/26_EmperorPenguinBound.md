@@ -29,6 +29,7 @@ Bound Model（绑定模型）是 AST 和 IR 之间的中间层。它将 AST 的�
 - `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass`（表达式绑定）
 - `SemanticBindMetaCalls.penguin` — Pass 8c `BindMetaCallsPass`（元调用绑定）
 - `SemanticValidateControlFlow.penguin` — Pass 9 `ValidateControlFlowPass`
+- `SemanticConcurrency.penguin` — Pass 10 `ConcurrencyAnalysisPass`（封闭性分析；仅 mt 调度器）
 - `EmperorPenguinCompiler.penguin` — 编译器顶层入口（`compile_sources`）
 - `BoundTreePrinter.penguin` — Bound Tree 调试打印
 
@@ -281,7 +282,7 @@ SemanticError
 
 `SemanticModel` 是语义分析引擎，将 AST 转换为 Bound Tree。每个 pass 是一个独立的协作类，持有 `model: mut Option<SemanticModel>` 反向引用（Option 包装以打破类字段默认构造的循环依赖），对外提供单一 `run()` 入口；`SemanticModel` 在构造函数中装配全部 pass 实例。
 
-`bind()` 在 9 个 pass 之前先运行 `MetaRewriter.run_prepass(unit)`（元编程预处理：收集 `#fun`/`#class`、`#define`/`#if`/`#while` 拼接、JIT 引擎播种）。Pass 3 产生的新特化定义由核心的 `catch_up_def` 按需回放后续 pass，保证泛型实例走完 Pass 4-8。
+`bind()` 在各 pass 之前先运行 `MetaRewriter.run_prepass(unit)`（元编程预处理：收集 `#fun`/`#class`、`#define`/`#if`/`#while` 拼接、JIT 引擎播种）。Pass 3 产生的新特化定义由核心的 `catch_up_def` 按需回放后续 pass，保证泛型实例走完 Pass 4-8。
 
 ### Pass 1：构建作用域（`BuildScopesPass.run(unit, result)`）
 
@@ -325,7 +326,11 @@ SemanticError
 
 验证控制流合法性：非空函数全路径返回、break/continue 的使用位置、return 值类型检查。
 
-Pass 9 之后 `bind()` 还执行静态 connect 拓扑检查（`validate_port_topology`：输出驱动唯一性、输入重复连接、未连接的模块输入），最后把 `errors` 与 `has_suspension` 写入结果。
+### Pass 10：封闭性分析（`ConcurrencyAnalysisPass.run(result)`）
+
+仅在 `--enable-multithread-scheduler` 或 `--enable-free-mt` 下运行（`SemanticModel.bind`，位于 Pass 9 与端口拓扑检查之间）。它在类型层面计算 `Shareable(T) = Sync(T) ∨ Imm(T) ∨ ValueShare(T)`，并判定每个 `async f(args)` spawn 点：参数与返回值都可共享且被调函数副作用干净 ⇔ 可窃取（stealable）——这是 M4b 工作线程分发/窃取一个尚未运行过的协程而不破坏并发不变式所依赖的性质。保守的 v1 规则：`Imm` 仅原始类型 + string（枚举保守地视为不可共享）；`Sync` 即 `ISync` 标记接口（原子类型实现了它，通道暂未实现）；`ValueShare` 指每个字段的类型都可共享的值类；`Effects(f)` 走被调函数的静态调用闭包，遇到任何全局/静态字段引用、extern、虚调用、meta 调用或无法解析的调用即判钉住。该 pass 填充可窃取 spawn 上下文注册表；IRGenerator 的调用降低会查询它——可窃取站点的 `_co_spawn_entry` 改发 `_co_spawn_entry_stealable`，即设置协程可窃取位的运行时 extern。`-Wconcurrency` 额外按 spawn 点打印可窃取/钉住诊断及钉住原因链。
+
+各 pass 之后 `bind()` 还执行静态 connect 拓扑检查（`validate_port_topology`：输出驱动唯一性、输入重复连接、未连接的模块输入），最后把 `errors` 与 `has_suspension` 写入结果。
 
 ---
 
@@ -335,7 +340,7 @@ Pass 9 之后 `bind()` 还执行静态 connect 拓扑检查（`validate_port_top
 
 入口方法：`bind(unit: ast.CompilationUnit, location: SourceLocation) -> BoundCompilationUnit`
 
-按顺序执行元预处理与全部 9 个 pass，返回完整的绑定编译单元。
+按顺序执行元预处理与全部 pass（Pass 10 仅在 mt 调度器标志下运行），返回完整的绑定编译单元。
 
 ### 类型解析
 

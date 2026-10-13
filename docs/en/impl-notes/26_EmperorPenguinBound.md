@@ -29,6 +29,7 @@ The Bound Model is the intermediate layer between the AST and the IR. It convert
 - `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass` (expression binding)
 - `SemanticBindMetaCalls.penguin` — Pass 8c `BindMetaCallsPass` (meta-call binding)
 - `SemanticValidateControlFlow.penguin` — Pass 9 `ValidateControlFlowPass`
+- `SemanticConcurrency.penguin` — Pass 10 `ConcurrencyAnalysisPass` (confinement analysis; mt schedulers only)
 - `EmperorPenguinCompiler.penguin` — the compiler's top-level entry point (`compile_sources`)
 - `BoundTreePrinter.penguin` — Bound Tree debug printing
 
@@ -281,7 +282,7 @@ SemanticError
 
 `SemanticModel` is the semantic analysis engine that converts the AST into the Bound Tree. Each pass is an independent collaborator class holding a `model: mut Option<SemanticModel>` back-reference (the Option wrapper breaks the circular dependency of class-field default construction) and exposing a single `run()` entry point; `SemanticModel` wires up all pass instances in its constructor.
 
-`bind()` runs `MetaRewriter.run_prepass(unit)` before the 9 passes (the metaprogramming pre-pass: collecting `#fun`/`#class`, `#define`/`#if`/`#while` splicing, JIT engine seeding). Newly specialized definitions produced by Pass 3 are replayed through the subsequent passes on demand by the core `catch_up_def`, ensuring generic instances go through Passes 4-8.
+`bind()` runs `MetaRewriter.run_prepass(unit)` before the passes (the metaprogramming pre-pass: collecting `#fun`/`#class`, `#define`/`#if`/`#while` splicing, JIT engine seeding). Newly specialized definitions produced by Pass 3 are replayed through the subsequent passes on demand by the core `catch_up_def`, ensuring generic instances go through Passes 4-8.
 
 ### Pass 1: Build Scopes (`BuildScopesPass.run(unit, result)`)
 
@@ -325,7 +326,11 @@ Converts AST expressions/statements into bound expressions/statements; it is the
 
 Validates control-flow legality: non-void functions return on all paths, the placement of break/continue, and return value type checking.
 
-After Pass 9, `bind()` also performs the static connect topology check (`validate_port_topology`: output driver uniqueness, duplicate connections on inputs, unconnected module inputs), and finally writes `errors` and `has_suspension` into the result.
+### Pass 10: Confinement Analysis (`ConcurrencyAnalysisPass.run(result)`)
+
+Runs only with `--enable-multithread-scheduler` or `--enable-free-mt` (`SemanticModel.bind`, between Pass 9 and the port-topology check). It computes `Shareable(T) = Sync(T) ∨ Imm(T) ∨ ValueShare(T)` at the type level and judges every `async f(args)` spawn site: stealable ⇔ arguments and result are Shareable and the callee's effects are clean — the property M4b's worker threads rely on to distribute or steal a never-run coroutine without breaking the concurrency invariants. Conservative v1 rules: `Imm` = primitives + string only (enums are conservatively unshareable); `Sync` = the `ISync` marker interface (the atomics implement it; channels do not yet); `ValueShare` = a value class whose every field type is Shareable; `Effects(f)` walks the static call closure and pins on any global/static-field reference, extern, virtual, meta or unresolvable call. The pass fills the stealable spawn-context registry; IRGenerator's call lowering consults it — a stealable site's `_co_spawn_entry` emits `_co_spawn_entry_stealable`, the runtime extern that sets the coroutine's stealable bit. `-Wconcurrency` additionally prints per-spawn-site stealable/pinned diagnostics with the pin reason chain.
+
+After the passes, `bind()` also performs the static connect topology check (`validate_port_topology`: output driver uniqueness, duplicate connections on inputs, unconnected module inputs), and finally writes `errors` and `has_suspension` into the result.
 
 ---
 
@@ -335,7 +340,7 @@ After Pass 9, `bind()` also performs the static connect topology check (`validat
 
 Entry method: `bind(unit: ast.CompilationUnit, location: SourceLocation) -> BoundCompilationUnit`
 
-Runs the meta pre-pass and all 9 passes in order, returning the complete bound compilation unit.
+Runs the meta pre-pass and the passes in order (Pass 10 only under the mt scheduler flags), returning the complete bound compilation unit.
 
 ### Type Resolution
 
