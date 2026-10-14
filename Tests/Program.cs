@@ -927,6 +927,12 @@ public sealed class StageSpec
     public Expectation ExpectedStdout = Expectation.Discard;
     public Expectation ExpectedStderr = Expectation.Discard;
     public string? Stdin; // Run only
+    /// <summary>Run only: per-test run timeout in seconds ("Timeout: 300").
+    /// null = the global --timeout-run (default 60). For tests whose runtime
+    /// legitimately explodes on oversubscribed CI runners (e.g. the mt
+    /// scheduler with EMPEROR_THREADS above the available cores, where the
+    /// per-delta barrier cost dominates).</summary>
+    public int? TimeoutSec; // Run only
     /// <summary>Run only: when "false", the runner writes Stdin but keeps the pipe
     /// OPEN while awaiting exit (LSP-style sessions end via their own exit frame,
     /// not stdin EOF — this locks the fd-wake/pipeline scheduling path the
@@ -1161,6 +1167,15 @@ public static class MarkdownTestParser
         {
             case "args": stage.Args = Stripped(); break;
             case "env": stage.Env = ParseEnv(Stripped()); break;
+            case "timeout":
+                if (isRun)
+                {
+                    var tv = Stripped().Trim();
+                    if (!int.TryParse(tv, out var secs) || secs <= 0)
+                        throw new Exception($"bad Timeout value '{tv}' (expected positive seconds)");
+                    stage.TimeoutSec = secs;
+                }
+                break;
             case "stdinclose":
                 if (isRun)
                 {
@@ -2084,7 +2099,8 @@ public static class TestRunner
             // first size-mismatched frame. (The ExpectedStdout side wildcards
             // its counts with MATCH \d+ goldens instead.)
             if (test.IsRunLsp) runStdin = LspFraming.FixContentLengths(runStdin);
-            var rproc = await ProcessRunner.RunAsync(runPsi, runStdin, opts.TimeoutRunSec * 1000, closeStdin: test.Run.StdinClose);
+            var runTimeoutSec = test.Run.TimeoutSec ?? opts.TimeoutRunSec;
+            var rproc = await ProcessRunner.RunAsync(runPsi, runStdin, runTimeoutSec * 1000, closeStdin: test.Run.StdinClose);
             runStage = new StageResult
             {
                 ExitCode = rproc.ExitCode,
@@ -2103,7 +2119,7 @@ public static class TestRunner
         result.ExpectedStdout = test.Run!.ExpectedStdout.Operand ?? "";
 
         var runFailures = new List<string>();
-        if (runStage.TimedOut) runFailures.Add($"run timed out after {opts.TimeoutRunSec}s");
+        if (runStage.TimedOut) runFailures.Add($"run timed out after {test.Run.TimeoutSec ?? opts.TimeoutRunSec}s");
         if (!CheckExit(test.Run!.ExpectedExitCode, runStage.ExitCode, out _))
             runFailures.Add($"run exit {runStage.ExitCode} (expected {test.Run.ExpectedExitCode})");
         if (!runStage.TimedOut)

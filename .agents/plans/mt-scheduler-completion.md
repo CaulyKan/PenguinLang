@@ -194,3 +194,46 @@ lsp/tools，含 mingw 交叉）全部 LTO 重建通过；bootstrap 不受影响�
 dyn-lib 消费者、LTO'd LSP 的 #impl_json_serializable 路径）。
 事故：同步脚本把 CLAUDE.md（AGENTS.md 符号链接的目标）写空并提交过一次，
 已从 35548f96 恢复。
+
+## 2026-10-14（续2）— CI 超时诊断：超卖下吞吐崩溃（已知问题，非死锁）
+
+CI 在 TinyRiscvMultiCoreMt 上 run 60s 超时。本地复现+定量（taskset 限核）：
+- N=1@1核 1s；N=2@2核 3s（不超卖全速）
+- **N=2@1核 300s+ 未完成；N=4@2核 500s+ 未完成（~1000 CPU·s = 60× 工作量放大）**
+- 挂起形态：delta 持续收敛、时钟持续推进（watchdog/idle-dump/step/pin leash 全静默），
+  ~200 delta/s；trace 显示每 boundary `kick_futures n=14` 全量踢 + 每轮 1 个 owed
+  bare-wait 重欠——被踢者 poll 不满足又挂回，每次无效唤醒在超卖下要付一次完整
+  协程切换 + 排队。**参与者 > 核数即悬崖**（最轻度超卖也触发）。
+处置（本轮）：矩阵以 EMPEROR_THREADS=1 钉语义（输出按构造逐字节同）；框架新增
+  Run 段 `Timeout: <seconds>` per-test 超时（Tests/Readme.md 已文档）；多线程
+  竞态覆盖归本地全核 hammer + 轻负载 mt 测试族（它们 EMPEROR_THREADS=4 在矩阵
+  里继续跑）。
+**遗留（3.2 候选）**：超卖韧性——(a) elastic workers（活跃 worker 自适应 clamp
+  到可用核，声明 N 不变）；(b) 收窄 boundary 的 `_emperor_mt_kick_futures()`
+  全量兜底（wake_key 定向踢已是主路径，全量兜底在超卖下是 60× 放大器）。
+
+## 2026-10-14（续3）— fix/mt-oversubscription：超卖吞吐崩溃修复（分支）
+
+根因链（定量见续2）：收敛式 delta 的每轮全员 park/wake 乒乓 × 停靠前自旋窗口
+在超卖（参与者>核）下占核空转——对端需要这个核才能置位标志，每次往返从 µs
+退化成 OS 调度延迟（整时间片）。
+
+修复（scheduler.c，三件套）：
+1. **时长自适应自旋**（核心）：rdtsc 计窗口时长；快捕获（<1M cycles）连续
+   16 次才恢复一档（迟滞防振荡——v2 单次恢复在 4线程/2核 下快慢交错导致
+   预算震荡，91s）；3 次整窗浪费减半，触底 0=直接停靠；触底后每 1024 次
+   停靠重探满窗。注意纯"命中率"判据不可用：超卖下几乎每窗最终都捕获
+   （对端等我们时间片耗尽才跑），必须按时长。
+2. **亲和先验**：mt_workers_start 在建线程前（单线程时刻，写后 create 自带
+   happens-before——第一版让 worker 活读 mt_nthreads 与创建循环的递增构成
+   TSan 报告）用 sched_getaffinity 数核，参与者>核则各线程从深退避起步。
+   cgroup 配额型超卖看不见，由自适应层兜。
+3. **收窄 boundary 全量 futures 踢**到 wake_key==0 条目（定向组件已由
+   commit_now 的 _mt_kick_key 覆盖；自定义 future/Event 订阅者保留兜底）。
+   单独不解决超时（实测），但去掉每 boundary 14 次无效重轮询。
+顺手：mt_st_inc 的 mt_stats_on 普通读改原子读（既有懒初始化窗口的 TSan 报告）。
+
+验证：四形态 1.5-3.4s（修复前 300s+/500s+ 不完成）；满核不回退（edge_detect
+N=1/8 = 486/92ms 与基线一致）；TSan（tinyriscv×3 N=4 + free/clock 探针）零；
+bootstrap 收敛且 lib md5 不变（编译器行为未变）；TinyRiscvMultiCoreMt 恢复
+EMPEROR_THREADS=4 钉住本修复。全矩阵见提交时状态。

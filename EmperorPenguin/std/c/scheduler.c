@@ -1,3 +1,8 @@
+/* sched_getaffinity/CPU_COUNT below need the GNU feature macro. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 /* EmperorPenguin coroutine runtime — the context-switch MICROKERNEL only.
  *
  * The scheduler POLICY (delta rounds, ready/next queues, the timer table,
@@ -73,6 +78,7 @@
 #include <sys/mman.h>
 #include <poll.h>
 #include <time.h>
+#include <sched.h>
 #define EMPEROR_UCONTEXT 1
 #endif
 
@@ -431,8 +437,11 @@ static void mt_st_init(void) {
     __atomic_compare_exchange_n(&mt_stats_on, &expect, parsed, 0,
                                 __ATOMIC_RELAXED, __ATOMIC_RELAXED);
 }
-static void mt_st_add_heal(int n) { if (n <= 0) return; mt_st_init(); if (mt_stats_on == 1) __atomic_fetch_add(&mt_st_selfheal, n, __ATOMIC_RELAXED); }
-static void mt_st_inc(int64_t* c) { mt_st_init(); if (mt_stats_on == 1) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED); }
+/* The mt_stats_on re-read is atomic: a plain read here races the lazy-init
+ * CAS from a sibling thread (a benign-but-reported TSan pair — the window
+ * is only the first concurrent init). */
+static void mt_st_add_heal(int n) { if (n <= 0) return; mt_st_init(); if (__atomic_load_n(&mt_stats_on, __ATOMIC_RELAXED) == 1) __atomic_fetch_add(&mt_st_selfheal, n, __ATOMIC_RELAXED); }
+static void mt_st_inc(int64_t* c) { mt_st_init(); if (__atomic_load_n(&mt_stats_on, __ATOMIC_RELAXED) == 1) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED); }
 
 /* ---- EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE: per-thread time accounting ----
  * =1 splits every scheduler thread's wall time into four phases, printed
@@ -1665,6 +1674,112 @@ static int64_t mt_spin_budget(void) {
                                 __ATOMIC_RELAXED, __ATOMIC_RELAXED);
     return v; /* ours or a sibling's first parse — same env either way */
 }
+
+/* Adaptive spin budget (per thread): the pre-futex spin window only pays
+ * off when the peer whose flag we await can run IN PARALLEL. Under CPU
+ * oversubscription (scheduler participants > available cores — a CI
+ * runner sharing vCPUs with sibling processes, a taskset'd box) the
+ * spinner holds the very CPU the peer needs; every park/wake round trip
+ * then degrades to OS scheduling latency and delta throughput collapses
+ * (measured on tinyriscv: N=2 on one core = 3s on two cores but 300s+
+ * UNFINISHED on one — ~126x; EMPEROR_MT_SPIN=0 restored 1.9s). Hit RATE
+ * alone cannot detect this — under oversubscription nearly every window
+ * eventually "catches" (the peer only runs once our timeslice is spent),
+ * so the discriminator is the window DURATION: a catch after less than
+ * ~MT_SPIN_FAST_CYCLES means spinning genuinely beat the futex pair
+ * (recover one halving step); a slow catch or a full-window miss is
+ * wasted CPU — three in a row halve the budget (floor 0 = park
+ * immediately). At the floor every 1024 parks re-probes one full window,
+ * so a de-oversubscribed machine climbs back. Healthy-parallel catches
+ * are sub-100us while oversubscribed ones take a full timeslice — the
+ * threshold sits comfortably between. EMPEROR_MT_SPIN stays the ceiling;
+ * 0 disables. */
+static _Thread_local int tls_spin_shift = 0;   /* budget = ceiling >> shift */
+static _Thread_local int tls_spin_misses = 0;  /* consecutive wasted windows */
+static _Thread_local int tls_spin_hits = 0;    /* consecutive fast catches */
+static _Thread_local int tls_spin_reprobe = 0; /* parks until next probe at floor */
+
+/* Prior, computed ONCE by mt_workers_start on the main thread BEFORE any
+ * worker exists (a plain global write followed by pthread_create is
+ * happens-before-ordered; reading live mt_nthreads from the workers raced
+ * the creation-loop increments — the exact TSan report that flagged the
+ * first cut of this): when the participant count already exceeds the CPUs
+ * this process may run on (affinity mask — taskset/cpuset containers),
+ * threads start fully decayed instead of learning the hard way. The
+ * adaptive layer still refines from there and catches quota-based
+ * oversubscription (cgroup limits), which the mask cannot see. */
+static int mt_spin_prior = 0;
+
+static int mt_cpu_count(void) {
+#if !defined(EMPEROR_WIN_FIBERS) && defined(__linux__)
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof set, &set) == 0)
+        return CPU_COUNT(&set);
+#elif defined(EMPEROR_WIN_FIBERS)
+    DWORD_PTR proc, sys_;
+    if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys_)) {
+        int n = 0;
+        for (; proc; proc &= proc - 1) n++;
+        return n;
+    }
+#endif
+    return 0; /* unknown: no prior */
+}
+
+#define MT_SPIN_FAST_CYCLES 1000000ull /* ~0.3-0.5ms: fast catch, keep spinning */
+
+static inline uint64_t mt_spin_tsc(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    return __builtin_ia32_rdtsc();
+#elif defined(__aarch64__)
+    uint64_t v;
+    __asm__ volatile("isb\n mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+#else
+    return 0; /* no cheap counter: every catch counts as fast (hit-rate mode) */
+#endif
+}
+
+static _Thread_local int tls_spin_prior_applied = 0;
+
+static int64_t mt_spin_thread_budget(void) {
+    int64_t base = mt_spin_budget();
+    if (base <= 0) return 0;
+    if (!tls_spin_prior_applied) {
+        /* one-shot per thread: park-first until the machine frees up */
+        tls_spin_prior_applied = 1;
+        if (mt_spin_prior) tls_spin_shift = 20;
+    }
+    int64_t b = base >> tls_spin_shift;
+    if (b > 0) return b;
+    if (tls_spin_reprobe <= 0) {
+        tls_spin_reprobe = 1024; /* THIS call probes one full window */
+        return base;
+    }
+    tls_spin_reprobe--;
+    return 0;
+}
+
+static void mt_spin_report(int caught, uint64_t elapsed_cycles) {
+    if (caught && elapsed_cycles < MT_SPIN_FAST_CYCLES) {
+        tls_spin_misses = 0;
+        if (tls_spin_shift > 0 && ++tls_spin_hits >= 16) {
+            /* recover one step only after a SUSTAINED run of fast catches:
+             * under oversubscription fast and slow windows interleave, and
+             * any-single-catch recovery just oscillates the budget (the
+             * N=4-on-2-cores shape: 91s instead of ~2s). */
+            tls_spin_hits = 0;
+            tls_spin_shift--;
+            tls_spin_reprobe = 0;
+        }
+    } else {
+        tls_spin_hits = 0;
+        if (++tls_spin_misses >= 3) {
+            tls_spin_misses = 0;
+            if (tls_spin_shift < 48) tls_spin_shift++;
+        }
+    }
+}
 static void mt_pause(void) {
 #if defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();
@@ -2207,7 +2322,23 @@ void _emperor_mt_kick_futures(void) {
     int64_t kicked = 0;
     mt_st_inc(&mt_st_kicks);
     for (EmperorCoroutine* co = mt_futures_head; co; co = co->fnext) {
-        if (co_state_get(co) == CO_COND) {
+        /* UNSTAMPED entries only (wake_key == 0): a waiter whose component
+         * implements the directed wake (register_waiter stamps its key;
+         * Signal/Fifo/LatestChannel/SpawnFuture all do) is woken by ITS
+         * delivery's _mt_kick_key — re-polling it here after every
+         * deferred-commit batch or coroutine completion is pure churn,
+         * and under CPU oversubscription (participants > cores) that
+         * churn dominated the machine: every boundary re-polled every
+         * waiter, each futile poll a full coroutine switch, ~60x total
+         * CPU amplification (measured on tinyriscv: N=2@1core 300s+
+         * unfinished vs 3s@2cores). Unstamped waiters — custom futures
+         * and the Event's deferred subscribers, the documented users of
+         * the global kick sources — keep this catch-all. Race safety is
+         * unchanged: a delivery racing the publish is covered by the
+         * waiter's first REGISTERED poll (it re-polls after filing),
+         * and the boundary self-heal remains the net under everything. */
+        if (co_state_get(co) == CO_COND &&
+            __atomic_load_n(&co->wake_key, __ATOMIC_RELAXED) == 0) {
             mt_qlog_add(co, 0, 0, 8); /* kick wakes (entry stays linked) */
             mt_wake_locked(co);
             mt_st_inc(&mt_st_kick_wakes);
@@ -2787,7 +2918,9 @@ static void mt_idle_wait(void) {
     while (MT_ALD(me->runq_head) == NULL && MT_ALD(mt_delta_running) && !MT_ALD(mt_stop)) {
         MT_UNLOCK(mt_glock);
         int caught = 0;
-        for (int64_t i = 0; i < mt_spin_budget(); i++) {
+        const uint64_t spin_t0 = mt_spin_tsc();
+        const int64_t spin_budget = mt_spin_thread_budget();
+        for (int64_t i = 0; i < spin_budget; i++) {
             for (int b = 0; b < MT_SPIN_BATCH; b++) mt_pause();
             if (MT_ALD(me->runq_head) != NULL ||
                 !MT_ALD(mt_delta_running) ||
@@ -2796,6 +2929,7 @@ static void mt_idle_wait(void) {
                 break;
             }
         }
+        mt_spin_report(caught, mt_spin_tsc() - spin_t0);
         MT_LOCK(mt_glock);
         if (caught || !(MT_ALD(me->runq_head) == NULL && MT_ALD(mt_delta_running) && !MT_ALD(mt_stop))) {
             break; /* the spin window caught it — no futex pair burned */
@@ -2945,13 +3079,16 @@ static void* mt_worker_main(void* arg) {
             while (!MT_ALD(mt_delta_running) && !MT_ALD(mt_stop)) {
                 MT_UNLOCK(mt_glock);
                 int caught = 0;
-                for (int64_t i = 0; i < mt_spin_budget(); i++) {
+                const uint64_t spin_t0 = mt_spin_tsc();
+                const int64_t spin_budget = mt_spin_thread_budget();
+                for (int64_t i = 0; i < spin_budget; i++) {
                     for (int b = 0; b < MT_SPIN_BATCH; b++) mt_pause();
                     if (MT_ALD(mt_delta_running) || MT_ALD(mt_stop)) {
                         caught = 1;
                         break;
                     }
                 }
+                mt_spin_report(caught, mt_spin_tsc() - spin_t0);
                 MT_LOCK(mt_glock);
                 if (caught || MT_ALD(mt_delta_running) || MT_ALD(mt_stop)) break;
                 if (!MT_ALD(me->between_parked)) {
@@ -3097,6 +3234,13 @@ static void mt_workers_start(void) {
         n = atoi(env);
         if (n < 1) n = 1;
         if (n > EMPEROR_SCHED_MAX_THREADS) n = EMPEROR_SCHED_MAX_THREADS;
+    }
+    /* Spin prior, BEFORE any thread exists (see mt_spin_prior): the
+     * intended participant count vs the affine CPUs. Creation failures
+     * only lower the real count — a conservative prior is fine. */
+    {
+        int ncpu = mt_cpu_count();
+        mt_spin_prior = (ncpu > 0 && n > ncpu) ? 1 : 0;
     }
     if (n <= 1) return; /* single worker: the calling (main) thread */
     /* main's slot must exist (it registers at first co_create/switch —
