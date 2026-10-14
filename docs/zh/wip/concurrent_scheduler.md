@@ -6,11 +6,11 @@
 > M5 垃圾回收 v0（单堆 + 分配锁 + 边界 STW + 压力阀）+ v1 第一级（每线程 span arena +
 > 无锁小对象快路径，C 运行时 -O2 默认）、M6 延迟构件族（Signal/延迟 Fifo/LatestChannel/
 > Event）+ `--shuffle-deltas` + `Ownership` v1（含线性局部逃逸分析）、M7 free-mt v1
-> （`--enable-free-mt`：立即构件 + AsyncQueue + poll 升级 STW + 循环回边安全点）。
+> （`--enable-multithread-scheduler`：立即构件 + AsyncQueue + poll 升级 STW + 循环回边安全点）。
 > 未做：M5 v1 第二级（双域两堆 + 移交点复制，§10.3–10.6）与可扩展性收尾
 > （kick 定向化、glock 去中心化——mt N>1 仍恒亏，见 §7.3 实现注）。
 >
-> **原生侧的新语义经 `--enable-multithread-scheduler` 启用**（装载 scheduler_mt.penguin）；
+> **原生侧的新语义经 `--enable-multithread-scheduler --enable-clock-model` 启用**（装载 scheduler_mt.penguin）；
 > 原生默认仍是经典调度器（scheduler.penguin，旧语义，第 2 章"现状"描述的就是它），直到
 > mt 调度器被提升为默认（迁移决策见第 14 章开放问题 2）。BabyPenguin 的 C# 调度器
 > （SimScheduler）自 M0 对齐起实现新语义——收敛式 delta、边界七步、新退出规则、
@@ -835,7 +835,7 @@ free-mt 里禁用延迟构件（只用"立即 + 加锁"的容器），或者接�
 同一份源码、同一套封闭分析与同步构件。**编译器自己永远以 sim 形态编译**（自举的 md5
 收敛不受影响；自举走 `--disable-coroutine`，根本不进调度器）。
 
-> **实现状态（2026-10-04，free-mt v1 已落地）**：`--enable-free-mt` 装载
+> **实现状态（2026-10-04，free-mt v1 已落地）**：`--enable-multithread-scheduler` 装载
 > scheduler_free.penguin——同内核、同构件面，边界只剩 owed/runnable → fd 探测 → fd 阻塞
 > → 退出；构件全部立即化（写的效应同一收敛轮到达读者）；`wait n>0` 运行期拒绝（exit 3）；
 > AsyncQueue<T> 是"立即 + 加锁"的跨线程构件（AtomicBool 自旋 + 条件停靠，ISync）。
@@ -1472,7 +1472,7 @@ delta 边界七步收口）；垃圾回收用"本地堆 + 共享堆"两级并且
 | M4 | sim-mt：**收敛式 delta**（就绪即恢复 + 跨线程收敛判定 + 边界七步）、条件同步的通道族、创建协议（可偷标记 + 条件加锁的结果容器）、`--threads=N` | `--threads=1` 与 sim 逐字节一致；13.2 节审计在新调度器上重做完成 |
 | M5 | 垃圾回收：v0（单堆 + 分配锁 + 边界停世界 + 分配阻塞算停靠）→ v1（两个堆 + 移交点复制）。**v0 已落地**（分配锁/边界 STW 随 M4b；压力阀 2026-10-03） | 压测与基准；TSAN 零报告 |
 | M6 | `Signal<T>` 与延迟版 `Fifo`（含多写者合并规则）；`--shuffle-deltas` 检测器；`Ownership`（含整张图新鲜性检查）；公开同步 API | 检测器在 CI 跑多轮种子；相位无关用例的集合比较 |
-| M7 | 自由形态（free-mt）、循环回边安全暂停点、`AsyncQueue`、挂起诊断、文档与性能报告。**v1 已落地（2026-10-04/07）**：`--enable-free-mt`（立即构件 + AsyncQueue + `wait n>0` 运行期拒绝）、发射器循环回边 GC_POLL 安全点、poll 升级 STW；EMPEROR_HANG_WATCHDOG 转储是挂起诊断的起点（完整版"还有哪些协程在等什么"未做）；文档与性能报告待定稿批次 | FreeMtTest 全绿；FreeMtBusyGc（忙服务 GC）；TSan 清零 |
+| M7 | 自由形态（free-mt）、循环回边安全暂停点、`AsyncQueue`、挂起诊断、文档与性能报告。**v1 已落地（2026-10-04/07）**：`--enable-multithread-scheduler`（立即构件 + AsyncQueue + `wait n>0` 运行期拒绝）、发射器循环回边 GC_POLL 安全点、poll 升级 STW；EMPEROR_HANG_WATCHDOG 转储是挂起诊断的起点（完整版"还有哪些协程在等什么"未做）；文档与性能报告待定稿批次 | FreeMtTest 全绿；FreeMtBusyGc（忙服务 GC）；TSan 清零 |
 
 每个阶段独立分支 + 提交（见 AGENTS.md 的工作流）；M1/M2/M3 可与 M0 之后并行推进（M2 依赖
 M0 定稿的诊断口径）。

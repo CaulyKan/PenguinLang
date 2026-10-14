@@ -595,6 +595,49 @@
       N=1/N=4、signal-round 90/90（3 新编译 ×30）、LatestRound runner 6/6、
       tinyriscv mt 输出 48614 精确 + N=4 switchins 恢复 3.25M。
 
+- [x] **free-mt 并行计算 example：图片边缘检测（2026-10-14，Examples/edgedetect/）**：
+      Sobel 边缘检测（generate→blur_h→blur_v→sobel 四阶段），每阶段 32 带状
+      任务扇出。**可偷设计**：图像即字符串（码点 0..127 = 像素，两宿主索引
+      一致；字符串是共享格 Imm 层）→ 带任务 spawn 参数全可共享 → 128 个
+      spawn 全部 STEALABLE（-Wconcurrency 验证）；垂直高斯的 halo 行直接读
+      全局输入串（跨带零交接）；输出经 future 返回、driver 拼接。
+      **配套改动**：① Pass 10 纯 extern 白名单扩字符串只读族 +
+      StringBuilder 方法（append/to_string 只碰接收者，接收者可达性已被
+      参数共享检查覆盖）；② core_builtin 新增用户可见 `now_ms()`（QPC/
+      clock_gettime 平台分叉）；③ **单字符驻留表**（128 个 ASCII 单字符串，
+      pthread_once 惰性构建、每格注册 GC 根——C 静态不在任何扫描面内）。
+      **顺带揪出两个并行杀手**：gc_poll 快路径对 `_gc_stw_first_seen` 的
+      无条件写（每回边一次 = 每像素一次；4 线程乒乓同一缓存行使计算负载
+      慢 70%——改条件写， drained 稳态是纯读）；cast<char>→string 的逐调用
+      分配（微基准：分配+append 组合在 N2 翻倍——arena 高频杂扰；驻留后
+      消除）。教训：**"每线程无锁"的快路径仍要看共享写**——读-改写或
+      无条件写共享行在多线程下是隐形串行化点，多线程计算基准是发现它们
+      的唯一手段（单线程 perf 无感）。
+      **性能**（1024×1024，28 核 i9，交错 ×5 中位）：N1 461ms → N2 258
+      （1.79×）→ N4 155（2.97×）→ **N8 95（4.85×）**；分阶段全部缩放；
+      校验和跨 N=1..8 逐字节一致（并行正确性自证）。Tests/ExampleTest/
+      EdgeDetect 钉住（256 尺寸，stdout 只含确定性内容——时序诊断走
+      stderr）。注意：绝对值跨会话有机器漂移（连续 48h 基准后同二进制
+      4235→5750ms），同会话内对比才有效。
+
+- [x] **定向唤醒 v2：按键唤醒（wake_key，2026-10-13 晚）**：容器表方案的
+      每等待记账（节点分配 + 退出遍历摘除 ≈120ns）让 mt-N1 4330→5208ms
+      （classic 4904，昨日的 −12% 变 +6%）。正解是**把定向信息盖在既有的
+      no-consume futures 表项上**：EmperorCoroutine 增 `wake_key`（组件身份
+      id，0=无）；`_mt_future_register` 清零、组件的 register_waiter 调
+      `_mt_wait_key(id)` 盖章（一行）、交付侧调 `_mt_kick_key(id)` 扫
+      futures 表只唤醒匹配键的 CO_COND 项（表项即归档——唤醒后空手重停者
+      保持可寻，退出路径的 cancel 整体摘除归档，零额外结构）。
+      **组件侧的等待者表/构造器行/唤醒遍历/退出摘除助手全部删除**
+      （两策略 ~180 行），SpawnFuture/Event 补 id 字段；AsyncQueue 与
+      Fifo 背压写者保留自有协议。陈旧键最多造成一次伪唤醒（重轮询吸收）。
+      **效果**：mt-N1 8 核中位 **4235ms，比 classic 5107 快 17%**（收回全部
+      回退并优于 v1）；计数器与 v1 完全一致（switchins 3.25M、wake_eff
+      3.16M、零空操作）；每等待额外成本 = 一次 _mt_wait_key 外部调用。
+      门禁：Mt 48/48 + ambient N=4 37/37、Free 10/10 × N=1/N=4、Event 锤
+      100/100、signal-round 50/50、tinyriscv N8 12/12、shuffle 三种子、
+      TSan N=1/2/4 零报告（tinyriscv + signal 形态）、全矩阵（见提交）。
+
 ## 后续阶段（本计划之外）
 
 - M1 原子量/互斥；M3 微内核逐线程化；M4 多线程 worker + 边界屏障；M5 GC；M6 Signal/延迟 Fifo；

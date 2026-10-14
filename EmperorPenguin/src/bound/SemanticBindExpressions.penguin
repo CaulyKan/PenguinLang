@@ -577,8 +577,7 @@ class BindExpressionsPass {
             cn.inner = new Option<Expression>.some(inner);
             after_args.push(new Expression.cast_expr(cn));
         }
-        if (this.model.some.enable_multithread_scheduler ||
-            this.model.some.enable_free_scheduler) {
+        if (this.model.some.enable_mt_scheduler) {
             // Direct call to the mt runtime branch (an async fun — its own
             // waits park this coroutine's stack, exactly like the do_wait
             // dispatch below). Returns the tick, like the classic form.

@@ -1,0 +1,371 @@
+// Image edge detection — the free-mt parallel compute example.
+//
+// Pipeline (design doc 7.3 free-mt: "high-throughput aggressive parallelism"):
+//   generate -> blur_h -> blur_v -> sobel/threshold
+// Each stage fans out BANDS band tasks (async, Pass-10 STEALABLE: the only
+// shared argument is the input IMAGE — a string, immutable and therefore in
+// the Imm tier of the sharing grid; all other state is fresh-local). Workers
+// read their band (plus the halo rows the vertical passes need) straight
+// from the global string, compute into a local StringBuilder and return the
+// band as a string through the spawn future; the driver joins in band order
+// and stitches. Band tasks never touch shared mutable state — the parallel
+// width is limited only by the work, not by Pass 10 pinning.
+//
+// Pixel values are kept in 0..127 (ASCII) so a pixel is exactly one char on
+// both hosts (native strings are UTF-8 byte-backed, the C# VM UTF-16 —
+// below 128 both index identically).
+//
+// Usage: edge_detect [size]              synthetic image (default 1024)
+//        edge_detect <in.bmp> [out.bmp]  24-bit BMP in, edges BMP out
+// BMP mode reads an uncompressed bottom-up 24-bit BMP, extracts the
+// grayscale plane (B+G+R)/3 halved into 0..127, runs the same pipeline and
+// writes an edges BMP (same geometry, header copied verbatim from the
+// input, edge pixels 100 on black — every emitted byte is < 128, so the
+// output is built purely from intern-safe single-char strings). Byte I/O
+// is transparent on POSIX hosts (file_read_text/file_write_text read and
+// write raw bytes there).
+// Timing: prints per-stage and total ms + checksum (deterministic).
+
+// Imm-typed (i64) global: Pass 10's Shareable-global relaxation keeps
+// reads of it clean, so the band tasks stay stealable.
+let BANDS: i64 = 32;
+
+fun clampi(v: i64, lo: i64, hi: i64) -> i64 {
+    if (v < lo) { return lo; }
+    if (v > hi) { return hi; }
+    return v;
+}
+
+// The synthetic test image: a smooth background gradient plus a filled
+// circle, a rectangle and a diagonal band — real edges for every stage.
+fun gen_pixel(x: i64, y: i64, w: i64, h: i64) -> i64 {
+    let dx: i64 = x - w / 3;
+    let dy: i64 = y - h / 3;
+    let r: i64 = h / 6;
+    if (dx * dx + dy * dy < r * r) {
+        return 90;
+    }
+    if (x >= (w * 2) / 3 && x < (w * 2) / 3 + w / 8 && y >= h / 5 && y < h / 2) {
+        return 40;
+    }
+    let d0: i64 = x - y;
+    let d: i64 = if (d0 < 0) { -d0 } else { d0 };
+    if (d < w / 32) {
+        return 120;
+    }
+    return ((x + 2 * y) / (w / 24)) & 127;
+}
+
+fun at(img: string, w: i64, h: i64, x: i64, y: i64) -> i64 {
+    let xx: i64 = clampi(x, 0, w - 1);
+    let yy: i64 = clampi(y, 0, h - 1);
+    return __builtin.string_char_code_at(img, yy * w + xx);
+}
+
+// ---- BMP helpers (uncompressed bottom-up 24-bit) ----
+fun le16(s: string, i: i64) -> i64 {
+    return __builtin.string_char_code_at(s, i)
+        + 256 * __builtin.string_char_code_at(s, i + 1);
+}
+
+fun le32(s: string, i: i64) -> i64 {
+    return le16(s, i) + 65536 * le16(s, i + 2);
+}
+
+// Read a 24-bit BMP file, validating it is an uncompressed bottom-up
+// image. Returns the raw BMP string (the caller pulls w/h via le32), or ""
+// when the file is missing or not a supported BMP.
+fun bmp_read(path: string) -> string {
+    let bmp: string = std.io.file_read_text(path);
+    if (__builtin.string_length(bmp) < 54) {
+        return "";
+    }
+    if (__builtin.string_char_code_at(bmp, 0) != 66
+        || __builtin.string_char_code_at(bmp, 1) != 77) {
+        return ""; // "BM" magic
+    }
+    if (le16(bmp, 28) != 24 || le32(bmp, 30) != 0 || le32(bmp, 10) < 54) {
+        return ""; // not uncompressed 24-bit
+    }
+    if (le32(bmp, 22) <= 0) {
+        return ""; // top-down rows unsupported
+    }
+    return bmp;
+}
+
+// Write the 0/100 edge map as a 24-bit BMP next to the input's header
+// (same geometry => the input's header+gap is byte-valid for the output).
+fun bmp_write_edges(path: string, bmp: string, w: i64, h: i64, edges: string) {
+    let doff: i64 = le32(bmp, 10);
+    let row_bytes: i64 = (w * 3 + 3) / 4 * 4;
+    let pad: i64 = row_bytes - w * 3;
+    let z: string = cast<string>(cast<char>(0));
+    let e: string = cast<string>(cast<char>(100));
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(__builtin.string_substring(bmp, 0, doff));
+    let by: mut i64 = 0;
+    while (by < h) {
+        let y: i64 = h - 1 - by; // BMP rows are bottom-up
+        let x: mut i64 = 0;
+        while (x < w) {
+            if (__builtin.string_char_code_at(edges, y * w + x) > 0) {
+                sb.append(e);
+                sb.append(e);
+                sb.append(e);
+            } else {
+                sb.append(z);
+                sb.append(z);
+                sb.append(z);
+            }
+            x = x + 1;
+        }
+        let p: mut i64 = 0;
+        while (p < pad) {
+            sb.append(z);
+            p = p + 1;
+        }
+        by = by + 1;
+    }
+    std.io.file_write_text(path, sb.to_string());
+}
+
+// One band of one stage. kind: 0=generate 1=blur_h 2=blur_v 3=sobel.
+async fun band_task(kind: i64, img: string, w: i64, h: i64, y0: i64, y1: i64) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    let y: mut i64 = y0;
+    while (y < y1) {
+        let x: mut i64 = 0;
+        while (x < w) {
+            let v: mut i64 = 0;
+            if (kind == 0) {
+                v = gen_pixel(x, y, w, h);
+            } else if (kind == 4) {
+                // BMP gray extract: img is the raw BMP; (B+G+R)/3 halved
+                // into the pipeline's 0..127 range. Rows are bottom-up.
+                let doff: i64 = le32(img, 10);
+                let row_bytes: i64 = (w * 3 + 3) / 4 * 4;
+                let off: i64 = doff + (h - 1 - y) * row_bytes + x * 3;
+                v = (__builtin.string_char_code_at(img, off)
+                    + __builtin.string_char_code_at(img, off + 1)
+                    + __builtin.string_char_code_at(img, off + 2)) / 6;
+            } else if (kind == 1) {
+                // separable gaussian, horizontal 1-3-5-3-1 / 16
+                v = (at(img, w, h, x - 2, y) + at(img, w, h, x + 2, y)
+                     + 3 * at(img, w, h, x - 1, y) + 3 * at(img, w, h, x + 1, y)
+                     + 5 * at(img, w, h, x, y)) / 16;
+            } else if (kind == 2) {
+                // vertical pass — halo rows come straight from the input
+                v = (at(img, w, h, x, y - 2) + at(img, w, h, x, y + 2)
+                     + 3 * at(img, w, h, x, y - 1) + 3 * at(img, w, h, x, y + 1)
+                     + 5 * at(img, w, h, x, y)) / 16;
+            } else {
+                // sobel Gx/Gy on the blurred image; magnitude, threshold
+                let p00: i64 = at(img, w, h, x - 1, y - 1);
+                let p01: i64 = at(img, w, h, x, y - 1);
+                let p02: i64 = at(img, w, h, x + 1, y - 1);
+                let p10: i64 = at(img, w, h, x - 1, y);
+                let p12: i64 = at(img, w, h, x + 1, y);
+                let p20: i64 = at(img, w, h, x - 1, y + 1);
+                let p21: i64 = at(img, w, h, x, y + 1);
+                let p22: i64 = at(img, w, h, x + 1, y + 1);
+                let gx0: i64 = (p02 + 2 * p12 + p22) - (p00 + 2 * p10 + p20);
+                let gy0: i64 = (p20 + 2 * p21 + p22) - (p00 + 2 * p01 + p02);
+                let gx: i64 = if (gx0 < 0) { -gx0 } else { gx0 };
+                let gy: i64 = if (gy0 < 0) { -gy0 } else { gy0 };
+                if (gx + gy > 48) {
+                    v = 100;
+                } else {
+                    v = 0;
+                }
+            }
+            sb.append(cast<string>(cast<char>(v)));
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return sb.to_string();
+}
+
+// Fan one stage over BANDS bands and stitch the results in order.
+!async fun run_stage(kind: i64, img: string, w: i64, h: i64) -> string {
+    let band_h: i64 = (h + BANDS - 1) / BANDS;
+    let f0 = async band_task(kind, img, w, h, 0 * band_h, clampi(1 * band_h, 0, h));
+    let f1 = async band_task(kind, img, w, h, 1 * band_h, clampi(2 * band_h, 0, h));
+    let f2 = async band_task(kind, img, w, h, 2 * band_h, clampi(3 * band_h, 0, h));
+    let f3 = async band_task(kind, img, w, h, 3 * band_h, clampi(4 * band_h, 0, h));
+    let f4 = async band_task(kind, img, w, h, 4 * band_h, clampi(5 * band_h, 0, h));
+    let f5 = async band_task(kind, img, w, h, 5 * band_h, clampi(6 * band_h, 0, h));
+    let f6 = async band_task(kind, img, w, h, 6 * band_h, clampi(7 * band_h, 0, h));
+    let f7 = async band_task(kind, img, w, h, 7 * band_h, clampi(8 * band_h, 0, h));
+    let f8 = async band_task(kind, img, w, h, 8 * band_h, clampi(9 * band_h, 0, h));
+    let f9 = async band_task(kind, img, w, h, 9 * band_h, clampi(10 * band_h, 0, h));
+    let f10 = async band_task(kind, img, w, h, 10 * band_h, clampi(11 * band_h, 0, h));
+    let f11 = async band_task(kind, img, w, h, 11 * band_h, clampi(12 * band_h, 0, h));
+    let f12 = async band_task(kind, img, w, h, 12 * band_h, clampi(13 * band_h, 0, h));
+    let f13 = async band_task(kind, img, w, h, 13 * band_h, clampi(14 * band_h, 0, h));
+    let f14 = async band_task(kind, img, w, h, 14 * band_h, clampi(15 * band_h, 0, h));
+    let f15 = async band_task(kind, img, w, h, 15 * band_h, clampi(16 * band_h, 0, h));
+    let f16 = async band_task(kind, img, w, h, 16 * band_h, clampi(17 * band_h, 0, h));
+    let f17 = async band_task(kind, img, w, h, 17 * band_h, clampi(18 * band_h, 0, h));
+    let f18 = async band_task(kind, img, w, h, 18 * band_h, clampi(19 * band_h, 0, h));
+    let f19 = async band_task(kind, img, w, h, 19 * band_h, clampi(20 * band_h, 0, h));
+    let f20 = async band_task(kind, img, w, h, 20 * band_h, clampi(21 * band_h, 0, h));
+    let f21 = async band_task(kind, img, w, h, 21 * band_h, clampi(22 * band_h, 0, h));
+    let f22 = async band_task(kind, img, w, h, 22 * band_h, clampi(23 * band_h, 0, h));
+    let f23 = async band_task(kind, img, w, h, 23 * band_h, clampi(24 * band_h, 0, h));
+    let f24 = async band_task(kind, img, w, h, 24 * band_h, clampi(25 * band_h, 0, h));
+    let f25 = async band_task(kind, img, w, h, 25 * band_h, clampi(26 * band_h, 0, h));
+    let f26 = async band_task(kind, img, w, h, 26 * band_h, clampi(27 * band_h, 0, h));
+    let f27 = async band_task(kind, img, w, h, 27 * band_h, clampi(28 * band_h, 0, h));
+    let f28 = async band_task(kind, img, w, h, 28 * band_h, clampi(29 * band_h, 0, h));
+    let f29 = async band_task(kind, img, w, h, 29 * band_h, clampi(30 * band_h, 0, h));
+    let f30 = async band_task(kind, img, w, h, 30 * band_h, clampi(31 * band_h, 0, h));
+    let f31 = async band_task(kind, img, w, h, 31 * band_h, clampi(32 * band_h, 0, h));
+    let s0: string = wait f0;
+    let s1: string = wait f1;
+    let s2: string = wait f2;
+    let s3: string = wait f3;
+    let s4: string = wait f4;
+    let s5: string = wait f5;
+    let s6: string = wait f6;
+    let s7: string = wait f7;
+    let s8: string = wait f8;
+    let s9: string = wait f9;
+    let s10: string = wait f10;
+    let s11: string = wait f11;
+    let s12: string = wait f12;
+    let s13: string = wait f13;
+    let s14: string = wait f14;
+    let s15: string = wait f15;
+    let s16: string = wait f16;
+    let s17: string = wait f17;
+    let s18: string = wait f18;
+    let s19: string = wait f19;
+    let s20: string = wait f20;
+    let s21: string = wait f21;
+    let s22: string = wait f22;
+    let s23: string = wait f23;
+    let s24: string = wait f24;
+    let s25: string = wait f25;
+    let s26: string = wait f26;
+    let s27: string = wait f27;
+    let s28: string = wait f28;
+    let s29: string = wait f29;
+    let s30: string = wait f30;
+    let s31: string = wait f31;
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(s0);
+    sb.append(s1);
+    sb.append(s2);
+    sb.append(s3);
+    sb.append(s4);
+    sb.append(s5);
+    sb.append(s6);
+    sb.append(s7);
+    sb.append(s8);
+    sb.append(s9);
+    sb.append(s10);
+    sb.append(s11);
+    sb.append(s12);
+    sb.append(s13);
+    sb.append(s14);
+    sb.append(s15);
+    sb.append(s16);
+    sb.append(s17);
+    sb.append(s18);
+    sb.append(s19);
+    sb.append(s20);
+    sb.append(s21);
+    sb.append(s22);
+    sb.append(s23);
+    sb.append(s24);
+    sb.append(s25);
+    sb.append(s26);
+    sb.append(s27);
+    sb.append(s28);
+    sb.append(s29);
+    sb.append(s30);
+    sb.append(s31);
+    return sb.to_string();
+}
+
+initial {
+    // Mode dispatch: arg0 ending in ".bmp" = BMP mode (arg1 = output path,
+    // default <input>.edges.bmp); otherwise arg0 = synthetic size.
+    let size: mut i64 = 1024;
+    let bmp_mode: mut bool = false;
+    let in_path: mut string = "";
+    let out_path: mut string = "";
+    if (__builtin.__args_count() > 0) {
+        let arg: string = __builtin.__args_get(0);
+        let alen: i64 = __builtin.string_length(arg);
+        if (alen >= 4
+            && __builtin.string_char_code_at(arg, alen - 4) == 46
+            && __builtin.string_char_code_at(arg, alen - 3) == 98
+            && __builtin.string_char_code_at(arg, alen - 2) == 109
+            && __builtin.string_char_code_at(arg, alen - 1) == 112) {
+            bmp_mode = true;
+            in_path = arg;
+            out_path = __builtin.string_substring(arg, 0, alen - 4) + ".edges.bmp";
+            if (__builtin.__args_count() > 1) {
+                out_path = __builtin.__args_get(1);
+            }
+        } else if (alen > 0) {
+            let n: i64 = __builtin.string_to_int(arg);
+            if (n >= 16) {
+                size = n;
+            }
+        }
+    }
+    let w: mut i64 = size;
+    let h: mut i64 = size;
+    let bmp: mut string = "";
+    if (bmp_mode) {
+        let parsed: string = bmp_read(in_path);
+        if (__builtin.string_length(parsed) == 0) {
+            eprintln("edge_detect: cannot read an uncompressed bottom-up 24-bit BMP from " + in_path);
+            exit(1);
+        }
+        bmp = parsed;
+        w = le32(bmp, 18);
+        h = le32(bmp, 22);
+    }
+    let t0: i64 = __builtin.now_ms();
+
+    let img: string = run_stage(if (bmp_mode) { 4 } else { 0 }, bmp, w, h);
+    let t1: i64 = __builtin.now_ms();
+    let img2: string = run_stage(1, img, w, h);
+    let t2: i64 = __builtin.now_ms();
+    let img3: string = run_stage(2, img2, w, h);
+    let t3: i64 = __builtin.now_ms();
+    let img4: string = run_stage(3, img3, w, h);
+    let t4: i64 = __builtin.now_ms();
+
+    // checksum + edge density over the final map
+    let hash: mut i64 = 1469598103934665603;
+    let edges: mut i64 = 0;
+    let i: mut i64 = 0;
+    let n: i64 = w * h;
+    while (i < n) {
+        let c: i64 = __builtin.string_char_code_at(img4, i);
+        hash = (hash ^ c) * 1099511628211;
+        if (c > 0) {
+            edges = edges + 1;
+        }
+        i = i + 1;
+    }
+    // stdout carries only DETERMINISTIC content (the test suite asserts it
+    // byte-exact); timings are diagnostics on stderr.
+    if (bmp_mode) {
+        bmp_write_edges(out_path, bmp, w, h, img4);
+        println("edge_detect bmp " + cast<string>(w) + "x" + cast<string>(h));
+    } else {
+        println("edge_detect " + cast<string>(w) + "x" + cast<string>(h));
+    }
+    println("edges " + cast<string>(edges) + " (" + cast<string>(edges * 100 / n) + "%)");
+    println("checksum " + cast<string>(hash));
+    eprintln("gen " + cast<string>(t1 - t0) + "ms  blur_h " + cast<string>(t2 - t1)
+        + "ms  blur_v " + cast<string>(t3 - t2) + "ms  sobel " + cast<string>(t4 - t3)
+        + "ms  total " + cast<string>(t4 - t0) + "ms");
+    exit(0);
+}

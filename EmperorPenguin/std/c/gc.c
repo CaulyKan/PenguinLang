@@ -1459,6 +1459,12 @@ static void gc_scan_regions_mark(void* raw_co_sp) {
  * reclaim (clear bits, repool). Every finalizer — either heap — observes
  * every dead object intact, and finalizer-time allocations (malloc path,
  * collecting latch) are never visited by this cycle's unlink walk. */
+/* scheduler.c per-thread phase accounting (EP_MULTITHREAD_SCHEDULER_
+ * PERF_ANALYZE): no-ops unless the analyzer is on AND the mt kernel
+ * started; classic-mode collections have no slot to account into. */
+extern void _emperor_sched_perf_gc_begin(void);
+extern void _emperor_sched_perf_gc_end(void);
+
 static void gc_collect_greentea(int emergency) {
     (void)emergency; /* the driver always runs the conservative cover */
     if (_emperor_gc_disabled) return;
@@ -1560,7 +1566,9 @@ static void gc_collect_greentea(int emergency) {
 }
 
 void gc_collect_greentea_emergency(void) {
+    _emperor_sched_perf_gc_begin();
     gc_collect_greentea(1);
+    _emperor_sched_perf_gc_end();
 }
 
 /* ---- Unified dual-heap goal (spec §9.2) ----
@@ -1644,10 +1652,13 @@ static EMPEROR_NO_ASAN void gc_collect_main(void) {
     if (!_emperor_gc_stack_bottom || _emperor_gc_collecting) return;
     /* Green tea (GC v3): the span-heap driver replaces the whole cycle. */
     if (_gc_greentea) {
+        _emperor_sched_perf_gc_begin();
         gc_collect_greentea(0);
+        _emperor_sched_perf_gc_end();
         return;
     }
     /* Conservative mode: the inline sequential full collect below. */
+    _emperor_sched_perf_gc_begin();
     _emperor_gc_collecting = 1;
     __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
     uint64_t _gc_st_t0 = 0;
@@ -1689,6 +1700,7 @@ static EMPEROR_NO_ASAN void gc_collect_main(void) {
      * instead of risking a partial marking. */
     if (!gc_refresh_sorted()) {
         _emperor_gc_collecting = 0;
+        _emperor_sched_perf_gc_end();
         return;
     }
 
@@ -1929,6 +1941,7 @@ static EMPEROR_NO_ASAN void gc_collect_main(void) {
         _emperor_gc_mark_stack_top = 0;
         for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) h->marked = 0;
         _emperor_gc_collecting = 0;
+        _emperor_sched_perf_gc_end();
         return;
     }
 
@@ -1971,6 +1984,7 @@ static EMPEROR_NO_ASAN void gc_collect_main(void) {
     _emperor_gc_collecting = 0;
     __atomic_store_n(&_emperor_gc_want_collect, 0, __ATOMIC_RELAXED);
     if (_gc_st_t0) { _gc_st_ns_full += _gc_st_ns_now() - _gc_st_t0; _gc_st_note_live(); }
+    _emperor_sched_perf_gc_end();
 }
 
 /* Public entry = the penguin `gc_collect()` builtin (and gc_torture):
@@ -2374,7 +2388,17 @@ void _emperor_gc_poll(void) {
         return;
     }
     if (!__atomic_load_n(&_emperor_gc_want_collect, __ATOMIC_RELAXED)) {
-        __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED); /* flag drained — re-arm the age clock */
+        /* Re-arm the age clock — but WRITE ONLY WHEN IT IS SET: this is
+         * the per-back-edge hot path (one call per loop iteration of every
+         * coroutine), and an unconditional store had every thread of a
+         * parallel delta writing the same shared line per iteration —
+         * cache-line ping-pong that made 4-thread free-mt compute ~70%
+         * SLOWER than one thread (the edge-detect example). A conditional
+         * store keeps the drained steady state a pure read (shared-clean
+         * line, no coherency traffic). */
+        if (__atomic_load_n(&_gc_stw_first_seen, __ATOMIC_RELAXED) != 0) {
+            __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED);
+        }
         return;
     }
     __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);

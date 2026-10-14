@@ -48,7 +48,7 @@ bool 操作数与 `change(x)` 操作数是编译错误（`E_TYPE_MISMATCH`）：
 
 该分层镜像 BabyPenguin：微内核拥有栈与切换（必须由 C 完成）；调度策略（delta、定时器、静默）是 Penguin 层库代码，靠跨编译器 async/timing 测试类（`Tests/AsyncTest/`、`Tests/TimingTest/`、`Tests/PortTest/`、`Tests/ChannelTest/`——全部在 BabyPenguin 与 Pass3 上以逐字节一致的期望运行）保持两个运行时一致且可测。
 
-## 多线程调度器（`--enable-multithread-scheduler`）
+## 时钟模型（`--enable-multithread-scheduler --enable-clock-model`）
 
 `main.penguin` 交换自动装载的策略：`std/penguin/scheduler_mt.penguin` 替换 `scheduler.penguin`（公共面不变、命名空间相同，发射器零改动）。收敛式 delta 语义——每 delta 完全收敛、边界七步、所有协程结束才退出——定义在设计文档 `docs/zh/wip/concurrent_scheduler.md`。`wait <n>` 降低到 `__builtin._mt_wait_ticks(n)`（`SemanticBindExpressions.bind_timer_wait`）：`n < 0` 纯让出（`_co_yield`，仍在当前 delta 内可运行）；`n == 0` 经 `_co_wait()` 停靠，与裸 `wait;` 完全一致（定时器路径表达不了它——`_after(0)` 注册的截止点等于当前时刻，`do_wait` 的先 poll 快路径会在同一 delta 内当作"就绪"直接返回、变成空操作；由 `Tests/MtSchedulerTest/MtWaitZeroEqualsBare.md` 钉住）；`n > 0` 走定时器条件等待。
 
@@ -57,6 +57,17 @@ Pass 10（封闭性分析，见[绑定模型](./26_EmperorPenguinBound.md)）在
 ### 工作线程（`EMPEROR_THREADS=N`）
 
 `EMPEROR_THREADS=N`（环境变量，默认 1）启动 N−1 个工作线程；一个 delta 在全部 N 个线程上并行——每个线程抽干自己的队列，Pass 10 判为可窃取的未运行协程在 delta 开始时轮转分发、空闲线程可窃取。delta 在全局栅栏处结束：所有线程同时无活可干。决策 A（已启动的协程永不迁移）让唤醒路由无竞争——唤醒发给协程的所有者，而所有者按定义不在执行它。`EMPEROR_THREADS` 未设置时单工作者即调用线程本身，与单工作者内核逐字节一致。
+
+### 每线程时间分析（`EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE=1`）
+
+置 1 后把每个调度线程的墙钟时间切成四个相位，程序退出时（工作者线程 join 之后）向 stderr 打印每线程报告：
+
+- **busy** —— 在 `_emperor_co_switch_in` 内：执行 penguin 协程代码。
+- **idle** —— 停靠等活（`mt_idle_wait` 睡眠 + delta 间停靠；futex 前的自旋窗口也计入 idle）。
+- **schedule** —— 调度簿记：运行队列、唤醒路由、窃取、边界处理。
+- **gc** —— 在 GC 驱动内（gc.c 在收集入口处调用调度器的相位钩子）。
+
+时间为每线程微秒值加上占该线程自身已测总量的百分比，末尾一行 `total:` 汇总；classic 模式的收集（没有 mt 槽位）与调度器启动前的时间不计入。未设置时代价为每次相位切换一次宽松读加比较。由 `Tests/FreeMtTest/FreeMtPerfAnalyzeReport.md` 钉住。
 
 ### 停顿诊断（设计文档第 12 章："不要无声挂起"）
 
@@ -82,7 +93,7 @@ Pass 10（封闭性分析，见[绑定模型](./26_EmperorPenguinBound.md)）在
 - 轮询侧 STW 升级（`EMPEROR_GC_STW_MS`，默认 250 毫秒，0 = 关闭）：边界排不掉的 want_collect——delta 永不收敛（忙服务在永恒 delta 里持续搅动）——会升级：轮询协程把自己挂到硬上限阀的停靠列表上，逼出边界收集所需的收敛。没有它，永恒 delta 会把收集一直压到堆爬到硬上限——健全，但堆顶在上限而不是目标值。计时钟从第一次观察到标志的轮询开始计时，标志落下即重新武装。
 - 测试：`MtGcHardCapParkCollect`（4 路并行 churn 穿过 256KB 上限正常完成、校验和不変）、`MtGcHardCapOom`（保活 62）、`MtGcHardCapSingleAllocOom`（单次超限 62）、`MtGcHardCapZeroUnlimited`（显式 0 = 不限）。
 
-## 自由形态运行时（`--enable-free-mt`）
+## 自由形态运行时（`--enable-multithread-scheduler`）
 
 `main.penguin` 再次交换策略：`std/penguin/scheduler_free.penguin`——与 `scheduler_mt.penguin` 同一个 C 微内核、同一公共面，面向不使用仿真时间的服务：
 

@@ -25,7 +25,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler -Wconcurrency`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model -Wconcurrency`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

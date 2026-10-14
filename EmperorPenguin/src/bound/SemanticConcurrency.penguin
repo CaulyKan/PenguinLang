@@ -467,6 +467,19 @@ export class ConcurrencyAnalysisPass {
         if (name == "bits" || name == "lshift" || name == "rshift") {
             return true;
         }
+        // String READ family: strings are immutable, so every reader is a
+        // pure function of its input (the parallel-compute examples read
+        // image buffers held as strings; without this the reads pin every
+        // compute task). The StringBuilder methods mutate ONLY their
+        // receiver — a receiver reachable in a coroutine is either a
+        // fresh local (the normal case) or shared state that the argument
+        // sharing check has already rejected, so treating them as pure
+        // cannot smuggle cross-coroutine effects.
+        if (name == "string_char_code_at" || name == "string_char_code" ||
+            name == "string_length" || name == "string_char_at" ||
+            name == "append" || name == "to_string") {
+            return true;
+        }
         if (name == "_mt_future_park" || name == "_mt_kick_futures" ||
             name == "_co_yield" || name == "_co_wait" ||
             name == "_mt_park_begin" || name == "_mt_switch_away" ||

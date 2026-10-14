@@ -32,7 +32,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

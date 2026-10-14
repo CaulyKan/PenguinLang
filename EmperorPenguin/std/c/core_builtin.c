@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -346,7 +347,53 @@ _emperor_string* _emperor_double_to_string(double value) {
 
 /* char -> string: the CHARACTER itself (BabyPenguin reference semantics:
  * C# char.ToString()), UTF-8 encoded — 1 byte for ASCII, up to 3 for BMP. */
+/* The 128 ASCII single-char strings, interned: immutable and eternal, and
+ * the cast<char>->string path is the parallel-compute hot loop (per-pixel
+ * string building). Built by a constructor — single-threaded process init,
+ * no lazy-init race — and each cell registered as a GC root (a C static is
+ * outside every scan; without the roots the first sweep would free them).
+ * Non-ASCII codes fall through to the original encode path. */
+static _emperor_string* _char_interned[128];
+static volatile int _char_intern_ready = 0;
+
+static void _char_intern_init(void) {
+    for (int i = 0; i < 128; i++) {
+        _emperor_string* s = _emperor_string_alloc(1);
+        if (!s) return; /* partial table: NULL entries fall through */
+        s->data[0] = (uint8_t)i;
+        s->data[1] = 0;
+        s->length = 1;
+        _char_interned[i] = s;
+        /* Rooted explicitly: the intern table lives in a C static, which
+         * no GC scan covers — without the registration the first sweep
+         * would free every interned char. */
+        _emperor_gc_add_root((void**)&_char_interned[i]);
+    }
+    _char_intern_ready = 1;
+}
+
+/* Thread-safe one-shot init for the intern table (~one load on the
+ * completed fast path; the table allocates on whoever converts first). */
+#if defined(EMPEROR_WIN) || defined(_WIN32)
+static INIT_ONCE _char_intern_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK _char_intern_once_cb(PINIT_ONCE o, PVOID p, PVOID* c) {
+    (void)o; (void)p; (void)c;
+    _char_intern_init();
+    return TRUE;
+}
+#define CHAR_INTERN_ONCE() InitOnceExecuteOnce(&_char_intern_once, _char_intern_once_cb, NULL, NULL)
+#else
+static pthread_once_t _char_intern_once = PTHREAD_ONCE_INIT;
+#define CHAR_INTERN_ONCE() pthread_once(&_char_intern_once, _char_intern_init)
+#endif
+
 _emperor_string* _emperor_char_to_string(int32_t code) {
+    if (code >= 0 && code < 128) {
+        CHAR_INTERN_ONCE();
+        if (_char_intern_ready && _char_interned[code]) {
+            return _char_interned[code];
+        }
+    }
     uint8_t buf[4];
     int len;
     if (code < 0) {
@@ -386,6 +433,24 @@ long long _emperor_rshift(long long value, long long shift) {
 long long _emperor_string_length(_emperor_string* s) {
     if (!s) return 0;
     return (long long)s->length;
+}
+
+/* Monotonic wall-clock milliseconds — examples/benchmarks timing. Mirrors
+ * gc.c's QPC/clock_gettime split: llvm-mingw maps clock_gettime onto
+ * winpthread's clock_gettime64, and plain program links carry no
+ * -lwinpthread. */
+long long _emperor_now_ms(void) {
+#if defined(_WIN32)
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER counter;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    return (long long)(counter.QuadPart * 1000 / freq.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
 }
 
 long long _emperor_string_find(_emperor_string* s, _emperor_string* sub) {

@@ -84,6 +84,7 @@ public static class Program
         // Decide the effective compiler set.
         var requested = opts.Compilers; // null = use each test's Apply To
         var probe = opts.Probe;
+        EmperorLink.Release = opts.ReleaseLink;
 
         // Build the set of work items (test x compiler).
         var work = new List<WorkItem>();
@@ -586,6 +587,10 @@ public sealed class Options
     /// order (shuffling is supposed to change those).</summary>
     public string? Exclude;
     public bool Probe;
+    /// <summary>Pass --release to every emperor_penguin link (clang -O2 user
+    /// programs) — validation mode for the optimized-link pipeline; the plain
+    /// matrix stays the default gate.</summary>
+    public bool ReleaseLink;
     public int Parallel = Math.Max(1, Environment.ProcessorCount - 1);
     public int TimeoutCompileSec = 600;
     public int TimeoutRunSec = 60;
@@ -623,6 +628,7 @@ public sealed class Options
                 case "--filter": o.Filter = Val(); if (o.Filter == null) return null; break;
                 case "--exclude": o.Exclude = Val(); if (o.Exclude == null) return null; break;
                 case "--probe": o.Probe = true; break;
+                case "--release": o.ReleaseLink = true; break;
                 case "--parallel": { var v = Val(); if (v == null || !int.TryParse(v, out o.Parallel)) { Console.Error.WriteLine("bad --parallel"); return null; } break; }
                 case "--timeout-compile": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutCompileSec)) { Console.Error.WriteLine("bad --timeout-compile"); return null; } break; }
                 case "--timeout-run": { var v = Val(); if (v == null || !int.TryParse(v, out o.TimeoutRunSec)) { Console.Error.WriteLine("bad --timeout-run"); return null; } break; }
@@ -690,6 +696,9 @@ public sealed class Options
                                   e.g. the shuffle-deltas step excludes tests that
                                   legitimately pin delta-internal FIFO order.
           --probe                 Ignore Apply To; run the selected compilers & report matches.
+          --release               Pass --release to the emperor_penguin link step
+                                  (clang -O2 user programs) — the optimized-link
+                                  validation matrix; plain runs stay -O0.
           --parallel <n>          Max concurrent combos (default: cores-1; memory
                                    gate additionally limits by estimated peak RSS).
           --timeout-compile <s>   Per-case compile timeout (default 600).
@@ -1445,6 +1454,10 @@ public interface ICompilerBackend
 /// </summary>
 public static class EmperorLink
 {
+    /// <summary>Set from the runner's --release option (see Main): append
+    /// --release to the driver link so user programs link at clang -O2.</summary>
+    public static bool Release;
+
     public static string ScriptPath(string repoRoot) =>
         OperatingSystem.IsWindows()
             ? Path.Combine(repoRoot, "EmperorPenguin", "emperor_penguin.bat")
@@ -1474,6 +1487,7 @@ public static class EmperorLink
             // closure (recursive deps included) as <out>.libs beside the .ll,
             // and the driver script links every path listed there.
         }
+        if (Release) args.Add("--release");
         return new ProcessStartInfo
         {
             FileName = ScriptPath(repoRoot),

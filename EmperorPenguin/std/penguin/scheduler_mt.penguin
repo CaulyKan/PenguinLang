@@ -1,5 +1,6 @@
-// MT-scheduler stdlib — the CONVERGENCE-delta concurrency runtime, auto-loaded
-// with --enable-multithread-scheduler (see main.penguin). It replaces the
+// CLOCK-MODEL scheduler stdlib — the CONVERGENCE-delta concurrency runtime,
+// auto-loaded with --enable-multithread-scheduler --enable-clock-model (see
+// main.penguin). It replaces the
 // classic scheduler.penguin (same public surface: externs, IFuture, channels,
 // Event, __sched_run) with the semantics from
 // docs/zh/wip/concurrent_scheduler.md:
@@ -86,6 +87,12 @@ namespace __builtin {
     // _emperor_mt_future_cancel).
     extern fun _mt_future_cancel();
     extern fun _mt_kick_futures();
+    // Directed wake (see IFuture.register_waiter): stamp the CURRENT
+    // coroutine's component key; _mt_kick_key wakes exactly the parked
+    // futures entries stamped with that key (no-consume — the entries are
+    // the C-side filing; no component-side waiter lists needed).
+    extern fun _mt_wait_key(key: i64);
+    extern fun _mt_kick_key(key: i64);
     // Library-level condition-wait pair (Fifo backpressure): park_begin
     // claims the parked state FIRST (no wake can be lost after it
     // returns), the caller registers in ITS waiter list, switch_away
@@ -213,7 +220,6 @@ namespace __builtin {
         // value; no lost wake. Default: no-op — custom futures and the
         // Event's deferred subscriber kick keep the global kick sources.
         fun register_waiter(this) {}
-        fun unregister_waiter(this) {}
 
         !async fun do_wait(mut this) -> T {
             let state: mut FutureState<T> = this.poll();
@@ -224,14 +230,12 @@ namespace __builtin {
                 return state.ready_finished;
             }
             __builtin._mt_future_register();
-            // Publish ONCE — the component lists are NO-CONSUME (the same
-            // protocol as the C-side futures set): a wake walks the list
-            // and _mt_wake's each entry (a no-op unless CO_COND) WITHOUT
-            // unlinking, so a woken waiter that re-parks empty-handed (the
-            // first-observer loser) stays findable; only this coroutine's
-            // own exits unregister. The per-iteration re-publish this
-            // replaced contended the component spinlock twice per wait
-            // round (8M extra yield-requeues on 8-core tinyriscv N=4).
+            // Stamp the component key ONCE: the wake side (the delivery,
+            // or for deferred components the boundary commit) is
+            // _mt_kick_key scanning the no-consume futures entries — a
+            // woken waiter that re-parks empty-handed keeps its stamped
+            // entry and stays findable; the exits below cancel the filing
+            // wholesale.
             this.register_waiter();
             while (true) {
                 // The registered poll may throw (channel closed): CANCEL
@@ -241,17 +245,14 @@ namespace __builtin {
                 try {
                     state = this.poll();
                 } catch (e) {
-                    this.unregister_waiter();
                     __builtin._mt_future_cancel();
                     __throw_runtime_error(__throw_get_msg(), __throw_get_code());
                 }
                 if (state is FutureState<T>.ready_finished) {
-                    this.unregister_waiter();
                     __builtin._mt_future_cancel();
                     break;
                 }
                 if (state is FutureState<T>.finished) {
-                    this.unregister_waiter();
                     __builtin._mt_future_cancel();
                     break;
                 }
@@ -353,25 +354,21 @@ namespace __builtin {
         impl ISync;
         done: mut bool = false;
         result: mut Option<R> = new Option<R>.none();
-        // Parked `wait f` joiners (directed wake — see IFuture). complete
-        // runs on the spawned coroutine's OWN thread mid-delta; the joiners
-        // wake in the SAME delta (MtFutureCompletionSameDelta).
-        waiters: mut _ChanList<__Coroutine>;
+        // Directed-wake key. complete runs on the spawned coroutine's OWN
+        // thread mid-delta; the joiners wake in the SAME delta
+        // (MtFutureCompletionSameDelta).
+        kid: i64 = 0;
 
         fun new(mut this) {
-            this.waiters = new _ChanList<__Coroutine>();
+            this.kid = _mt_next_id();
         }
 
         fun complete(mut this, v: R) {
             _sync_begin();
             this.result = new Option<R>.some(v);
             this.done = true;
-            let wi: mut i64 = 0;
-            while (wi < this.waiters.size()) {
-                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
-                wi = wi + 1;
-            }
             _sync_end();
+            _mt_kick_key(this.kid);
         }
 
         impl IFuture<R> {
@@ -383,13 +380,7 @@ namespace __builtin {
             }
             fun register_waiter(this) {
                 let self: mut __SpawnFuture<R> = cast<mut __SpawnFuture<R>>(this);
-                _sync_begin();
-                self.waiters.push(_co_current());
-                _sync_end();
-            }
-            fun unregister_waiter(this) {
-                let self: mut __SpawnFuture<R> = cast<mut __SpawnFuture<R>>(this);
-                _waiter_list_remove(self.waiters);
+                _mt_wait_key(self.kid);
             }
         }
     }
@@ -691,9 +682,6 @@ namespace __builtin {
         in_registry: mut bool;
         // Registry identity (classes carry no reference equality).
         sid: i64;
-        // Parked `wait sig` waiters (directed wake — see IFuture): woken
-        // at the boundary commit (deferred component semantics).
-        waiters: mut _ChanList<__Coroutine>;
 
         // NOTE: the parameter cannot be named `initial` — it is a grammar
         // keyword (initial blocks) and silently parses into empty
@@ -704,17 +692,6 @@ namespace __builtin {
             this.fresh = false;
             this.in_registry = false;
             this.sid = _mt_next_id();
-            this.waiters = new _ChanList<__Coroutine>();
-        }
-
-        fun wake_waiters(mut this) {
-            _sync_begin();
-            let wi: mut i64 = 0;
-            while (wi < this.waiters.size()) {
-                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
-                wi = wi + 1;
-            }
-            _sync_end();
         }
 
         fun read(this) -> T {
@@ -756,13 +733,7 @@ namespace __builtin {
             }
             fun register_waiter(this) {
                 let self: mut Signal<T> = cast<mut Signal<T>>(this);
-                _sync_begin();
-                self.waiters.push(_co_current());
-                _sync_end();
-            }
-            fun unregister_waiter(this) {
-                let self: mut Signal<T> = cast<mut Signal<T>>(this);
-                _waiter_list_remove(self.waiters);
+                _mt_wait_key(self.sid);
             }
         }
 
@@ -770,7 +741,7 @@ namespace __builtin {
         impl ISignalCarrier {
             fun commit_now(mut this) {
                 this.commit();
-                this.wake_waiters();
+                _mt_kick_key(this.sid);
             }
             fun carrier_id(this) -> i64 {
                 return this.sid;
@@ -1269,28 +1240,6 @@ namespace __builtin {
     }
 
 
-    // Directed-wake bookkeeping: remove the CURRENT coroutine's handle from
-    // a component waiter list (identity = _co_seq — classes carry no
-    // reference equality). Called on every do_wait exit: the loop-top
-    // publish leaves the handle in the list even when the poll that
-    // follows finds the value, and a satisfied waiter's coroutine may be
-    // DESTROYED before the next wake — a lingering handle would have the
-    // waker's _mt_wake read freed memory (use-after-munmap).
-    fun _waiter_list_remove(list: mut _ChanList<__Coroutine>) {
-        _sync_begin();
-        let seq: i64 = _co_seq(_co_current());
-        let i: mut i64 = 0;
-        while (i < list.size()) {
-            let h: mut __Coroutine = cast<mut __Coroutine>(list.at(i).some);
-            if (_co_seq(h) == seq) {
-                list.remove_at(i);
-                _sync_end();
-                return;
-            }
-            i = i + 1;
-        }
-        _sync_end();
-    }
 
     fun _channel_closed_error() {
         __throw_runtime_error("channel closed", 100);
@@ -1317,9 +1266,6 @@ namespace __builtin {
         // them, list cleared) whenever a take frees a slot; spurious wakes
         // are absorbed by the write loop's re-check.
         writers: mut _ChanList<__Coroutine> = new _ChanList<__Coroutine>();
-        // Parked `wait fifo` readers (directed wake — see IFuture): woken
-        // at the boundary flush (deferred component semantics).
-        readers: mut _ChanList<__Coroutine> = new _ChanList<__Coroutine>();
         in_registry: mut bool = false;
         fid: i64 = 0;
 
@@ -1352,16 +1298,6 @@ namespace __builtin {
                 let h: mut __Coroutine = cast<mut __Coroutine>(this.writers.at(0).some);
                 this.writers.remove_at(0);
                 _mt_wake(h);
-            }
-            _sync_end();
-        }
-
-        fun wake_readers(mut this) {
-            _sync_begin();
-            let wi: mut i64 = 0;
-            while (wi < this.readers.size()) {
-                _mt_wake(cast<mut __Coroutine>(this.readers.at(wi).some));
-                wi = wi + 1;
             }
             _sync_end();
         }
@@ -1450,7 +1386,7 @@ namespace __builtin {
                 // observes the close (writers re-check explicitly; readers
                 // re-poll and hit check_closed).
                 self.wake_writers();
-                self.wake_readers();
+                _mt_kick_key(self.fid);
             }
 
             fun is_closed(this: IChannel<T>) -> bool {
@@ -1475,13 +1411,7 @@ namespace __builtin {
             }
             fun register_waiter(this) {
                 let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
-                _sync_begin();
-                self.readers.push(_co_current());
-                _sync_end();
-            }
-            fun unregister_waiter(this) {
-                let self: mut Fifo<T> = cast<mut Fifo<T>>(this);
-                _waiter_list_remove(self.readers);
+                _mt_wait_key(self.fid);
             }
         }
 
@@ -1496,7 +1426,7 @@ namespace __builtin {
             fun flush_now(mut this) {
             this.in_registry = false;
                 this.flush();
-                this.wake_readers();
+                _mt_kick_key(this.fid);
             }
             fun carrier_id(this) -> i64 {
                 return this.fid;
@@ -1544,23 +1474,9 @@ namespace __builtin {
         seed_deliver: mut bool = false;
         closed: mut bool = false;
         in_registry: mut bool = false;
-        // Parked `wait ch` takers (directed wake — see IFuture): woken at
-        // the boundary commit (deferred component semantics).
-        waiters: mut _ChanList<__Coroutine>;
 
         fun new(mut this) {
             this.cid = _mt_next_id();
-            this.waiters = new _ChanList<__Coroutine>();
-        }
-
-        fun wake_waiters(mut this) {
-            _sync_begin();
-            let wi: mut i64 = 0;
-            while (wi < this.waiters.size()) {
-                _mt_wake(cast<mut __Coroutine>(this.waiters.at(wi).some));
-                wi = wi + 1;
-            }
-            _sync_end();
         }
 
         fun set_seed(mut this, v: T, deliver: bool) {
@@ -1647,7 +1563,7 @@ namespace __builtin {
         impl ILatestCarrier {
             fun commit_now(mut this) {
                 this.commit_pending();
-                this.wake_waiters();
+                _mt_kick_key(this.cid);
             }
             fun carrier_id(this) -> i64 {
                 return this.cid;
@@ -1721,13 +1637,7 @@ namespace __builtin {
             }
             fun register_waiter(this) {
                 let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
-                _sync_begin();
-                self.waiters.push(_co_current());
-                _sync_end();
-            }
-            fun unregister_waiter(this) {
-                let self: mut LatestChannel<T> = cast<mut LatestChannel<T>>(this);
-                _waiter_list_remove(self.waiters);
+                _mt_wait_key(self.cid);
             }
         }
     }

@@ -50,13 +50,12 @@ export class EmperorPenguinCompiler {
     // construct, connect, wait forms, try/catch, async). Off by default;
     // the Makefile bootstrap passes it only when pass2 compiles pass3.
     enable_coroutine: bool = false;
-    // --enable-multithread-scheduler: scheduler_mt.penguin policy loaded;
-    // also switches the `wait <n>` lowering to _mt_wait_ticks (negative n =
-    // pure yield, see SemanticBindExpressions.bind_timer_wait).
-    enable_multithread_scheduler: bool = false;
-    // --enable-free-mt: scheduler_free.penguin policy loaded (free-form:
-    // no virtual clock, immediate components + AsyncQueue).
-    enable_free_scheduler: bool = false;
+    // --enable-multithread-scheduler (alone = the free-form policy,
+    // scheduler_free.penguin; with --enable-clock-model = the clock model,
+    // scheduler_mt.penguin): the mt kernel is active — switches the
+    // `wait <n>` lowering to _mt_wait_ticks (negative n = pure yield, see
+    // SemanticBindExpressions.bind_timer_wait) and runs Pass 10.
+    enable_mt_scheduler: bool = false;
     warn_concurrency: bool = false;
     // --meta-src / meta-sources: the explicit unit-B user file list
     // (main.penguin reads the listed files; seed_meta_engine hands them to
@@ -123,8 +122,7 @@ export class EmperorPenguinCompiler {
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
         model.enable_coroutine = this.enable_coroutine;
-        model.enable_multithread_scheduler = this.enable_multithread_scheduler;
-        model.enable_free_scheduler = this.enable_free_scheduler;
+        model.enable_mt_scheduler = this.enable_mt_scheduler;
         model.warn_concurrency = this.warn_concurrency;
         model.meta_user_inputs = this.meta_user_inputs;
         model.is_unit_b = this.is_unit_b;

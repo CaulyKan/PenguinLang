@@ -41,6 +41,20 @@
 # Variables (overridable via environment or make command line):
 #   TEST_ARGS="..."        extra args for `make test` / `make baseline_test`
 #                          (e.g. TEST_ARGS="--filter LspTest/*")
+#   DISABLE_EP_CLANG_OPTIMIZE=1
+#                          any non-empty value links the DEPLOYED EP
+#                          artifacts (release emitter + compiler dyn-lib,
+#                          std dyn-lib, LSP, tools) without clang
+#                          optimization. Default: optimized (the driver's
+#                          --release = clang -O2 + LTO on the emitted
+#                          IR, with the C runtime compiled to bitcode). The
+#                          bootstrap self-compile chain (pass2..pass5) is
+#                          never optimized — the -O2 link cost (2.4x the
+#                          whole bootstrap wall time) outweighs the ~22%
+#                          compile speedup there. User programs are
+#                          unaffected either way — they link unoptimized
+#                          unless the user passes --release to the
+#                          emperor_penguin driver.
 #   WINE=<wine binary>     wine used for the windows publish smoke test on a
 #                          linux host (on a windows host the smoke runs natively)
 #   MINGW_PREFIX, WIN_CC, WIN_CXX, WIN_AR, WIN_CLANG
@@ -124,6 +138,37 @@ ifneq ($(LLVM_WIN_PREFIX),)
   export LLVM_WIN_PREFIX
 endif
 
+# ── EmperorPenguin self-build clang optimization ──────────────────────
+# DEPLOYED EP artifacts — the release emitter + compiler dyn-lib, the std
+# dyn-lib (built during bootstrap but shipped to users), LSP, tools — link
+# with clang -O2 + LTO by default: the emperor driver's --release flag
+# (the runtime archive is built as bitcode so the LTO link can inline
+# runtime calls into program code). Opt out
+# with make DISABLE_EP_CLANG_OPTIMIZE=1 (links them unoptimized; the C
+# runtime archive is -O2 via std/c/Makefile either way). The bootstrap
+# self-compile chain (pass2..pass5) links UNOPTIMIZED on purpose: -O2 on
+# the big monolith .ll costs ~45s per link (2.4x the whole bootstrap wall
+# time) while the compile speedup it buys (~22%) only matters for the
+# deployed binaries. USER programs are not affected either way: they link
+# unoptimized unless the user passes --release to the emperor driver.
+ifeq ($(strip $(DISABLE_EP_CLANG_OPTIMIZE)),)
+  EP_RELEASE_FLAG := --release
+else
+  EP_RELEASE_FLAG :=
+endif
+EP_LINK_MODE := $(if $(EP_RELEASE_FLAG),optimized,plain)
+
+# Flipping the variable only changes recipes, and recipe changes never
+# invalidate file targets — so persist the mode in a stamp every
+# driver-linked artifact depends on (folded into C_RT below): a flip
+# re-links the whole chain, same bytes for the emitted .ll side.
+.PHONY: FORCE
+FORCE:
+build/.ep-link-mode: FORCE
+	@mkdir -p $(@D)
+	@printf '%s\n' '$(EP_LINK_MODE)' > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv -f $@.tmp $@; echo "== EmperorPenguin clang optimization: $(EP_LINK_MODE) =="; fi
+
 # ── Native windows host ──────────────────────────────────────────────
 # MSYS2-style environment (make/bash/clang/llvm-ar on PATH). Every
 # -enable-meta binary loads libLLVM-22.dll at process start; the vendored
@@ -160,6 +205,8 @@ C_RT := $(wildcard EmperorPenguin/std/c/*.c EmperorPenguin/std/c/*.cpp EmperorPe
 ifeq ($(HOST),win)
   C_RT += EmperorPenguin/emperor_penguin.bat
 endif
+# Re-link (never re-emit) when the EP clang-optimization mode flips.
+C_RT += build/.ep-link-mode
 
 BABY_CS := $(shell find BabyPenguin -name '*.cs' -not -path '*/bin/*' -not -path '*/obj/*' 2>/dev/null) \
            BabyPenguin/BabyPenguin.csproj
@@ -278,7 +325,7 @@ $(BS)/pass4.d/libemperorpenguin-std.penguin-lib: $(BS)/pass4.d/libemperorpenguin
 	@set -o pipefail; { \
 	EmperorPenguin/emperor_penguin link-lib $(BS)/pass4.d/libemperorpenguin-std.ll \
 	    $(BS)/pass4.d/libemperorpenguin-std.libmeta \
-	    -o $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(TEE) build/logs/pass3-stdliblink.log; \
+	    -o $(BS)/pass4.d/libemperorpenguin-std.penguin-lib $(EP_RELEASE_FLAG) $(TEE) build/logs/pass3-stdliblink.log; \
 	} || { echo "Bootstrap FAILED at pass3 std-lib link" >&2; exit 1; }
 
 $(BS)/pass4.d/libemperorpenguin.ll $(BS)/pass4.d/libemperorpenguin.libmeta \
@@ -528,7 +575,7 @@ build/linux/emperor_penguin_llvm_emitter: $(REL)/emperor_penguin_exe.ll build/li
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link $(REL)/emperor_penguin_exe.ll \
 	    -o build/linux/emperor_penguin_llvm_emitter \
-	    -enable-meta --consumer-lib build/linux/libemperorpenguin.penguin-lib \
+	    -enable-meta $(EP_RELEASE_FLAG) --consumer-lib build/linux/libemperorpenguin.penguin-lib \
 	    $(TEE) build/logs/release-linux.log; \
 	} || { echo "Release FAILED: linux emitter link" >&2; exit 1; }
 
@@ -536,7 +583,7 @@ build/linux/libemperorpenguin.penguin-lib: $(REL)/libemperorpenguin.ll $(REL)/li
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link-lib $(REL)/libemperorpenguin.ll $(REL)/libemperorpenguin.libmeta \
-	    -o build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/release-linux-lib.log; \
+	    -o build/linux/libemperorpenguin.penguin-lib $(EP_RELEASE_FLAG) $(TEE) build/logs/release-linux-lib.log; \
 	} || { echo "Release FAILED: linux dynlib link" >&2; exit 1; }
 
 # The std dyn-lib deployed beside the compiler lib (dep-chain resolution +
@@ -559,7 +606,7 @@ build/win/emperor_penguin_llvm_emitter.exe: $(REL)/emperor_penguin_llvm_emitter.
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link $(REL)/emperor_penguin_llvm_emitter.ll \
 	    -o build/win/emperor_penguin_llvm_emitter.exe \
-	    -enable-meta -target=win64 $(TEE) build/logs/release-win.log; \
+	    -enable-meta $(EP_RELEASE_FLAG) -target=win64 $(TEE) build/logs/release-win.log; \
 	} || { echo "Release FAILED: windows emitter link" >&2; exit 1; }
 
 build/win/emperor_penguin.bat: EmperorPenguin/emperor_penguin.bat
@@ -630,7 +677,7 @@ build/linux/penguin-lsp: build/linux/penguin-lsp.ll build/linux/libemperorpengui
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link build/linux/penguin-lsp.ll -o build/linux/penguin-lsp -enable-meta \
-	    --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/lsp-link.log; \
+	    $(EP_RELEASE_FLAG) --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/lsp-link.log; \
 	} || { echo "LSP build FAILED at link" >&2; exit 1; }
 
 lsp_linux: build/linux/penguin-lsp
@@ -655,7 +702,7 @@ build/win/MagellanicPenguinLSP.exe: build/win/MagellanicPenguinLSP.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link build/win/MagellanicPenguinLSP.ll \
-	    -o build/win/MagellanicPenguinLSP.exe -target=win64 $(TEE) build/logs/lsp-win-link.log; \
+	    -o build/win/MagellanicPenguinLSP.exe $(EP_RELEASE_FLAG) -target=win64 $(TEE) build/logs/lsp-win-link.log; \
 	} || { echo "Windows LSP build FAILED at link" >&2; exit 1; }
 ifeq ($(HOST),win)
 	@# The shared Tests/LspTest path expects build/linux/penguin-lsp (the md
@@ -690,7 +737,7 @@ build/linux/penguin-tools: build/tools/penguin-tools.ll build/linux/libemperorpe
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link build/tools/penguin-tools.ll -o build/linux/penguin-tools \
-	    -enable-meta --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/tools-link.log; \
+	    -enable-meta $(EP_RELEASE_FLAG) --consumer-lib build/linux/libemperorpenguin.penguin-lib $(TEE) build/logs/tools-link.log; \
 	} || { echo "Tools build FAILED at link" >&2; exit 1; }
 
 tools_linux: build/linux/penguin-tools
@@ -709,7 +756,7 @@ build/win/penguin-tools.exe: build/win/penguin-tools.ll $(C_RT)
 	@mkdir -p $(@D) build/logs
 	@set -o pipefail; { \
 	OPT=-O2 EmperorPenguin/emperor_penguin link build/win/penguin-tools.ll \
-	    -o build/win/penguin-tools.exe -target=win64 $(TEE) build/logs/tools-win-link.log; \
+	    -o build/win/penguin-tools.exe $(EP_RELEASE_FLAG) -target=win64 $(TEE) build/logs/tools-win-link.log; \
 	} || { echo "Windows tools build FAILED at link" >&2; exit 1; }
 
 tools_win: build/win/penguin-tools.exe

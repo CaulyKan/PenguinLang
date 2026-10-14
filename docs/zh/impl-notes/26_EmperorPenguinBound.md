@@ -328,7 +328,7 @@ SemanticError
 
 ### Pass 10：封闭性分析（`ConcurrencyAnalysisPass.run(result)`）
 
-仅在 `--enable-multithread-scheduler` 或 `--enable-free-mt` 下运行（`SemanticModel.bind`，位于 Pass 9 与端口拓扑检查之间）。它在类型层面计算 `Shareable(T) = Sync(T) ∨ Imm(T) ∨ ValueShare(T)`，并判定每个 `async f(args)` spawn 点：参数与返回值都可共享且被调函数副作用干净 ⇔ 可窃取（stealable）——这是 M4b 工作线程分发/窃取一个尚未运行过的协程而不破坏并发不变式所依赖的性质。保守的 v1 规则：`Imm` 仅原始类型 + string（枚举保守地视为不可共享）；`Sync` 即 `ISync` 标记接口（原子类型实现了它，通道暂未实现）；`ValueShare` 指每个字段的类型都可共享的值类；`Effects(f)` 走被调函数的静态调用闭包，遇到任何全局/静态字段引用、extern、虚调用、meta 调用或无法解析的调用即判钉住。该 pass 填充可窃取 spawn 上下文注册表；IRGenerator 的调用降低会查询它——可窃取站点的 `_co_spawn_entry` 改发 `_co_spawn_entry_stealable`，即设置协程可窃取位的运行时 extern。`-Wconcurrency` 额外按 spawn 点打印可窃取/钉住诊断及钉住原因链。
+仅在多线程调度器（`--enable-multithread-scheduler`，可加 `--enable-clock-model`）下运行（`SemanticModel.bind`，位于 Pass 9 与端口拓扑检查之间）。它在类型层面计算 `Shareable(T) = Sync(T) ∨ Imm(T) ∨ ValueShare(T)`，并判定每个 `async f(args)` spawn 点：参数与返回值都可共享且被调函数副作用干净 ⇔ 可窃取（stealable）——这是 M4b 工作线程分发/窃取一个尚未运行过的协程而不破坏并发不变式所依赖的性质。保守的 v1 规则：`Imm` 仅原始类型 + string（枚举保守地视为不可共享）；`Sync` 即 `ISync` 标记接口（原子类型实现了它，通道暂未实现）；`ValueShare` 指每个字段的类型都可共享的值类；`Effects(f)` 走被调函数的静态调用闭包，遇到任何全局/静态字段引用、extern、虚调用、meta 调用或无法解析的调用即判钉住。该 pass 填充可窃取 spawn 上下文注册表；IRGenerator 的调用降低会查询它——可窃取站点的 `_co_spawn_entry` 改发 `_co_spawn_entry_stealable`，即设置协程可窃取位的运行时 extern。`-Wconcurrency` 额外按 spawn 点打印可窃取/钉住诊断及钉住原因链。
 
 各 pass 之后 `bind()` 还执行静态 connect 拓扑检查（`validate_port_topology`：输出驱动唯一性、输入重复连接、未连接的模块输入），最后把 `errors` 与 `has_suspension` 写入结果。
 

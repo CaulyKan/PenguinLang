@@ -15,7 +15,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 Env: ``
 ExpectedExitCode: 1
 ExpectedStdout: DISCARD

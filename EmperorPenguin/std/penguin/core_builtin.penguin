@@ -127,7 +127,8 @@ namespace __builtin {
     // CONSUMPTION: `.move()` returns the payload and consumes the wrapper;
     // a second `.move()` is a runtime error. v1 keeps the state in a
     // plain field — cross-thread traffic only exists under
-    // --enable-multithread-scheduler, and the flag-then-swap window is
+    // the mt scheduler (--enable-multithread-scheduler), and the flag-then-
+    // swap window is
     // closed by making the flag i64 with an atomic CAS when the two-tier
     // heap lands (v1 = single heap, zero-copy, per the design doc's v0).
     #template(T: type)
@@ -601,6 +602,8 @@ namespace __builtin {
 
     // String helper functions
     extern fun string_length(s: string) -> i64;
+    // Monotonic milliseconds — examples/benchmarks timing (core_builtin.c).
+    extern fun now_ms() -> i64;
     extern fun string_find(s: string, sub: string) -> i64;
     extern fun string_find_from(s: string, sub: string, start: i64) -> i64;
     extern fun string_substring(s: string, start: i64, length: i64) -> string;

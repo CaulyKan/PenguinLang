@@ -42,7 +42,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-free-mt`
+Args: `--enable-multithread-scheduler`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

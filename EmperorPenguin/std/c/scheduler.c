@@ -342,6 +342,16 @@ typedef struct EmperorCoroutine {
                         gates switch_away's owed rescue to future waits
                         (the Fifo backpressure parks file themselves and
                         must not grow their waiter lists via rescues) */
+    int64_t wake_key; /* DIRECTED WAKE: the component identity this do_wait
+                         is parked under (a Signal/Fifo/Latest/Event/Spawn
+                         id, 0 = none). _mt_kick_key(key) wakes exactly the
+                         CO_COND entries matching key; the entry itself is
+                         the no-consume futures filing — a component waiter
+                         list would duplicate it (and its per-wait alloc +
+                         removal walk cost ~120ns/wait). Reset to 0 at every
+                         register; the component's register_waiter stamps
+                         it. A stale key from a previous do_wait can only
+                         cause a spurious wake (absorbed by the re-poll). */
     int lib_park;    /* between _mt_park_begin and the next resume — the
                         coroutine is (about to be) filed on a PENGUIN-side
                         waiter list the C kernel cannot walk (Fifo
@@ -423,6 +433,135 @@ static void mt_st_init(void) {
 }
 static void mt_st_add_heal(int n) { if (n <= 0) return; mt_st_init(); if (mt_stats_on == 1) __atomic_fetch_add(&mt_st_selfheal, n, __ATOMIC_RELAXED); }
 static void mt_st_inc(int64_t* c) { mt_st_init(); if (mt_stats_on == 1) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED); }
+
+/* ---- EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE: per-thread time accounting ----
+ * =1 splits every scheduler thread's wall time into four phases, printed
+ * per thread (stderr) at program exit (mt destroy, after the workers join):
+ *   busy      inside _emperor_co_switch_in (running penguin coroutine code)
+ *   idle      parked waiting for work (idle_wait sleep + the between-delta
+ *             park; the pre-futex spin windows count as idle too)
+ *   schedule  scheduler bookkeeping (run queues, wakes, stealing, boundary)
+ *   gc        inside a GC driver (gc.c calls the hooks below)
+ * Percentages are of the thread's own measured total. The accounting is
+ * per-SLOT (single writer per cell: the owning thread), so the exit report
+ * can close+read every cell after the join without touching TLS. Cost when
+ * the env is unset: one relaxed load + compare per phase switch. */
+static int mt_workers_started; /* tentative; defined with init below */
+enum { MT_PH_NONE = 0, MT_PH_SCHED, MT_PH_BUSY, MT_PH_IDLE, MT_PH_GC };
+typedef struct {
+    uint64_t busy, idle, sched, gc; /* ns accumulators */
+    uint64_t phase_start;           /* ns; tracking open since */
+    int phase;                      /* MT_PH_* */
+    int prev_phase;                 /* PH before the gc nest */
+    int gc_depth;
+} MtPerf;
+static int mt_perf_on = -1;
+static MtPerf mt_perf_slots[EMPEROR_SCHED_MAX_THREADS];
+static void mt_perf_init(void) {
+    if (__atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED) >= 0) return;
+    const char* v = getenv("EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE");
+    int parsed = (v && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    int expect = -1;
+    __atomic_compare_exchange_n(&mt_perf_on, &expect, parsed, 0,
+                                __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+static int64_t mt_perf_now_ns(void) {
+#if defined(EMPEROR_WIN_FIBERS)
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (int64_t)(((double)c.QuadPart / (double)f.QuadPart) * 1e9);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000ll + (int64_t)ts.tv_nsec;
+#endif
+}
+static void mt_perf_switch(int next) {
+    int on = __atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED);
+    if (on < 0) { mt_perf_init(); on = __atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED); }
+    if (on != 1) return;
+    int slot = tls_thread_index;
+    if (slot < 0) return;
+    MtPerf* p = &mt_perf_slots[slot];
+    int cur = p->phase;
+    if (cur == next) return;
+    uint64_t now = (uint64_t)mt_perf_now_ns();
+    if (cur != MT_PH_NONE) {
+        uint64_t dt = now - p->phase_start;
+        if (cur == MT_PH_BUSY) p->busy += dt;
+        else if (cur == MT_PH_IDLE) p->idle += dt;
+        else if (cur == MT_PH_GC) p->gc += dt;
+        else p->sched += dt;
+    }
+    p->phase_start = now;
+    p->phase = next;
+}
+/* GC-phase hooks, called from gc.c around its collect drivers. Guarded by
+ * the mt kernel actually having started: classic-mode collections (and
+ * anything before the first delta) have no slot to account into. */
+void _emperor_sched_perf_gc_begin(void) {
+    if (__atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED) != 1) {
+        mt_perf_init();
+        if (__atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED) != 1) return;
+    }
+    if (!mt_workers_started || tls_thread_index < 0) return;
+    MtPerf* p = &mt_perf_slots[tls_thread_index];
+    if (p->gc_depth++ > 0) return;
+    p->prev_phase = p->phase;
+    mt_perf_switch(MT_PH_GC);
+}
+void _emperor_sched_perf_gc_end(void) {
+    if (__atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED) != 1) return;
+    if (!mt_workers_started || tls_thread_index < 0) return;
+    MtPerf* p = &mt_perf_slots[tls_thread_index];
+    if (p->gc_depth == 0) return;
+    if (--p->gc_depth == 0) mt_perf_switch(p->prev_phase);
+}
+/* Close every used slot's open phase and print the per-thread report.
+ * Called from _emperor_mt_destroy_all AFTER the workers joined (each cell
+ * has had exactly one writer, now quiescent). */
+static void mt_perf_report(void) {
+    mt_perf_init();
+    if (__atomic_load_n(&mt_perf_on, __ATOMIC_RELAXED) != 1) return;
+    uint64_t now = (uint64_t)mt_perf_now_ns();
+    uint64_t tot[4] = {0, 0, 0, 0}; /* busy idle sched gc */
+    fprintf(stderr, "[mt-perf] per-thread time (EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE):\n");
+    for (int i = 0; i < sched_thread_count; i++) {
+        if (!sched_threads[i].used) continue;
+        MtPerf* p = &mt_perf_slots[i];
+        uint64_t b = p->busy, id = p->idle, s = p->sched, g = p->gc;
+        if (p->phase != MT_PH_NONE) { /* close the open phase */
+            uint64_t dt = now - p->phase_start;
+            if (p->phase == MT_PH_BUSY) b += dt;
+            else if (p->phase == MT_PH_IDLE) id += dt;
+            else if (p->phase == MT_PH_GC) g += dt;
+            else s += dt;
+        }
+        uint64_t sum = b + id + s + g;
+        tot[0] += b; tot[1] += id; tot[2] += s; tot[3] += g;
+        if (sum == 0) continue;
+        fprintf(stderr,
+                "[mt-perf] thread %d%s: busy %lluus (%.1f%%)  idle %lluus (%.1f%%)  "
+                "schedule %lluus (%.1f%%)  gc %lluus (%.1f%%)\n",
+                i, sched_threads[i].is_main ? " (main)" : "",
+                (unsigned long long)(b / 1000), sum ? 100.0 * (double)b / (double)sum : 0.0,
+                (unsigned long long)(id / 1000), sum ? 100.0 * (double)id / (double)sum : 0.0,
+                (unsigned long long)(s / 1000), sum ? 100.0 * (double)s / (double)sum : 0.0,
+                (unsigned long long)(g / 1000), sum ? 100.0 * (double)g / (double)sum : 0.0);
+    }
+    uint64_t tsum = tot[0] + tot[1] + tot[2] + tot[3];
+    if (tsum > 0) {
+        fprintf(stderr,
+                "[mt-perf] total:      busy %lluus (%.1f%%)  idle %lluus (%.1f%%)  "
+                "schedule %lluus (%.1f%%)  gc %lluus (%.1f%%)\n",
+                (unsigned long long)(tot[0] / 1000), 100.0 * (double)tot[0] / (double)tsum,
+                (unsigned long long)(tot[1] / 1000), 100.0 * (double)tot[1] / (double)tsum,
+                (unsigned long long)(tot[2] / 1000), 100.0 * (double)tot[2] / (double)tsum,
+                (unsigned long long)(tot[3] / 1000), 100.0 * (double)tot[3] / (double)tsum);
+    }
+    fflush(stderr);
+}
 
 /* ---- Stall diagnostics (design doc ch.12: "two stall classes, never a
  * silent hang") ----
@@ -1942,6 +2081,7 @@ void _emperor_mt_wake(void* handle) {
 void _emperor_mt_future_register(void) {
     EmperorCoroutine* self = sched_current;
     self->future_park = 1;
+    self->wake_key = 0; /* keyed kicks target only stamped waiters */
     co_state_set(self, CO_COND); /* claim: every wake from here on re-queues us */
     mt_glock_init();
     MT_LOCK(mt_glock);
@@ -2031,6 +2171,36 @@ void _emperor_mt_future_cancel(void) {
  * evaluating a stale edge and the lost-UART-char mis-execution). With the
  * entry permanent, a parked registered waiter is findable BY
  * CONSTRUCTION; state == CO_COND is the "needs a wake" epoch marker. */
+/* Stamp the CURRENT coroutine's wake key (called from a component's
+ * register_waiter, on the waiter's own stack, after _mt_future_register).
+ * RELAXED store: the keyed kick reads it under mt_glock and the worst
+ * mis-order is a spurious wake, which the wait loop absorbs by design. */
+void _emperor_mt_wait_key(int64_t key) {
+    EmperorCoroutine* self = sched_current;
+    if (self) __atomic_store_n(&self->wake_key, key, __ATOMIC_RELAXED);
+}
+
+/* Directed wake: every parked (CO_COND) futures entry whose wake_key
+ * matches gets the wake treatment (state flip + owner-queue push); the
+ * entries stay linked (no-consume). Replaces the per-component Penguin
+ * waiter lists: zero allocation, one list scan per delivery. */
+void _emperor_mt_kick_key(int64_t key) {
+    mt_glock_init();
+    MT_LOCK(mt_glock);
+    int64_t kicked = 0;
+    for (EmperorCoroutine* co = mt_futures_head; co; co = co->fnext) {
+        if (co_state_get(co) == CO_COND &&
+            __atomic_load_n(&co->wake_key, __ATOMIC_RELAXED) == key) {
+            mt_qlog_add(co, 0, 0, 8); /* kick wakes (entry stays linked) */
+            mt_wake_locked(co);
+            mt_st_inc(&mt_st_kick_wakes);
+            kicked++;
+        }
+    }
+    MT_UNLOCK(mt_glock);
+    if (kicked > 0) mt_trace("kick_key %lld n=%lld", (long long)key, (long long)kicked);
+}
+
 void _emperor_mt_kick_futures(void) {
     mt_glock_init();
     MT_LOCK(mt_glock);
@@ -2476,7 +2646,9 @@ static void mt_run_one_inner(EmperorCoroutine* co) {
                        "suspected zero-time loop or livelock, e.g. `while (!cond) wait -1;`");
         return;
     }
+    mt_perf_switch(MT_PH_BUSY);
     int64_t status = _emperor_co_switch_in(co);
+    mt_perf_switch(MT_PH_SCHED);
     mt_trace("run_one co=%d -> status=%d", co->seq, status);
     if (status == 3) {
         MT_AST(mt_stop, 1);
@@ -2580,6 +2752,7 @@ static void mt_idle_wait(void) {
         MT_UNLOCK(mt_glock);
         return;
     }
+    mt_perf_switch(MT_PH_IDLE); /* committed to waiting for work */
     if (!MT_ALD(me->idle)) {
         MT_AST(me->idle, 1);
         MT_AFA(mt_idle_count, 1);
@@ -2642,6 +2815,7 @@ static void mt_idle_wait(void) {
         }
     }
     MT_UNLOCK(mt_glock);
+    mt_perf_switch(MT_PH_SCHED);
     mt_trace("idle_wait return");
 }
 
@@ -2695,6 +2869,7 @@ static void mt_shuffle_maybe(int slot) {
 }
 
 static void mt_delta_loop(void) {
+    mt_perf_switch(MT_PH_SCHED);
     mt_trace("delta_loop enter");
     int shuffled_this_delta = 0;
     for (;;) {
@@ -2745,6 +2920,7 @@ static void* mt_worker_main(void* arg) {
     mt_glock_init();
     __atomic_store_n(&mt_dbg, getenv("EMPEROR_MT_DEBUG") != NULL, __ATOMIC_RELAXED);
     mt_worker_adopt_slot((int)(intptr_t)arg);
+    mt_perf_switch(MT_PH_SCHED);
     mt_trace("worker up");
     for (;;) {
         MT_LOCK(mt_glock);
@@ -2752,6 +2928,7 @@ static void* mt_worker_main(void* arg) {
         MT_UNLOCK(mt_glock);
         if (MT_ALD(mt_stop)) { mt_trace("worker exit"); break; }
         if (wait_delta) {
+            mt_perf_switch(MT_PH_IDLE);
             /* Between deltas: park until the next delta opens (or work is
              * routed / the scheduler stops). Parking here counts toward
              * CONVERGENCE. The queue state is deliberately NOT part of the
@@ -2804,8 +2981,10 @@ static void* mt_worker_main(void* arg) {
                 MT_AFS(mt_between_count, 1);
             }
             MT_UNLOCK(mt_glock);
+            mt_perf_switch(MT_PH_SCHED);
             continue;
         }
+        mt_perf_switch(MT_PH_SCHED);
         mt_delta_loop();
     }
 #if defined(EMPEROR_WIN_FIBERS)
@@ -2968,6 +3147,7 @@ int64_t _emperor_mt_run_delta(void) {
         mt_pin_budget = mt_env_budget("EMPEROR_SCHED_PIN_BUDGET", 20000000);
     mt_step_count = 0; /* the (a) leash is per delta; workers are parked */
     mt_workers_start();
+    mt_perf_switch(MT_PH_SCHED); /* boundary bookkeeping until the window opens */
 
     /* Distribute MY inbox's never-run stealable coroutines round-robin
      * across the worker set (single-threaded: everything stays local —
@@ -3242,6 +3422,7 @@ void _emperor_mt_destroy_all(void) {
         }
     }
     mt_trace("destroy: joined, freeing cos");
+    mt_perf_report();
     while (co_all_head) {
         EmperorCoroutine* co = co_all_head;
         _emperor_co_destroy(co);

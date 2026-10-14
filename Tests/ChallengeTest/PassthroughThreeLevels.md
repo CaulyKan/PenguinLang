@@ -2,7 +2,7 @@
 ## Description
 Three levels of composition (L3 → L2 → L1) using input passthrough and output forwarding wires: a transaction written at the top arrives at the innermost module and its output flows back out — the _LateSource late-binding chain. 10 becomes 11 through one increment.
 
-UPDATED (M0 BabyPenguin scheduler alignment): under the new semantics (BabyPenguin's aligned C# scheduler; native via --enable-multithread-scheduler) the main coroutine's FIRST poll happens before the pipeline drains, and L1/L2/L3's declared `= 0` defaults are deliverable seeds (design Q3: time-0 first-wait wake-up) — so `wait top.y` consumes the seed 0 instead of the classic-pacing 11 (which relied on park-first skipping the seed). Verified byte-identical on BabyPenguin, pass1+mt and pass3+mt.
+UPDATED (M0 BabyPenguin scheduler alignment): under the new semantics (BabyPenguin's aligned C# scheduler; native via --enable-multithread-scheduler --enable-clock-model) the main coroutine's FIRST poll happens before the pipeline drains, and L1/L2/L3's declared `= 0` defaults are deliverable seeds (design Q3: time-0 first-wait wake-up) — so `wait top.y` consumes the seed 0 instead of the classic-pacing 11 (which relied on park-first skipping the seed). Verified byte-identical on BabyPenguin, pass1+mt and pass3+mt.
 
 ## Apply To
 * BabyPenguin
@@ -18,7 +18,7 @@ initial { src.write(10); let r : i64 = wait top.y; println(cast<string>(r)); exi
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

@@ -10,8 +10,9 @@ rem
 rem Usage:
 rem   emperor_penguin.bat [--emitter <path>] <src...> [flags] -o <out>
 rem   emperor_penguin.bat link <file.ll> -o <out> [-enable-meta] [-llvm-win <dir>]
-rem                   [--consumer-lib <so>]...
+rem                   [--consumer-lib <so>]... [--release]
 rem   emperor_penguin.bat link-lib <file.ll> <file.libmeta> -o <out.penguin-lib>
+rem                   [--release]
 rem   emperor_penguin.bat --help    (full option table)
 rem
 rem Requires make + clang + llvm-ar on PATH (MSYS2-style environment).
@@ -44,6 +45,7 @@ set "MODE=full"
 set "OUT="
 set "META=0"
 set "TARGET="
+set "RELEASE=0"
 set "OPT_EMITTER="
 set "EM_ARGS="
 set "LIBS="
@@ -73,6 +75,7 @@ echo   -enable-meta               link the meta JIT (libpenguin_jit.a + LLVM) in
 echo   -target ^<t^> / -target=^<t^>  link target: native or win64 (default win64 here) >&2
 echo   -llvm-win ^<dir^>            Windows LLVM for the meta JIT (lib\libLLVM-22.dll.a + include\) >&2
 echo   --consumer-lib ^<so^>        consumer dyn-lib to link (repeatable; the ^<out^>.libs closure is linked too) >&2
+echo   --release                 optimize the linked IR with clang -O2 + LTO ^(runtime built as bitcode^); default: unoptimized, clang -O0 >&2
 echo   --emitter ^<path^>           emitter binary (default: beside this script or %%EMPEROR_EMITTER%%; full mode) >&2
 echo   --lib ^<file.penguin-lib^>   dyn-lib consumed by the emitter AND linked as a consumer shared object (full mode) >&2
 echo. >&2
@@ -109,6 +112,8 @@ if "!A:~0,9!"=="--target="  ( set "TARGET=!A:~9!" & shift & goto parse_opts )
 if "!A:~0,10!"=="-llvm-win="  ( call :set_llvmwin "!A:~10!" & shift & goto parse_opts )
 if "!A:~0,11!"=="--llvm-win=" ( call :set_llvmwin "!A:~11!" & shift & goto parse_opts )
 if /i "%~1"=="--consumer-lib" ( call :add_lib "%~2" & shift & shift & goto parse_opts )
+if /i "%~1"=="--release"     ( set "RELEASE=1" & shift & goto parse_opts )
+if /i "%~1"=="-release"      ( set "RELEASE=1" & shift & goto parse_opts )
 if /i "%~1"=="--emitter"    ( set "OPT_EMITTER=%~2" & shift & shift & goto parse_opts )
 set "A0=!A:~0,1!"
 if "!A0!"=="-" (
@@ -138,6 +143,8 @@ if "!A:~0,10!"=="-llvm-win="  ( call :set_llvmwin "!A:~10!" & shift & goto parse
 if "!A:~0,11!"=="--llvm-win=" ( call :set_llvmwin "!A:~11!" & shift & goto parse_full )
 if /i "%~1"=="--lib" ( call :add_lib "%~2" & set "EM_ARGS=!EM_ARGS! --lib !LP_Q!" & shift & shift & goto parse_full )
 if /i "%~1"=="-lib"  ( shift & goto parse_full_relib )
+if /i "%~1"=="--release"    ( set "RELEASE=1" & shift & goto parse_full )
+if /i "%~1"=="-release"     ( set "RELEASE=1" & shift & goto parse_full )
 if /i "%~1"=="--emitter"    ( set "OPT_EMITTER=%~2" & shift & shift & goto parse_full )
 rem Everything else (-vv, --enable-coroutine, --disable-dl, sources, ...) is
 rem forwarded to the emitter verbatim; source paths become absolute.
@@ -291,12 +298,18 @@ set "STDC=!ROOT!\EmperorPenguin\std\c"
 set "STDC=!STDC:\=/!"
 rem Explicit tool names keep the runtime makefile's mingw-triple default from
 rem taking over, and CROSS=win64 steers it onto the vendored Windows-LLVM JIT
-rem path (every link here is PE anyway).
-set CC=clang& set CXX=clang++& set AR=llvm-ar& set "CLANG=!CLANG!"& set CROSS=win64
+rem path (every link here is PE anyway). --release compiles the runtime to
+rem bitcode (-flto) so the final LTO link can inline runtime calls.
+if "!RELEASE!"=="1" (
+    set CC=clang -flto& set CXX=clang++ -flto& set AR=llvm-ar& set "CLANG=!CLANG!"& set CROSS=win64
+) else (
+    set CC=clang& set CXX=clang++& set AR=llvm-ar& set "CLANG=!CLANG!"& set CROSS=win64
+)
 make --silent -C "!STDC!" OUTPUT_DIR="!TMPF!"
 if errorlevel 1 ( echo [emperor] error: C runtime build failed >&2 & exit /b 1 )
 
 set "LARGS="!LLC!" "!TMPF!/libcore_builtin.a" -Wno-override-module"
+if "!RELEASE!"=="1" set "LARGS=!LARGS! -O2 -flto"
 if "!META!"=="1" goto jit_meta
 set "LARGS=!LARGS! "!TMPF!/meta_stubs.o""
 goto jit_done
@@ -366,6 +379,7 @@ if not /i "!LLBASE!"=="combined.ll" (
     set "LLC=!LIBTMP:\=/!/combined.ll"
 )
 set "LARGS="!LLC!" -shared -Wno-override-module -Wl,--export-all-symbols -o "!OUTF!""
+if "!RELEASE!"=="1" set "LARGS=!LARGS! -O2 -flto"
 for %%i in ("!OUTF!") do if not exist "%%~dpi" mkdir "%%~dpi"
 echo [emperor] linking lib: !CLANG! !LARGS! >&2
 "!CLANG!" !LARGS!

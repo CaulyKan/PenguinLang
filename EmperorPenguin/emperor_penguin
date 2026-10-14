@@ -13,11 +13,14 @@
 #       Semantic flags (-vv, --enable-coroutine, --disable-dl, --define, ...)
 #       are forwarded to the emitter verbatim (see --help for the list).
 #   emperor_penguin link <file.ll> -o <out> [-enable-meta] [-target=win64]
-#                [-llvm-win <dir>] [--consumer-lib <so>]...
+#                [-llvm-win <dir>] [--consumer-lib <so>]... [--release]
 #       Link a prebuilt .ll (the .ll is platform-independent, so one file can
 #       be linked for every target). <file.def> beside the .ll feeds the
-#       native-MSVC meta export table when needed.
+#       native-MSVC meta export table when needed. --release optimizes the
+#       linked IR (clang -O2 + LTO, runtime built as bitcode); the default
+#       stays unoptimized (clang -O0).
 #   emperor_penguin link-lib <file.ll> <file.libmeta> -o <out.penguin-lib> [-target=win64]
+#                [--release]
 #       Link a dyn-lib .so from the .ll and append the JSON metadata +
 #       PENGUINLIB footer.
 #   emperor_penguin --help
@@ -57,6 +60,13 @@ SCRIPT OPTIONS (all modes)
                             lib/libLLVM-22.dll.a + include/)
   --consumer-lib <so>       consumer dyn-lib to link (repeatable; the
                             emitter's <out>.libs closure is linked too)
+  --release                 optimize the linked IR with clang -O2 and LTO
+                            (the C runtime is compiled to bitcode so the
+                            link can inline runtime calls into program
+                            code; default: unoptimized, clang -O0). The
+                            Makefile passes it for EmperorPenguin's own
+                            deployed builds (release, lsp, tools); opt out
+                            of those with make DISABLE_EP_CLANG_OPTIMIZE=1.
   --emitter <path>          emitter binary (default: beside this script or
                             $EMPEROR_EMITTER; full mode only)
   --lib <file.penguin-lib>  dyn-lib consumed by the emitter AND linked as a
@@ -112,6 +122,16 @@ WIN_CLANG=${WIN_CLANG:-$WIN_CC}
 
 OPT_EMITTER=
 
+# --release: optimize the linked IR (clang -O2 -flto) instead of linking it
+# at clang's default -O0. LTO needs the C runtime archive to carry BITCODE,
+# so build_runtime also compiles the runtime with -flto when this is on —
+# that is where the cross-module win comes from (runtime externs like
+# string_char_code_at inline into the program's hot loops). Applies to the
+# program .ll and to -shared lib links; the C runtime is built -O2 via
+# std/c/Makefile regardless.
+RELEASE=0
+RELEASE_OPT=-O2\ -flto
+
 # Windows LLVM for the meta JIT: -llvm-win flag > LLVM_WIN_PREFIX env >
 # vendored thirdparty package.
 resolve_llvm_win() {
@@ -155,17 +175,26 @@ select_clang() {  # $1 = target ("" native / win64)
 }
 
 # Build the Penguin C runtime (libcore_builtin.a + meta archives) into $1.
+# With --release the runtime compiles to LLVM BITCODE (-flto in CC/CXX) so
+# the final -flto link can inline runtime externs into program code — a
+# plain-native runtime archive would cap the win at -O2's.
 build_runtime() {  # $1 = OUTPUT_DIR, $2 = target
     local tmp=$1 target=$2
     command -v make >/dev/null 2>&1 || die "make not found on PATH (required to build the Penguin C runtime)"
+    local lto=
+    [ "$RELEASE" = 1 ] && lto="-flto"
     local envs=()
     if [ -n "$HOST_WIN" ]; then
         # Native windows host: explicit tool names keep the runtime makefile's
         # mingw-triple default from taking over, and CROSS=win64 steers it onto
         # the vendored Windows-LLVM JIT path (every link here is PE anyway).
-        envs=(CC=clang CXX=clang++ AR=llvm-ar CLANG=clang CROSS=win64)
+        envs=(CC="clang $lto" CXX="clang++ $lto" AR=llvm-ar CLANG=clang CROSS=win64)
     elif [ "$target" = win64 ]; then
-        envs=(CC="$WIN_CC" CXX="$WIN_CXX" AR="$WIN_AR" CLANG="$WIN_CLANG")
+        envs=(CC="$WIN_CC $lto" CXX="$WIN_CXX $lto" AR="$WIN_AR" CLANG="$WIN_CLANG")
+    elif [ -n "$lto" ]; then
+        local nclang
+        nclang=$(select_clang "")
+        envs=(CC="$nclang $lto" CXX="$nclang++ $lto")
     fi
     if [ ${#envs[@]} -gt 0 ]; then
         env "${envs[@]}" make --silent -C "$ROOT/EmperorPenguin/std/c" OUTPUT_DIR="$tmp" \
@@ -217,6 +246,8 @@ link_exe() {
     fi
 
     local args=("$ll_linked" "$tmp/libcore_builtin.a" -Wno-override-module)
+    # shellcheck disable=SC2206  # RELEASE_OPT is deliberately word-split (-O2 -flto)
+    if [ "$RELEASE" = 1 ]; then args+=($RELEASE_OPT); fi
 
     if [ "$meta" = 1 ]; then
         if [ -z "$is_win" ]; then
@@ -357,6 +388,8 @@ link_lib() {
     fi
 
     local args=("$ll_linked" -shared -Wno-override-module)
+    # shellcheck disable=SC2206  # RELEASE_OPT is deliberately word-split (-O2 -flto)
+    if [ "$RELEASE" = 1 ]; then args+=($RELEASE_OPT); fi
     if [ "$target" = win64 ]; then
         # PE DLL with exported penguin symbols; skip the exe-only stack flag.
         args+=(-Wl,--export-all-symbols)
@@ -410,6 +443,7 @@ parse_link_opts() {
             --consumer-lib)
                 shift; [ $# -gt 0 ] || die "--consumer-lib needs a value"
                 LIBS+=("$(abs_path "$1")") ;;
+            --release|-release) RELEASE=1 ;;
             --emitter)
                 shift; [ $# -gt 0 ] || die "--emitter needs a value"
                 OPT_EMITTER=$1 ;;
@@ -473,6 +507,7 @@ link|link-lib)
                 lib=$(abs_path "$1")
                 EMITTER_ARGS+=(--lib "$lib")
                 LIBS+=("$lib") ;;
+            --release|-release) RELEASE=1 ;;   # script flag: never forwarded
             --emitter)
                 shift; [ $# -gt 0 ] || die "--emitter needs a value"
                 OPT_EMITTER=$1 ;;

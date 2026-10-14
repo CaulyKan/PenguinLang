@@ -26,7 +26,7 @@ initial {                                   // consumer: sleeps 10 ticks first
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

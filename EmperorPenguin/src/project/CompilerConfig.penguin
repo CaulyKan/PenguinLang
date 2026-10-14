@@ -80,22 +80,25 @@ export class CompilerConfig {
     // wait-free programs (bootstrap md5 convergence).
     coroutine_enabled: bool = true;
     // --enable-multithread-scheduler (default off): auto-load
-    // scheduler_mt.penguin INSTEAD of scheduler.penguin — the convergence-
-    // delta scheduler (docs/zh/wip/concurrent_scheduler.md): full-convergence
-    // delta ticks, `wait;` = `wait 0;` (pins the tick), condition waits woken
-    // by their event source (no per-delta polling), exit only when every
-    // coroutine finished. Implies --enable-coroutine. The classic scheduler
-    // stays the default; this is the staging flag for the multi-thread
-    // scheduler work.
+    // scheduler_free.penguin INSTEAD of scheduler.penguin — the
+    // multi-thread scheduler kernel in its FREE-FORM policy (design doc
+    // §6.7/§7.3): same kernel and component surface as the clock model,
+    // but NO virtual clock (wait n>0 rejected at run time) and IMMEDIATE
+    // components (no deferred commits) plus AsyncQueue<T> as the locked
+    // cross-thread pipe. Implies --enable-coroutine.
     multithread_scheduler_enabled: bool = false;
-    // --enable-free-mt (default off): auto-load scheduler_free.penguin
-    // INSTEAD — the free-form runtime (design doc §6.7/§7.3): same kernel
-    // and component surface as sim-mt, but NO virtual clock (wait n>0
-    // rejected at run time) and IMMEDIATE components (no deferred commits)
-    // plus AsyncQueue<T> as the locked cross-thread pipe. Implies
-    // --enable-coroutine; Pass 10 confinement runs as with sim-mt.
-    free_mt_scheduler_enabled: bool = false;
-    // -Wconcurrency: with --enable-multithread-scheduler, Pass 10 prints
+    // --enable-clock-model (default off): WITH --enable-multithread-
+    // scheduler, load scheduler_mt.penguin instead — the CLOCK MODEL on
+    // top of the mt kernel (docs/zh/wip/concurrent_scheduler.md): virtual
+    // clock, full-convergence delta ticks, `wait;` = `wait 0;` (pins the
+    // tick), condition waits woken by their event source (no per-delta
+    // polling), exit only when every coroutine finished. The clock model
+    // does not fundamentally depend on the mt kernel (a classic-scheduler
+    // implementation is possible in principle), but only the mt one exists
+    // today: --enable-clock-model without --enable-multithread-scheduler
+    // is a hard error (checked in main).
+    clock_model_enabled: bool = false;
+    // -Wconcurrency: with the mt scheduler, Pass 10 prints
     // per-spawn-site stealable/pinned diagnostics (pin reason chains).
     warn_concurrency: bool = false;
     // --enable-std / --disable-std (default on): auto-load the std dynlib
@@ -206,11 +209,14 @@ export class CompilerConfig {
                 this.coroutine_enabled = true;
             } else if (arg == "--disable-multithread-scheduler" || arg == "-disable-multithread-scheduler") {
                 this.multithread_scheduler_enabled = false;
-            } else if (arg == "--enable-free-mt" || arg == "-enable-free-mt") {
-                this.free_mt_scheduler_enabled = true;
-                // The free scheduler IS the coroutine runtime, same as
-                // sim-mt — the flag implies the concurrency syntax surface.
+            } else if (arg == "--enable-clock-model" || arg == "-enable-clock-model") {
+                this.clock_model_enabled = true;
+                // Only meaningful together with --enable-multithread-
+                // scheduler (validated in main); the pair loads the
+                // clock-model policy (scheduler_mt.penguin).
                 this.coroutine_enabled = true;
+            } else if (arg == "--disable-clock-model" || arg == "-disable-clock-model") {
+                this.clock_model_enabled = false;
             } else if (arg == "-Wconcurrency" || arg == "-Wconcurrency=true") {
                 this.warn_concurrency = true;
             } else if (arg == "--enable-std" || arg == "-enable-std") {

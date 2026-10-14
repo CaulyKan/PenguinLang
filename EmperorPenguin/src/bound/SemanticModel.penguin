@@ -105,11 +105,11 @@ class SemanticModel {
     // try/catch, async expressions) reports a clear compile error instead of
     // binding. Plumbed from CompilerConfig via EmperorPenguinCompiler.
     enable_coroutine: bool = false;
-    // --enable-multithread-scheduler: the convergence-delta policy
-    // (scheduler_mt.penguin) is loaded — drives the negative-`wait` lowering
-    // in bind_timer_wait and runs Pass 10 (confinement analysis).
-    enable_multithread_scheduler: bool = false;
-    enable_free_scheduler: bool = false;
+    // --enable-multithread-scheduler (free-form policy, or the clock
+    // model with --enable-clock-model): the mt kernel is active — drives
+    // the negative-`wait` lowering in bind_timer_wait and runs Pass 10
+    // (confinement analysis).
+    enable_mt_scheduler: bool = false;
     // Escape-analysis context (Ownership freshness, §9.2 rule 1 form 3):
     // the AST body of the function whose expressions are being bound +
     // its full name. Set by BindBodiesPass around each body bind.
@@ -420,7 +420,7 @@ class SemanticModel {
         // Pass 10: confinement analysis (mt scheduler only) — the
         // Shareable lattice + per-spawn-site stealability; rewrites
         // stealable sites' spawn extern so the runtime can distribute them.
-        if (this.enable_multithread_scheduler || this.enable_free_scheduler) {
+        if (this.enable_mt_scheduler) {
             this.current_pass_index = 10;
             this.concurrency_pass.warn = this.warn_concurrency;
             this.concurrency_pass.run(result);

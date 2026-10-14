@@ -22,7 +22,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 Env: ``
 ExpectedExitCode: NONZERO
 ExpectedStdout: DISCARD

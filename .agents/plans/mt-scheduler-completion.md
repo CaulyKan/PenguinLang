@@ -147,3 +147,50 @@ E1 按门槛提请决策；E2 文档定稿（性能报告 + specifications/ 迁�
 - 批次 1.2 的长锤若仍偶发差一拍：按已定处置文档化（§7.1 契约本就只承诺边界后可靠），
   不追成阻塞项。
 - E1 提升默认会翻转大量非 mt 测试的期望（13.2 审计成本）——必须 CI 网先行。
+
+## 2026-10-14 — flag rename, perf analyzer, optimization defaults, BMP example
+
+1. **`--release` / clang -O2 pipeline** (commit 35548f96): driver flag in all
+   modes; deployed EP artifacts (release emitter+lib, std dyn-lib, lsp, tools)
+   link -O2 by default (`DISABLE_EP_CLANG_OPTIMIZE=1` opts out; mode stamp
+   `build/.ep-link-mode` re-links on flip); bootstrap self-compile chain stays
+   UNOPTIMIZED (measured: -O2 costs 2.4x bootstrap wall for ~22% compile
+   speedup — only worth it for deployed binaries). Runner `--release` runs the
+   matrix with optimized links (both matrices 1691/0/0/220 green; bootstrap
+   converged 3 rounds, lib md5 byte-reproduced). Drive-by: pthread_once in
+   core_builtin.c broke the win cross build (INIT_ONCE now).
+2. **Flag rename**: `--enable-free-mt` -> `--enable-multithread-scheduler`
+   (free-form policy IS the mt scheduler's default policy);
+   old sim-mt flag -> `--enable-clock-model` (scheduler_mt.penguin), which
+   alone is a hard compile error ("EmperorPenguin clock model is supported
+   only in multithread-scheduler" — a classic-scheduler clock model is
+   possible in principle, none exists today). Semantic layer collapsed to one
+   `enable_mt_scheduler` bool; 47+11 test files re-flagged; docs updated
+   (tutorials + impl-notes 26/30 + zh wip); ClockModelRequiresMt pins the
+   rejection.
+3. **EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE=1**: per-thread busy/idle/
+   schedule/gc (us + % of the thread's total) printed at exit after the
+   worker join; per-slot cells (single writer), phase switches around
+   co_switch_in / idle_wait / between-delta park / GC drivers (gc.c hooks via
+   `_emperor_sched_perf_gc_begin/end`). FreeMtPerfAnalyzeReport pins the
+   report shape under EMPEROR_THREADS=2.
+4. **Edge detect BMP mode**: `edge_detect <in.bmp> [out.bmp]` — 24-bit
+   bottom-up BMP in (byte-transparent file_read_text on POSIX), gray extract
+   band task, edges BMP out (input header copied verbatim; only bytes < 128
+   emitted). Penguin.bmp (1024x1024) output verified against an independent
+   Python reference (edges 12152, checksum 6420563643560409083, byte-exact);
+   EdgeDetectBmp.md pins it.
+
+## 2026-10-14（续）— --release 升级为 -O2 + LTO
+
+用户程序 `--release` 现在带 LTO：链接 `-O2 -flto`，且 build_runtime 在
+--release 时以 `-flto` 编译 C 运行时（bitcode 归档），运行时 extern
+（string_char_code_at 等）得以内联进程序热循环——这是此前实验里 1.6-1.8×
+的来源。实测 edge_detect 1024²：N1 490(-O0)→433(-O2)→313ms(LTO)，N8
+92→67ms，checksum 各级一致；用户程序完整 driver 调用 ~9s（运行时每次链接
+全量重建 3.4s，无缓存，矩阵并行度可吸收）。部署产物（emitter/lib/std-lib/
+lsp/tools，含 mingw 交叉）全部 LTO 重建通过；bootstrap 不受影响（不传
+--release），收敛 md5 不变。LTO 矩阵 1694/0/0/220 全绿（含 meta-JIT 程序、
+dyn-lib 消费者、LTO'd LSP 的 #impl_json_serializable 路径）。
+事故：同步脚本把 CLAUDE.md（AGENTS.md 符号链接的目标）写空并提交过一次，
+已从 35548f96 恢复。

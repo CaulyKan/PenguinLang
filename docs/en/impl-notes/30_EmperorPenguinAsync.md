@@ -48,15 +48,26 @@ Generators lower on the same coroutine machinery: a synthesized `__GenCtx` conte
 
 The split mirrors BabyPenguin: the microkernel owns stacks and switching (what C must do); the scheduler policy (deltas, timers, quiescence) is Penguin-level library code, kept testable and identical between the two runtimes by the cross-compiler async/timing test categories (`Tests/AsyncTest/`, `Tests/TimingTest/`, `Tests/PortTest/`, `Tests/ChannelTest/` — all run on BabyPenguin and Pass3 with byte-identical expectations).
 
-## The Multithread Scheduler (`--enable-multithread-scheduler`)
+## The Clock Model (`--enable-multithread-scheduler --enable-clock-model`)
 
 `main.penguin` swaps the auto-loaded policy: `std/penguin/scheduler_mt.penguin` replaces `scheduler.penguin` (same public surface, same namespace, so the emitter is unchanged). The convergence-delta semantics — full convergence per delta, the seven-step boundary, exit only when every coroutine finished — are specified in `docs/zh/wip/concurrent_scheduler.md` (the design document; EN summary pending). `wait <n>` lowers to `__builtin._mt_wait_ticks(n)` (`SemanticBindExpressions.bind_timer_wait`): `n < 0` is a pure yield (`_co_yield`, stays runnable in the current delta), `n == 0` parks through `_co_wait()` exactly like a bare `wait;` (the timer path cannot express it — `_after(0)` registers a deadline equal to now, which `do_wait`'s poll-first fast path would deliver in the same delta as a no-op; pinned by `Tests/MtSchedulerTest/MtWaitZeroEqualsBare.md`), and `n > 0` is the timer condition wait.
 
-Pass 10 (confinement analysis, see [Bound Model](./26_EmperorPenguinBound.md)) runs under this flag: it marks stealable `async` spawn sites so worker threads can distribute them; `-Wconcurrency` prints per-spawn-site stealable/pinned diagnostics with the pin reason chain.
+Pass 10 (confinement analysis, see [Bound Model](./26_EmperorPenguinBound.md)) runs under the multi-thread scheduler (both policies): it marks stealable `async` spawn sites so worker threads can distribute them; `-Wconcurrency` prints per-spawn-site stealable/pinned diagnostics with the pin reason chain.
 
 ### Worker threads (`EMPEROR_THREADS=N`)
 
 `EMPEROR_THREADS=N` (env, default 1) starts N−1 worker threads; a delta runs in parallel on all N — each thread drains its own queue, and Pass-10-stealable never-run coroutines are distributed round-robin at delta start and stealable by idle threads. The delta ends at a global barrier: every thread simultaneously out of work. Decision A (started coroutines never migrate) makes wake routing race-free — a wake goes to the coroutine's owner, which by definition is not executing it. With `EMPEROR_THREADS` unset the single worker is the calling thread, byte-identical to the single-worker kernel.
+
+### Per-thread time analysis (`EP_MULTITHREAD_SCHEDULER_PERF_ANALYZE=1`)
+
+`=1` splits every scheduler thread's wall time into four phases and prints the per-thread report to stderr at program exit (after the workers join):
+
+- **busy** — inside `_emperor_co_switch_in`: running penguin coroutine code.
+- **idle** — parked waiting for work (`mt_idle_wait` sleep + the between-delta park; the pre-futex spin windows count as idle).
+- **schedule** — scheduler bookkeeping: run queues, wake routing, stealing, the boundary.
+- **gc** — inside a GC driver (gc.c calls the scheduler's phase hooks around its collect funnels).
+
+Times are per thread in µs with the percentage of that thread's own measured total, plus a `total:` line; classic-mode collections (no mt slot) and pre-scheduler time are not accounted. Cost when unset: one relaxed load + compare per phase switch. Pinned by `Tests/FreeMtTest/FreeMtPerfAnalyzeReport.md`.
 
 ### Stall Diagnostics (design doc ch. 12: never a silent hang)
 
@@ -82,7 +93,7 @@ A delta can be arbitrarily long while collection happens only at its stop-the-wo
 - Poll-side STW escalation (`EMPEROR_GC_STW_MS`, default 250 ms, 0 = off): a want_collect that the boundary cannot drain — the delta never converges (a busy service churning through a perpetual delta) — escalates: the polling coroutine files onto the hard-cap valve's parked list, forcing the convergence the boundary needs to collect. Without it a perpetual delta holds collection off until the heap climbs to the hard cap — sound, but the heap sits at the cap instead of the goal. The age clock starts at the first poll that observes the flag and re-arms whenever the flag is down.
 - Tests: `MtGcHardCapParkCollect` (four parallel churns pass through a 256KB cap and complete, checksum unchanged), `MtGcHardCapOom` (keep-live 62), `MtGcHardCapSingleAllocOom` (single oversize allocation 62), `MtGcHardCapZeroUnlimited` (explicit 0 = unlimited).
 
-## The Free-form Runtime (`--enable-free-mt`)
+## The Free-form Runtime (`--enable-multithread-scheduler`)
 
 `main.penguin` swaps the policy again: `std/penguin/scheduler_free.penguin` — the same C microkernel and the same public surface as `scheduler_mt.penguin`, for services that use no simulation time:
 

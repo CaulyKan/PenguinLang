@@ -25,7 +25,7 @@ initial { s.write(1); let got : i64 = wait m.y; println("got:" + cast<string>(go
 ```
 
 ## Compile
-Args: `--enable-coroutine --enable-multithread-scheduler`
+Args: `--enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD

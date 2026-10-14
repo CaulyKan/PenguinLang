@@ -41,7 +41,7 @@ construct {
 ```
 
 ## Compile
-Args: `EmperorPenguin/others/libpenguin-esl/Clock.penguin EmperorPenguin/others/libpenguin-esl/Reg.penguin EmperorPenguin/std/penguin/vector.penguin --enable-coroutine --enable-multithread-scheduler`
+Args: `EmperorPenguin/others/libpenguin-esl/Clock.penguin EmperorPenguin/others/libpenguin-esl/Reg.penguin EmperorPenguin/std/penguin/vector.penguin --enable-coroutine --enable-multithread-scheduler --enable-clock-model`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD

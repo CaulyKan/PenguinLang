@@ -1,6 +1,6 @@
 # FreeMtSpawnJoin
 ## Description
-The free-form scheduler (--enable-free-mt) runs the same spawn/join/future machinery as sim-mt: two pure-compute async workers are joined with `wait f`. No simulation time is involved, so free-mt and sim-mt agree (design doc §6.7). Verified under EMPEROR_THREADS=4: the workers are Pass-10 STEALABLE and actually distribute; the sum is order-independent, so stdout is deterministic regardless of placement.
+The free-form scheduler (--enable-multithread-scheduler) runs the same spawn/join/future machinery as sim-mt: two pure-compute async workers are joined with `wait f`. No simulation time is involved, so free-mt and sim-mt agree (design doc §6.7). Verified under EMPEROR_THREADS=4: the workers are Pass-10 STEALABLE and actually distribute; the sum is order-independent, so stdout is deterministic regardless of placement.
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -28,7 +28,7 @@ initial {
 ```
 
 ## Compile
-Args: `--enable-free-mt`
+Args: `--enable-multithread-scheduler`
 Env: ``
 ExpectedExitCode: 0
 ExpectedStdout: DISCARD
