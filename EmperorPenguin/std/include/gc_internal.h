@@ -2,8 +2,8 @@
 #define EMPEROR_GC_INTERNAL_H
 
 /* Shared internals of the GC runtime's two translation units: gc.c (root
- * discovery, mark core, large-object malloc heap, collect drivers) and
- * gc_span.c (green-tea span heap, GC v3). NOT part of the public runtime
+ * discovery, mark core, large-object malloc heap, the collect driver) and
+ * gc_span.c (the green-tea span heap). NOT part of the public runtime
  * API (emperor_gc.h) — everything here is internal coupling between the
  * two units and may change freely with the collector. */
 
@@ -32,7 +32,7 @@ typedef struct GCHeader {
 #define GT_NCLASS 23
 #define GC_QUARANTINE_RING 512
 
-/* Unified-goal defaults (spec §9.2): the floor (EMPEROR_GC_MIN_HEAP=0
+/* Unified-goal defaults: the floor (EMPEROR_GC_MIN_HEAP=0
  * keeps this) and the live multiplier (EMPEROR_GC_GOAL_FACTOR=0 keeps
  * this), applied to the COMBINED malloc+span live set. */
 #define GC_GOAL_MIN_HEAP (4u * 1024 * 1024)
@@ -40,14 +40,53 @@ typedef struct GCHeader {
 
 /* ---- gc.c state used by gc_span.c ---- */
 
-extern int _gc_greentea;             /* EMPEROR_GC_MODE=greentea */
 extern int _gc_timing;               /* stats/profile counters active */
 extern size_t _gc_st_allocs, _gc_st_alloc_bytes;
 extern int _emperor_gc_disabled;
 extern int _emperor_gc_mark_failed;  /* set by either unit on mark OOM */
 extern size_t _emperor_gc_mark_stack_top; /* shared worklist depth (gt_drain) */
 
-/* M5 v1: the allocator funnel's global lock. The span fast path is
+/* ---- Safepoint poll gate ----
+ * The emitted poll runs before every call and at every loop back-edge, so
+ * its steady state must cost as close to nothing as possible: ONE relaxed
+ * load of a word that is zero. Every condition that could make a poll do
+ * work is folded into that word — before this, the same poll read five
+ * separate globals, and the profiler put it at 6.3% of the compiler
+ * self-compile's wall time. Non-zero routes to gc.c's slow path.
+ *
+ * Writers: gc_request_collect() below (a collection is wanted) and gc.c's
+ * init (the env-derived TIMING/STRESS bits). The collect driver lowers the
+ * word once per cycle; a mark-failed cycle deliberately keeps WORK raised so
+ * the next poll retries, mirroring _emperor_gc_want_collect. A disabled
+ * runtime never raises it — explicit gc_collect() bypasses the gate. */
+#define GC_GATE_WORK   1   /* a collection is wanted */
+#define GC_GATE_TIMING 2   /* _gc_timing on: the slow path counts the poll */
+#define GC_GATE_STRESS 4   /* EMPEROR_GC_STRESS_EVERY is live */
+extern int _emperor_gc_poll_gate;
+/* Non-static so the gate can be re-derived after the stress budget ends. */
+extern unsigned _emperor_gc_stress_every;
+
+/* The bits that are up for the whole run once init has parsed the env:
+ * identical in every thread, so raisers may store them back verbatim without
+ * a read-modify-write (and without the cache-line RMW traffic a fetch_or
+ * would add on the allocation path). */
+static inline int gc_poll_gate_static_bits(void) {
+    return (_gc_timing ? GC_GATE_TIMING : 0)
+         | (_emperor_gc_stress_every ? GC_GATE_STRESS : 0);
+}
+
+/* Raise a collection request: _emperor_gc_want_collect (declared in
+ * emperor_gc.h — include it before this header) AND the gate, in that order,
+ * so a poll that wins the race still finds the flag set. */
+static inline void gc_request_collect(void) {
+    if (_emperor_gc_disabled) return;
+    __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&_emperor_gc_poll_gate,
+                     GC_GATE_WORK | gc_poll_gate_static_bits(),
+                     __ATOMIC_RELAXED);
+}
+
+/* The allocator funnel's global lock. The span fast path is
  * per-arena and lock-free (gt_alloc_small); span retire/refill, the
  * malloc large path and the registries funnel through this. */
 void gc_alloc_lock(void);
@@ -70,7 +109,7 @@ void gc_scan_object_body(GCHeader* h);
  * interleaves it with the span queue). */
 void gc_mark_drain(void);
 
-/* ---- Per-thread allocation arenas (M5 v1, gc_span.c) ----
+/* ---- Per-thread allocation arenas (gc_span.c) ----
  * Each thread allocates small objects from ITS OWN arena: the per-class
  * current span plus the thread's fresh-object quarantine ring. The fast
  * path (gt_alloc_small hit on the current span) touches no shared state;
@@ -102,8 +141,8 @@ typedef struct GtArena {
  * the allocating thread only). Never NULL once returned. */
 GtArena* gt_arena_thread(void);
 
-/* Fresh-object quarantine ring push into ARENA (no-op in non-greentea
- * modes; gc.c's malloc large path uses this with its own arena). */
+/* Fresh-object quarantine ring push into ARENA (gc.c's malloc large path
+ * uses this with its own arena). */
 void gt_quarantine_push(GtArena* a, void* user);
 
 /* Snapshot helper for gc.c's quarantine marking: visit every registered
@@ -128,7 +167,7 @@ void* gt_slot_owner(const void* p);
  * or return 0 for the malloc large path. */
 int gt_gray_object(void* obj);
 
-/* Combined resolve+gray for the mark leaves (spec §7.1): one range lookup.
+/* Combined resolve+gray for the mark leaves: one range lookup.
  * Returns 1 when CANDIDATE resolved to a live span slot (owner grayed),
  * 0 when not span-resident (caller falls back to the malloc index). */
 int gt_mark_candidate(void* candidate);
@@ -155,7 +194,7 @@ void gt_sweep_reclaim(void);
  * retains everything — the next cycle re-judges from scratch). */
 void gt_reset_marks(void);
 
-/* ---- Unified heap goal (GC v3.1, spec §9.2) ----
+/* ---- Unified heap goal ----
  * ONE budget for BOTH heaps: the collection trigger compares
  * malloc-allocated + span-allocated bytes against gc.c's unified goal,
  * and the driver's post-sweep update (gc_update_unified_goal) recalculates
@@ -166,19 +205,15 @@ void gt_reset_marks(void);
  * marked O(total live) (bootstrap: 59 collections at a ~87MiB malloc-side
  * equilibrium while 250MiB lived in spans). gt_alloc_small AND the malloc
  * path in _emperor_gc_alloc call gc_unified_goal_reached(); the poll drains
- * the flag it raises. Conservative mode (no span heap) keeps the legacy
- * malloc-only threshold in gc.c.
+ * the flag it raises.
  *
- * goal = max(min_heap, factor x combined_live) + young_budget — v2's
- * economics translated to one heap: the proportional base (old-gen 2x-live
- * threshold) plus one nursery budget of guaranteed churn slack between
- * collections (the amortization the M3 garbage-rich doubling used to
- * synthesize; measured as a cap-on-doubling it either never fired during
- * live ramps or overshot peak heap to ~4x live, so the slack is baked into
- * the base instead). Live-heavy sweeps (freed < live/4, the LSP recompile
- * shape) still grow x4 capped at 4TiB — each cycle costs O(live blocks),
- * so collecting while freeing almost nothing is pure overhead. Peak heap
- * is bounded at (1+factor) x live + young. */
+ * goal = max(min_heap, factor x combined_live) + young_budget — the
+ * proportional base (2x-live threshold) plus one nursery budget of
+ * guaranteed churn slack between collections. Live-heavy sweeps
+ * (freed < live/4, the LSP recompile shape) still grow x4 capped at 4TiB —
+ * each cycle costs O(live blocks), so collecting while freeing almost
+ * nothing is pure overhead. Peak heap is bounded at (1+factor) x live +
+ * young. */
 void gc_update_unified_goal(size_t malloc_freed); /* post-sweep, driver */
 int gc_unified_goal_reached(void);                /* allocation triggers */
 uint64_t gc_unified_goal_value(void);             /* introspection (gt_stats 1) */
@@ -188,7 +223,7 @@ void gc_set_goal_params(size_t factor, size_t min_heap); /* env knobs (0 = keep)
  * the unified goal's additive churn slack (see gc_update_unified_goal). */
 size_t gc_young_budget_cap(void);
 
-/* Additive gc_info fields (spec §12). which: 0 live slot bytes, 1 goal
+/* Additive gc_info fields. which: 0 live slot bytes, 1 goal
  * bytes (the UNIFIED goal — gc_unified_goal_value), 2/3/4 full/partial/
  * empty span counts, 5 wholesale-recycled spans (cumulative), 6
  * representative fast-path scans (cumulative), 7 completed cycles,

@@ -2,6 +2,8 @@
 ## Description
 libpenguin-esl under the mt scheduler — the M0-migration sentinel. Two pieces make the two-phase ESL clock work on the deferred semantics: (1) esl.Clock settles `while (__builtin.__sched_settling() > 0) wait 0;` before commit_all (the classic single wait-0 beat assumed zero-latency wires; deferred wires need one beat per request-response chain depth — the probe is > 0 while wire commits are pending or a woken module is still queued); (2) the futures list in the C kernel carries its own link field (fnext) — a timer-woken coroutine's run-queue push used to clobber the shared qnext, orphaning every coroutine parked behind it (this test's module waited forever; tinyriscv timed out at 2M cycles before the fix). Verified up to the full tinyriscv model: identical output and exactly 48614 cycles under mt. This test pins the minimal shape: a module observing 3 clock edges via a connected port wire.
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): one re-run at EMPEROR_THREADS=4 and three at EMPEROR_SHUFFLE_DELTAS=1/7/42 (EMPEROR_THREADS=1) — the output must stay byte-identical in every configuration.
 ## Apply To
 * EmperorPenguin Pass3
 
@@ -47,9 +49,58 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: ``
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `edge 1
+edge 2
+edge 3
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `edge 1
+edge 2
+edge 3
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `edge 1
+edge 2
+edge 3
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `edge 1
+edge 2
+edge 3
+`
+ExpectedStderr: DISCARD
+
+
+## Run 5
+Args: ``
+Env: `EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `edge 1

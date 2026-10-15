@@ -1250,11 +1250,6 @@ void _emperor_StringBuilder_new(void* vsb) {
     sb->data = _emperor_string_alloc(sb->cap);
     sb->len = 0;
     if (sb->data) sb->data->length = 0; /* logical extent, NOT the capacity */
-    /* Same barrier rationale as append's grow: a safepoint poll can sit
-     * between the caller's NEW and this constructor (call-site polls fire
-     * before the call), and a minor there can already have promoted the
-     * fresh StringBuilder — `data` is a ref field store either way. */
-    _emperor_gc_write_barrier(sb, (void**)&sb->data);
 }
 
 void _emperor_StringBuilder_append(void* vsb, _emperor_string* s) {
@@ -1270,12 +1265,6 @@ void _emperor_StringBuilder_append(void* vsb, _emperor_string* s) {
             newdata->data[sb->len] = '\0';
         }
         sb->data = newdata;
-        /* Generational barrier: `data` is a REF field and the StringBuilder
-         * may already be old (promoted/pinned) while the fresh string is
-         * nursery-young — without remembering the slot, a minor judges the
-         * string dead and later appends write into recycled memory. The
-         * penguin-side WRMBR path emits this barrier; C must not skip it. */
-        _emperor_gc_write_barrier(sb, (void**)&sb->data);
     }
     if (sb->data) {
         memcpy(sb->data->data + sb->len, s->data, (size_t)slen);

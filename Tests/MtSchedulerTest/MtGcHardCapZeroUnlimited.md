@@ -2,6 +2,8 @@
 ## Description
 M5 v0 pressure valve knob semantics: EMPEROR_GC_HARD_CAP=0 is EXPLICIT UNLIMITED — the same keep-live program that dies with exit 62 under a 256KB cap (see MtGcHardCapOom) runs to completion untouched when the cap is zeroed (the classic-scheduler / no-mt half of the "cap is advisory where the valve cannot act" parity is MtGcHardCapClassicAdvisory).
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): one re-run at EMPEROR_THREADS=4 and three at EMPEROR_SHUFFLE_DELTAS=1/7/42 (EMPEROR_THREADS=1) — the output must stay byte-identical in every configuration.
 ## Apply To
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
@@ -40,9 +42,54 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: `EMPEROR_GC_HARD_CAP=0`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `go
+grow done
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=0 EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `go
+grow done
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=0 EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `go
+grow done
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=0 EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `go
+grow done
+`
+ExpectedStderr: DISCARD
+
+
+## Run 5
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=0 EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `go

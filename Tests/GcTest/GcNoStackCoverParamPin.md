@@ -1,11 +1,11 @@
 # GcNoStackCoverParamPin
 
 ## Description
-GC v2 cover-retirement guard: with the conservative main-stack cover OFF (`EMPEROR_GC_NO_STACK_COVER=1`), precise-mode minors must neither free nor MOVE references that live only as SSA/spill copies of PARAMETERS. Exposure classes this locks in (all crashed/corrupted the compiler self-compile before the fix):
+Parameter-rooting guard (the "NoStackCover" name is historical — the cover-off knob is gone with the generational machine; what remains is the exposure it was built to pin down): references that live only as SSA/spill copies of PARAMETERS must survive every collection. Exposure classes this locks in (all crashed/corrupted the compiler self-compile before the fixes):
 (a) bare/qualified-spelled reference parameters (`b: t.Box<string>` — spellings without the `ref<>` wrapper, which the slot classifier used to skip entirely) previously got NO mirror slot at all — the receiver was judged dead mid-call;
-(b) scalar ref/string parameters and `this` receivers were mirror-rooted but PROMOTED — the body's SSA uses kept pointing into the recycled chunk after the object moved (mirrors are PIN slots now, pinned before any promotion);
-(c) fresh objects in constructor flight were quarantined via evacuation, which likewise MOVED them under SSA-held references (the quarantine pins in place now).
-`EMPEROR_GC_YOUNG=65536` forces a minor every 64KB so the churn loops cross dozens of polls while the parameters are live only as SSA copies. Green on Pass2/Pass3 = parameters and in-flight news survive cover-off minors un-moved.
+(b) scalar ref/string parameters and `this` receivers must stay rooted for the whole body (pin-style mirror slots, so the body's SSA uses keep a valid target);
+(c) fresh objects in constructor flight are covered by the quarantine ring.
+`EMPEROR_GC_YOUNG=65536` lowers the goal's churn slack so collections fire every ~64KB while the parameters are live only as SSA copies. Green on Pass2/Pass3 = parameters and in-flight news survive the churn un-corrupted.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -69,7 +69,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_NO_STACK_COVER=1 EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `acc=323960

@@ -1,4 +1,4 @@
-/* EmperorPenguin garbage collector (GC v3, green tea).
+/* EmperorPenguin garbage collector — green tea (span heap).
  *
  * Heap layout: small objects (24B GCHeader + body, slot <= 512B) live in
  * 8KiB size-class spans cut from aligned superchunks (gc_span.c); larger
@@ -20,24 +20,19 @@
  * GT-VERIFY invariants -> sweep (malloc pass1 unlink+finalize, span
  * finalizer pass, malloc pass2, span reclaim) -> unified goal update (ONE
  * budget over the combined malloc+span heap — see gc_update_unified_goal).
- * "conservative" (EMPEROR_GC_MODE) keeps the pre-v2 inline-collect
- * fallback. The v2 generational machine (nursery, minors, promotion/
- * pinning, card table, write barriers) was deleted at M4b; the barrier
- * symbols remain as no-ops for previously emitted .ll until the M4c
- * emitter change.
  *
  * Env knobs (see also emperor_gc.h): GC_VERIFY, EMPEROR_GC_YOUNG (the
  * unified goal's additive churn slack), EMPEROR_GC_GOAL_FACTOR /
  * EMPEROR_GC_MIN_HEAP, EMPEROR_GC_STATS,
  * GC_PROFILE, EMPEROR_GC_STRESS_EVERY/_MAX, EMPEROR_GC_DISABLE,
- * EMPEROR_GC_HARD_CAP (the M5 v0 pressure valve — see _emperor_gc_alloc).
+ * EMPEROR_GC_HARD_CAP (the allocation pressure valve — see
+ * _emperor_gc_alloc).
  *
  * File map: index/resolve (sorted index, gc_resolve_any) -> regions ->
  * frame roots -> quarantine -> stats -> mark/drain (gc_scan_object_body) ->
- * ref-map walk -> sweep (pass1/pass2) -> greentea driver -> conservative
- * collect (gc_collect_main) -> init -> barriers (no-ops) -> allocation ->
- * poll. The span heap itself lives in gc_span.c (shared interface:
- * include/gc_internal.h). */
+ * ref-map walk -> sweep (pass1/pass2) -> collect driver -> init ->
+ * allocation -> poll. The span heap itself lives in
+ * gc_span.c (shared interface: include/gc_internal.h). */
 #include "emperor_types.h"
 #include "emperor_gc.h"
 #include "gc_internal.h"
@@ -67,18 +62,16 @@
 
 static GCHeader* _emperor_gc_allocation_list = NULL;
 static size_t _emperor_gc_total_allocated = 0;
-static size_t _emperor_gc_threshold = 256 * 1024; /* 256KB initial */
 
-/* ---- Unified dual-heap goal (GC v3.1, spec §9.2) ----
+/* ---- Unified dual-heap goal ----
  * ONE collection budget for the malloc side AND the span heap (the split
- * goals it replaces are documented in gc_internal.h). Greentea only —
- * conservative mode has no span heap and keeps _emperor_gc_threshold. */
+ * goals it replaces are documented in gc_internal.h). */
 static size_t _gc_unified_goal = GC_GOAL_MIN_HEAP; /* floors at min_heap */
 static size_t _gc_goal_factor = GC_GOAL_FACTOR;    /* EMPEROR_GC_GOAL_FACTOR */
 static size_t _gc_goal_min_heap = GC_GOAL_MIN_HEAP;/* EMPEROR_GC_MIN_HEAP */
 
 /* Runtime kill-switch: set EMPEROR_GC_DISABLE=1 in the environment to raise
- * the threshold to 8TB so automatic collection never fires (diagnostics —
+ * the heap goal to 8TiB so automatic collection never fires (diagnostics —
  * tells GC-induced crashes apart from logic bugs without recompiling).
  * Explicit gc_collect() calls are never gated. gc_internal.h: gc_span.c's
  * allocation trigger reads it. */
@@ -236,7 +229,7 @@ static inline void* _emperor_gc_get_stack_pointer(void) {
 
 static void* _emperor_gc_stack_bottom = NULL;
 
-/* ---- M4b multi-thread interop ----
+/* ---- Multi-thread interop ----
  * scheduler.c: true while worker threads may be running coroutines (a
  * parallel delta). During that window the allocator funnels through
  * gc_lock and collections are DEFERRED to the delta boundary (where the
@@ -255,10 +248,11 @@ void* _emperor_gc_stack_base(void) { return _emperor_gc_stack_bottom; }
 static void** _emperor_gc_global_roots[EMPEROR_GC_MAX_ROOTS];
 static int _emperor_gc_global_root_count = 0;
 
-/* M4b allocator lock (M5 v1: the small-object fast path no longer takes
- * it — only span retire/refill, the malloc large path, the registries and
- * the arena registry funnel through; also guards the root registry and
- * the scan region registry, which concurrent spawns/parks mutate). */
+/* The allocator funnel's global lock: the small-object fast path never
+ * takes it — only span retire/refill, the malloc large path, the
+ * registries and the arena registry funnel through; also guards the root
+ * registry and the scan region registry, which concurrent spawns/parks
+ * mutate). */
 #if defined(EMPEROR_WIN) || defined(_WIN32)
 /* windows.h comes in via core_builtin.c's build; SRWLOCK static init = {0}. */
 static SRWLOCK gc_alloc_mutex = SRWLOCK_INIT;
@@ -270,7 +264,7 @@ static pthread_mutex_t gc_alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 void gc_alloc_lock(void) { pthread_mutex_lock(&gc_alloc_mutex); }
 void gc_alloc_unlock(void) { pthread_mutex_unlock(&gc_alloc_mutex); }
 #endif
-static void* gc_alloc_locked(int size, int is_string);
+static void* gc_alloc_locked(int size, int is_string, GtArena* arena);
 
 void _emperor_gc_add_root(void** root) {
     gc_alloc_lock();
@@ -327,7 +321,7 @@ typedef struct {
      * coroutine's region is additionally capped at the collect-time sp in
      * _emperor_gc_collect. */
     char* live_lo;
-    /* Typed registration (GC v2 phase 3b): ELEM_COUNT elements of
+    /* Typed registration: ELEM_COUNT elements of
      * ELEM_STRIDE bytes each, whose reference layout one element is
      * described by ELEM_MAP (an emperor ref-map program; bare-reference
      * elements use _emperor_gc_bare_refmap). ELEM_MAP == NULL keeps the
@@ -625,30 +619,45 @@ _Thread_local void* _emperor_gc_frame_head = NULL;
 void* _emperor_gc_frame_get(void) { return _emperor_gc_frame_head; }
 void _emperor_gc_frame_set(void* head) { _emperor_gc_frame_head = head; }
 
-/* Set by _emperor_gc_alloc when the threshold is crossed; drained by the
+/* Set by _emperor_gc_alloc when the heap goal is reached; drained by the
  * __gc_poll calls the emitter places at every call/alloc site. C-side
  * allocations never collect inline in poll mode — collection happens at
  * penguin safepoints where the frame chains are authoritative. */
 int _emperor_gc_want_collect = 0;
 
-/* EMPEROR_GC_MODE=conservative: the legacy behavior — allocations collect
- * inline (mid-C, conservative stack scan), polls are no-ops.
- * EMPEROR_GC_MODE=precise: polls collect with precise roots ONLY (frame
- * chains + globals + regions; no conservative stack scan) — the phase-3
- * switchover experiment; a real missed root turns into a wrong free (the
- * suites crash), a merely-dead local does not.
- * The DEFAULT (env unset) IS PRECISE since GC v2 tuned: the generational
- * collector beat the old poll-full-collect default 2× on the compiler
- * self-compile and 1.9× on the LSP recompile workload with both suites
- * green. EMPEROR_GC_MODE=default (or "legacy") opts back into the old
- * non-generational poll-full-collect behavior for bisection. */
-static int _emperor_gc_mode_conservative = 0;
-/* Green tea (GC v3): the span heap (gc_span.c) + single-generation
- * non-moving collect driver below. Opt-in via EMPEROR_GC_MODE=greentea
- * (M2); the emitted ABI is untouched. */
-int _gc_greentea = 0;
+/* The safepoint poll's one-word fast path (gc_internal.h: the bit layout and
+ * the raisers). Zero == nothing to do. */
+int _emperor_gc_poll_gate = 0;
 
-/* ---- Allocation hard cap: the M5 v0 pressure valve (concurrent_scheduler
+/* scheduler.c interop (another TU, so it cannot use the inline raiser): the
+ * boundary and _emperor_sched_request_collect both go through here. */
+void _emperor_gc_request_collect(void) {
+    gc_request_collect();
+}
+
+/* Lower the poll gate: WORK off, the env-derived bits stay. The driver is its
+ * only steady-state lower site (the disabled guard is the other) — so a poll
+ * that finds the gate up always finds a request behind it, and the fast path
+ * never has to re-check the flag. */
+static inline void gc_lower_poll_gate(void) {
+    __atomic_store_n(&_emperor_gc_poll_gate, gc_poll_gate_static_bits(),
+                     __ATOMIC_RELAXED);
+}
+
+/* EMPEROR_GC_STRESS_MAX reached: stress mode ends, so STRESS comes off the
+ * gate and the poll returns to its fast path. WORK is re-derived from the
+ * flag so a request raised while stress was live survives the rewrite; losing
+ * that race self-heals, because the goal check re-raises on the very next
+ * allocation past the goal. */
+static void gc_poll_gate_drop_stress(void) {
+    __atomic_store_n(&_emperor_gc_poll_gate,
+                     gc_poll_gate_static_bits()
+                     | (__atomic_load_n(&_emperor_gc_want_collect, __ATOMIC_RELAXED)
+                        ? GC_GATE_WORK : 0),
+                     __ATOMIC_RELAXED);
+}
+
+/* ---- Allocation hard cap: the pressure valve (concurrent_scheduler
  * spec §10.1) ----
  * A delta can be arbitrarily long while collection only happens at the
  * scheduler boundary — under the mt kernel a coroutine that allocates in a
@@ -689,23 +698,19 @@ static size_t _gc_hard_cap = 0;
  * SSA/C flight at a collect is at most a few dozen blocks old (the current
  * statement's temps plus a handful of C locals), so 512 slots span every
  * real in-flight window. Bounding matters because an unbounded "everything
- * allocated since the last collection" retention interacts with the
- * threshold growth heuristic on churn-heavy workloads (most young blocks
- * are already-dead string temporaries; retaining them makes every cycle
- * look low-garbage, the threshold quadruples, and collections stop —
- * measured 5.6GB vs 1.1GB peak RSS on the compiler self-compile). Blocks
- * older than the ring are judged by reachability alone: they are from
- * completed statements, so they are homed or garbage. The conservative
- * fallback's inline collects scan the stack and find SSA temps
- * themselves.
+ * allocated since the last collection" retention interacts with the goal
+ * growth heuristic on churn-heavy workloads (most young blocks are
+ * already-dead string temporaries; retaining them makes every cycle look
+ * low-garbage, the goal quadruples, and collections stop — measured 5.6GB
+ * vs 1.1GB peak RSS on the compiler self-compile). Blocks older than the
+ * ring are judged by reachability alone: they are from completed
+ * statements, so they are homed or garbage.
  *
- * M5 v1: the ring lives in the allocating thread's GtArena (gc_span.c
- * pushes on the fast path with the arena in hand; the malloc path pushes
- * via gt_quarantine_push) — a boundary collect can run while several
- * arenas hold in-flight temps, so the driver walks every arena's ring
- * (gc_quarantine_mark / gc_quarantine_drop below). Marking is a set
- * operation, so the [0, count) walk below matches the old global ring's
- * consume exactly. */
+ * The ring lives in the allocating thread's GtArena (gc_span.c pushes on
+ * the fast path with the arena in hand; the malloc path pushes via
+ * gt_quarantine_push) — a boundary collect can run while several arenas
+ * hold in-flight temps, so the driver walks every arena's ring
+ * (gc_quarantine_mark / gc_quarantine_drop below). */
 static void _emperor_gc_mark_object(void* obj);
 
 static void gc_quarantine_mark(GtArena* a, void* ctx) {
@@ -721,61 +726,31 @@ static void gc_quarantine_drop(GtArena* a, void* ctx) {
     a->quarantine_next = 0;
 }
 
-/* ---- Generational nursery ----
- * Precise mode + !EMPEROR_GC_NOGEN allocates SMALL objects (< GC_YOUNG_MAX)
- * from bump chunks: 64KB slices cut from 1MB mmap'd superchunks. Allocation
- * is pointer-increment (no malloc, no list insert, no index append — those
- * stay old-generation-only). A minor collection promotes every surviving
- * young object into the old-generation malloc heap and returns the chunks
- * wholesale; nothing young is ever on _emperor_gc_allocation_list or in the
- * sorted index until promoted.
- *
- * Chunk header lives in the slice's first 64 bytes; objects bump from
- * base upward, 8-byte aligned, using the SAME 24B GCHeader layout as the
- * old generation (next stays NULL — chunk walk is size-stepped; marked is
- * the minor-cycle "promoted or pinned" bit; during a promoted object's
- * afterlife size == -1 marks the forwarding tombstone and the first 8 body
- * bytes hold the new address). */
-
-
-#define GC_CHUNK_SLICE   65536
-#define GC_CHUNK_HDR     128 /* must cover sizeof(YoungChunk) — the per-chunk
-                              * owner-index fields grew the struct past 64 */
-#define GC_SUPER_BYTES   (1024 * 1024)
-#define GC_CHUNKS_PER_SUPER (GC_SUPER_BYTES / GC_CHUNK_SLICE)
-#define GC_YOUNG_MAX     16384 /* >= this object size: old-gen directly */
-
-
-/* Budget sweep on the compiler self-compile (repro: EmperorPenguinLib):
- * 16MB→368s, 32MB→197s, 64MB→143s, 128MB→86s, 256MB→73s (RSS ~2x budget).
- * Minor cost is dominated by the conservative cover + region scans
- * (proportional to the LIVE set, not the budget), so frequency drops
- * translate nearly linearly — 128MB is the knee. Supers are malloc'd on
- * demand, so small programs never touch the budget. Since v3.1 the budget
- * also serves the unified heap goal as its ADDITIVE churn slack (§9.2):
- * goal = max(min_heap, factor x live) + EMPEROR_GC_YOUNG. */
+/* ---- Young allocation budget (EMPEROR_GC_YOUNG) ----
+ * The unified heap goal's ADDITIVE churn slack on top of the factor x live
+ * base (see gc_update_unified_goal): one budget of guaranteed churn
+ * between collections, so a ramping live set does not pin the garbage
+ * fraction near 1/(1+factor) every cycle. 128MB is the measured knee on
+ * the compiler self-compile (budget sweep: 16MB→368s, 32MB→197s, 64MB→143s,
+ * 128MB→86s, 256MB→73s, RSS ~2x budget); tight-memory hosts can lower it
+ * (floored at 64KiB). */
 static size_t _gc_young_budget = 128 * 1024 * 1024; /* EMPEROR_GC_YOUNG */
 
-
-static size_t _gc_pin_total = 0;
-
 /* ---- Collector-cost attribution (EMPEROR_GC_STATS=1) ----
- * atexit summary: collection counts per kind, cumulative wall time per
- * phase, allocation totals, peak live bytes. Answers "where do a mode's
- * seconds go" (the default-vs-baseline regression hunt) without a
- * profiler: fulls includes its sweep, genfull includes its nested minor.
+ * atexit summary: collection counts, cumulative wall time per phase,
+ * allocation totals, peak live bytes. Answers "where do the GC's seconds
+ * go" without a profiler: a full's time includes its sweep.
  *
  * GC_PROFILE=1 (the `make gc-bench` harness format): one single-line,
- * machine-parseable summary at exit — fulls/minors/genfulls, cumulative
- * MARK and SWEEP phases (majors only) and the total GC wall time, plus
- * allocation counts and the live-peak. Timing counters ride the same
- * _gc_timing gate as EMPEROR_GC_STATS, so unset env is a couple of loads. */
+ * machine-parseable summary at exit — fulls, cumulative MARK and SWEEP
+ * phases and the total GC wall time, plus allocation counts and the
+ * live-peak. Timing counters ride the same _gc_timing gate as
+ * EMPEROR_GC_STATS, so unset env is a couple of loads. */
 static int _gc_stats_on = 0;
 static int _gc_profile_on = 0;
 int _gc_timing = 0;                        /* gc_internal.h: gc_span.c charges allocs */
-static size_t _gc_st_fulls = 0, _gc_st_minors = 0, _gc_st_genfulls = 0;
-static uint64_t _gc_st_ns_full = 0, _gc_st_ns_minor = 0, _gc_st_ns_genfull = 0;
-static uint64_t _gc_st_ns_sweep = 0, _gc_st_ns_mark = 0;
+static size_t _gc_st_fulls = 0;
+static uint64_t _gc_st_ns_full = 0, _gc_st_ns_sweep = 0, _gc_st_ns_mark = 0;
 size_t _gc_st_allocs = 0, _gc_st_alloc_bytes = 0; /* gc_internal.h */
 static size_t _gc_st_live_peak = 0;
 static uint64_t _gc_st_polls = 0;
@@ -802,7 +777,7 @@ static uint64_t _gc_st_ns_now(void) {
 static void _gc_st_note_live(void) {
     size_t live =
         __atomic_load_n(&_emperor_gc_total_allocated, __ATOMIC_RELAXED) +
-        (_gc_greentea ? (size_t)gt_heap_bytes() : 0);
+        (size_t)gt_heap_bytes();
     if (live > _gc_st_live_peak) _gc_st_live_peak = live;
 }
 
@@ -810,21 +785,18 @@ static void _gc_st_report(void) {
     /* Machine-parseable single line for the gc-bench harness. */
     if (_gc_profile_on) {
         fprintf(stderr,
-            "gc_profile: fulls=%zu minors=%zu genfulls=%zu "
+            "gc_profile: fulls=%zu "
             "mark_ms=%.3f sweep_ms=%.3f gc_total_ms=%.3f "
             "allocs=%zu alloc_bytes=%zu live_peak_bytes=%zu\n",
-            _gc_st_fulls, _gc_st_minors, _gc_st_genfulls,
+            _gc_st_fulls,
             _gc_st_ns_mark / 1e6, _gc_st_ns_sweep / 1e6,
-            (_gc_st_ns_full + _gc_st_ns_minor + _gc_st_ns_genfull) / 1e6,
+            _gc_st_ns_full / 1e6,
             _gc_st_allocs, _gc_st_alloc_bytes, _gc_st_live_peak);
     }
     if (!_gc_stats_on) return;
     fprintf(stderr,
-        "gc stats: fulls=%zu (%.3fs, of which sweep %.3fs) minors=%zu (%.3fs) "
-        "genfulls=%zu (%.3fs)\n",
-        _gc_st_fulls, _gc_st_ns_full / 1e9, _gc_st_ns_sweep / 1e9,
-        _gc_st_minors, _gc_st_ns_minor / 1e9,
-        _gc_st_genfulls, _gc_st_ns_genfull / 1e9);
+        "gc stats: fulls=%zu (%.3fs, of which sweep %.3fs)\n",
+        _gc_st_fulls, _gc_st_ns_full / 1e9, _gc_st_ns_sweep / 1e9);
     fprintf(stderr,
         "gc stats: allocs=%zu (%.2f MiB) live_peak=%.2f MiB polls=%llu\n",
         _gc_st_allocs, _gc_st_alloc_bytes / 1048576.0,
@@ -835,16 +807,6 @@ static void _gc_st_report(void) {
 
 
 
-
-
-
-
-
-
-
-/* Young-allocation fast path: bump within the current chunk. Slow path
- * (fresh chunk / budget / emergency minor) lives below gc_minor. */
-static void* gc_resolve_any(void* candidate);
 
 
 /* ---- Meta pinned objects ----
@@ -877,7 +839,7 @@ void _emperor_gc_pin_object(long long ref) {
  * EMPEROR_GC_STRESS_EVERY=N: every Nth poll collects regardless of the want
  * flag — makes rare precise-root misses (wrong frees) reproduce in one run.
  */
-static unsigned _emperor_gc_stress_every = 0;
+unsigned _emperor_gc_stress_every = 0;   /* gc_internal.h: poll-gate STRESS bit */
 static unsigned _emperor_gc_stress_counter = 0;
 static unsigned _emperor_gc_stress_max = 0;    /* stop stressing after N collects */
 static void* _emperor_gc_last_collect_site = NULL;
@@ -890,7 +852,7 @@ int _emperor_gc_in_sweep = 0;
 /* scheduler.c: iterate every coroutine's SAVED frame-chain head (parked
  * stacks); the running stack's head is _emperor_gc_frame_head itself. */
 extern void _emperor_sched_each_frame_head(void (*visit)(void*));
-/* scheduler.c M3 interop: per-thread switch state (the COLLECTING thread's
+/* scheduler.c interop: per-thread switch state (the COLLECTING thread's
  * own flag/watermark) and the parked-thread main-stack covers (every OTHER
  * registered thread's [base, boundary watermark) — no-op single-threaded). */
 extern int _emperor_sched_am_on_coroutine(void);
@@ -898,6 +860,7 @@ extern void* _emperor_sched_main_watermark(void);
 extern void _emperor_sched_each_parked_main_stack(void (*visit)(void* bottom, void* top));
 
 static void _emperor_gc_mark_object(void* obj);
+static void* gc_resolve_any(void* candidate);
 static void gc_refmap_walk(const int32_t* m, int32_t idx, char* base,
                            char* root, int root_size,
                            const char* type_name, int depth);
@@ -1062,42 +1025,11 @@ static EMPEROR_NO_ASAN void gc_refmap_walk(const int32_t* m, int32_t idx, char* 
                 gc_refmap_abort("slot offset outside object", m, type_name, idx);
             }
             if (sub == -1) {
+                /* One span lookup (resolve+gray merged); the fallback goes
+                 * straight to the malloc index. */
                 void* candidate = *(void**)(base + off);
-                if (_gc_greentea) {
-                    /* One span lookup (resolve+gray merged); the fallback
-                     * goes straight to the malloc index — the nursery
-                     * chunks and the span re-check below are generational/
-                     * dead paths in this mode. */
-                    if (gt_mark_candidate(candidate)) continue;
-                    void* owner = gc_resolve_block(candidate);
-                    if (owner) {
-                        GCHeader* child = (GCHeader*)((char*)owner - sizeof(GCHeader));
-                        if (!child->marked) {
-                            child->marked = 1;
-                            if (!gc_mark_stack_push(child)) { _emperor_gc_mark_failed = 1; return; }
-                        }
-                    }
-                    continue;
-                }
-                void* owner = gt_slot_owner(candidate);
-                if (!owner) {
-                    owner = gc_resolve_block(candidate);
-                    if (owner && _emperor_gc_verify && owner != candidate) {
-                        /* Interior old-gen ref (e.g. a leaked enum-payload
-                         * address sitting in a container slot). Known to
-                         * occur on the compiler workload; REPORT (bounded)
-                         * instead of aborting — the abort killed GC_VERIFY
-                         * runs before the missed-edge differential (the
-                         * actual bug finder) could report. */
-                        static int interior_reports = 0;
-                        if (interior_reports < 20) {
-                            interior_reports++;
-                            fprintf(stderr,
-                                    "emperor gc: GC_VERIFY: interior pointer in malloc block ref of %s (%p inside %p)\n",
-                                    type_name ? type_name : "?", candidate, owner);
-                        }
-                    }
-                }
+                if (gt_mark_candidate(candidate)) continue;
+                void* owner = gc_resolve_block(candidate);
                 if (owner) {
                     GCHeader* child = (GCHeader*)((char*)owner - sizeof(GCHeader));
                     if (!child->marked) {
@@ -1148,19 +1080,15 @@ static void gc_verify_warn_mapless(const char* name) {
     fprintf(stderr, "emperor gc: GC_VERIFY: type %s has no ref-map (conservative fallback)\n", name);
 }
 
-/* obj must be a validated tracked pointer (or NULL). Young-generation
- * objects (nursery chunks or demoted pinned chunks) share the header layout;
- * a major mark reaches them only AFTER the minor that emptied the nursery,
- * so a forwarded tombstone here means a stale slot — follow the forwarding. */
 /* Scan ONE object's body: precise ref-map walk when the metadata declares
  * one, else the conservative whole-body word scan (foreign metadata, or a
  * freshly allocated block between zeroing and metaptr stamping — necessary
  * because a field can be a struct that *contains* pointers without the
  * field itself being a single pointer, e.g. `Option<T>` lays out as
- * { ptr metadata, i32 tag, ptr payload }). The child leaf is mode-aware:
- * span-resident children gray their slot (green tea, batched in gt_drain),
- * malloc children mark+push the shared worklist. Shared by gc_mark_drain
- * (large path) and the green-tea span/representative scans (gc_span.c). */
+ * { ptr metadata, i32 tag, ptr payload }). The child leaf: span-resident
+ * children gray their slot (batched in gt_drain), malloc children
+ * mark+push the shared worklist. Shared by gc_mark_drain (large path) and
+ * the green-tea span/representative scans (gc_span.c). */
 void gc_scan_object_body(GCHeader* cur) {
     if (cur->is_string) return;
 
@@ -1182,23 +1110,12 @@ void gc_scan_object_body(GCHeader* cur) {
     void** ptr = (void**)user;
     size_t word_count = (size_t)cur->size / sizeof(void*);
     for (size_t i = 0; i < word_count; i++) {
+        /* One span lookup; the fallback is the malloc index directly —
+         * gc_resolve_any would re-run the (already failed) span check
+         * on every garbage word. */
         void* candidate = ptr[i];
-        if (_gc_greentea) {
-            /* One span lookup; the fallback is the malloc index directly —
-             * gc_resolve_any would re-run the (already failed) span check
-             * on every garbage word. */
-            if (gt_mark_candidate(candidate)) continue;
-            void* owner = gc_resolve_block(candidate);
-            if (owner) {
-                GCHeader* child = (GCHeader*)((char*)owner - sizeof(GCHeader));
-                if (!child->marked) {
-                    child->marked = 1;
-                    if (!gc_mark_stack_push(child)) { _emperor_gc_mark_failed = 1; return; }
-                }
-            }
-            continue;
-        }
-        void* owner = gc_resolve_any(candidate);
+        if (gt_mark_candidate(candidate)) continue;
+        void* owner = gc_resolve_block(candidate);
         if (owner) {
             GCHeader* child = (GCHeader*)((char*)owner - sizeof(GCHeader));
             if (!child->marked) {
@@ -1226,12 +1143,12 @@ void gc_mark_drain(void) {
 
 static EMPEROR_NO_ASAN void _emperor_gc_mark_object(void* obj) {
     if (!obj || _emperor_gc_mark_failed) return;
-    /* Green tea: span-resident objects take the batched bitmap path — the
-     * slot grays and gt_drain scans it later; the header is untouched
-     * (colors are span-side). MUST precede the malloc tail: a span header
-     * interpreted as a malloc block would mark a header the bitmap sweep
-     * never reads, and the object would die while "marked". */
-    if (_gc_greentea && gt_gray_object(obj)) return;
+    /* Span-resident objects take the batched bitmap path — the slot grays
+     * and gt_drain scans it later; the header is untouched (colors are
+     * span-side). MUST precede the malloc tail: a span header interpreted
+     * as a malloc block would mark a header the bitmap sweep never reads,
+     * and the object would die while "marked". */
+    if (gt_gray_object(obj)) return;
     GCHeader* header = (GCHeader*)((char*)obj - sizeof(GCHeader));
     if (header->marked) return;
     header->marked = 1;
@@ -1336,12 +1253,6 @@ static size_t gc_sweep_pass2(GCHeader* pending) {
     return freed;
 }
 
-static size_t _emperor_gc_sweep(void) {
-    GCHeader* pending = NULL;
-    gc_sweep_pass1(&pending);
-    return gc_sweep_pass2(pending);
-}
-
 /* ---- GC Collect ---- */
 
 /* Non-zero while a collection (including its finalizer phase) is running:
@@ -1349,20 +1260,24 @@ static size_t _emperor_gc_sweep(void) {
  * finalizer-triggered allocations defer the next automatic collection. */
 static int _emperor_gc_collecting = 0;
 
+/* Re-armed by the driver when it lowers the poll gate (defined with the poll
+ * further down; the fast path that used to reset it is gone). */
+static int64_t _gc_stw_first_seen;
+
 /* Non-zero for an EXPLICIT collect (penguin `gc_collect()`, gc_torture):
- * "collect now" semantics. In precise mode such a cycle drops the
- * fresh-object quarantine (young garbage must die — tests assert finalizers
- * ran and gc_info() dropped) and runs the conservative stack scan instead,
- * which is what keeps any in-flight SSA temporaries alive through it. */
+ * "collect now" semantics. Such a cycle drops the fresh-object quarantine
+ * (young garbage must die — tests assert finalizers ran and gc_info()
+ * dropped); any in-flight SSA temporaries stay alive through the
+ * always-on conservative stack cover instead. */
 static int _emperor_gc_explicit_cycle = 0;
 
-/* ---- Region scanning (shared by major mark and minor evacuation) ----
- * Typed regions walk element slots precisely; conservative regions word-scan
- * (mark for a major — non-moving, safe; PIN for a minor — a conservative
- * word cannot be rewritten, so its young target must keep its address). */
+/* ---- Region scanning ----
+ * Typed regions walk element slots precisely (the ref-map program of one
+ * element, repeated elem_count times); conservative regions word-scan and
+ * mark every word that resolves to a heap object. */
 
 static void gc_scan_regions_mark(void* raw_co_sp) {
-    /* scheduler.c accessors (M3): the flag is the COLLECTING thread's. */
+    /* scheduler.c accessors: the flag is the COLLECTING thread's. */
     int _on_co = _emperor_sched_am_on_coroutine();
     for (size_t r = 0; r < _emperor_gc_scan_region_count; r++) {
         GCScanRegion* reg = &_emperor_gc_scan_regions[r];
@@ -1401,57 +1316,15 @@ static void gc_scan_regions_mark(void* raw_co_sp) {
 
 
 
-/* ---- Dirty-card scan (minor Phase C) ----
- * The card-table counterpart of the old remembered-slot walk. For every
- * dirty card [lo, lo+512): demoted chunks overlapping the card contribute
- * their objects, malloc old-gen blocks overlapping it contribute
- * themselves; each contributing object gets one gc_evacuate_body walk
- * (ref-map slots rewritten precisely, mapless bodies conservatively
- * pinned). A 512B card can straddle a 64KB chunk-slice boundary and an
- * object can start in the card's predecessor and span into it — both the
- * chunk walk (per-chunk sorted objs[] array) and the malloc walk (sorted
- * index) include the spanning predecessor. Cards that resolve to neither
- * a chunk nor a block (stack allocas that slipped past the barrier's
- * old-target check, false-positive super-range hits) are dropped. */
-
-
-
-
-
-
-/* ---- Nursery chunk supply ---- */
-
-
-
-
-/* Chunk-walk helper: the base of the object containing address c. */
-/* ---- Minor collection ----
- * Surviving young objects are PROMOTED into the old-generation malloc heap
- * (first-survival promotion: the workload is bimodal — emit_line strings die
- * young, bound trees live forever — so aging would only add copies). Objects
- * seen only through conservative words (coroutine stacks, the explicit /
- * emergency main-stack cover, untyped container buffers) are PINNED: they
- * keep their address and their whole chunk is demoted to old-gen retention
- * (space waste bounded by the pinned objects; freed when the process exits).
- * Everything else dies with its chunk — zero sweep cost for the nursery. */
-
-
-
-/* ---- Generational full collection: minor + old-gen mark/sweep ---- */
-
-
-/* ---- Green-tea (span heap) collection driver (GC v3) ----
- * Single-generation, non-moving, stop-the-world full collection. The root
- * inventory is IDENTICAL to the generational major above (globals, meta
- * pins, frame chains incl. parked coroutines, typed + conservative
- * regions, quarantine, conservative main-stack cover) — only the heap side
- * changes: small objects live in spans (gc_span.c), large objects on the
- * unchanged malloc list. M1 marking is per-object over spans (the shared
- * mark stack + GCHeader.marked); the span-batched marker is M2.
+/* ---- Collection driver (green tea) ----
+ * Single-generation, non-moving, stop-the-world full collection. Root
+ * inventory: globals, meta pins, frame chains incl. parked coroutines,
+ * typed + conservative regions, quarantine, conservative main-stack
+ * cover. Heap side: small objects live in spans (gc_span.c), large
+ * objects on the malloc list.
  *
  * The conservative cover is ALWAYS on: in a non-moving collector a
- * conservative hit is merely an extra mark — no pin/demote machinery is
- * needed (that is what lets v3 delete the v2 pin machine at M4).
+ * conservative hit is merely an extra mark — no pin machinery is needed.
  *
  * Sweep order (the load-bearing part): malloc pass1 (unlink + finalize;
  * dead bodies intact) -> span finalizer pass (dead malloc bodies still
@@ -1465,9 +1338,8 @@ static void gc_scan_regions_mark(void* raw_co_sp) {
 extern void _emperor_sched_perf_gc_begin(void);
 extern void _emperor_sched_perf_gc_end(void);
 
-static void gc_collect_greentea(int emergency) {
-    (void)emergency; /* the driver always runs the conservative cover */
-    if (_emperor_gc_disabled) return;
+static void gc_collect_greentea(void) {
+    if (_emperor_gc_disabled) { gc_lower_poll_gate(); return; }
     if (!_emperor_gc_stack_bottom || _emperor_gc_collecting) return;
     _emperor_gc_collecting = 1;
     __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
@@ -1481,7 +1353,7 @@ static void gc_collect_greentea(int emergency) {
 
     /* Large-object interior resolution needs the sorted index (span
      * objects resolve O(1) without it). Refresh failure retains
-     * everything this cycle, as in the other drivers. */
+     * everything this cycle. */
     if (!gc_refresh_sorted()) {
         _emperor_gc_collecting = 0;
         return;
@@ -1502,11 +1374,10 @@ static void gc_collect_greentea(int emergency) {
     gc_scan_regions_mark(raw_co_sp);
     gc_mark_drain();
 
-    /* Quarantine (fresh-object cover, per arena): mirrors gc_collect_main's
-     * precise handling — explicit cycles DROP the rings (collect-now
-     * semantics; the conservative cover below holds in-flight temps), auto
-     * cycles consume them. The mark-failed path keeps them: no sweep ran,
-     * the cover carries over. */
+    /* Quarantine (fresh-object cover, per arena): explicit cycles DROP the
+     * rings (collect-now semantics; the conservative cover below holds
+     * in-flight temps), auto cycles consume them. The mark-failed path
+     * keeps them: no sweep ran, the cover carries over. */
     if (_emperor_gc_explicit_cycle) {
         gt_each_arena(gc_quarantine_drop, NULL);
     } else {
@@ -1514,8 +1385,8 @@ static void gc_collect_greentea(int emergency) {
         gt_each_arena(gc_quarantine_drop, NULL);
     }
 
-    /* Conservative main-stack cover (see the driver comment): THIS
-     * thread's stack via its own watermark (scheduler.c accessors, M3),
+    /* Conservative main-stack cover (always on — see the driver comment):
+     * THIS thread's stack via its own watermark (scheduler.c accessors),
      * then every OTHER registered thread's stack up to its boundary
      * watermark — single-threaded today the second part visits nothing. */
     {
@@ -1556,19 +1427,31 @@ static void gc_collect_greentea(int emergency) {
     }
     __atomic_sub_fetch(&_emperor_gc_total_allocated, freed, __ATOMIC_RELAXED);
 
-    /* The unified dual-heap goal (spec §9.2): one budget recalculated from
-     * the COMBINED live/freed numbers of both heaps — replaces the old
-     * pair of a malloc-side threshold and gt_update_goal. */
+    /* The unified dual-heap goal: one budget recalculated from the
+     * COMBINED live/freed numbers of both heaps. */
     gc_update_unified_goal(freed);
     _emperor_gc_collecting = 0;
     __atomic_store_n(&_emperor_gc_want_collect, 0, __ATOMIC_RELAXED);
+    /* Drop the poll gate (the env-derived bits stay) and re-arm the STW age
+     * clock HERE rather than in the poll's fast path: the clock only means
+     * anything while a request is outstanding, and this way the fast path
+     * stays a pure read — no store, no cache-line traffic, at all. */
+    gc_lower_poll_gate();
+    __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED);
     if (_gc_st_t0) { _gc_st_ns_full += _gc_st_ns_now() - _gc_st_t0; _gc_st_note_live(); }
 }
 
-void gc_collect_greentea_emergency(void) {
+/* Every collection — poll-triggered, emergency (allocation slow path),
+ * explicit (penguin gc_collect()) and the scheduler boundary — goes
+ * through this one entry: guards, per-thread GC-phase accounting, cycle. */
+static void gc_collect_auto(void) {
     _emperor_sched_perf_gc_begin();
-    gc_collect_greentea(1);
+    gc_collect_greentea();
     _emperor_sched_perf_gc_end();
+}
+
+void gc_collect_greentea_emergency(void) {
+    gc_collect_auto();
 }
 
 /* ---- Unified dual-heap goal (spec §9.2) ----
@@ -1601,18 +1484,14 @@ void gc_update_unified_goal(size_t malloc_freed) {
     size_t freed = malloc_freed + (size_t)gt_last_freed();
     /* goal = max(min_heap, factor x live) + young: the live-proportional
      * base PLUS one young budget of guaranteed churn slack between
-     * collections — the direct translation of v2's economics (old-gen
-     * 2x-live threshold + the nursery's fixed amortization budget). The
-     * slack term is what a RAMPING live set needs: a pure factor x live
-     * goal pins the garbage fraction near 1/(1+factor) every cycle, so
-     * the collector runs at the ramp integral (bootstrap: 5.13GiB of
-     * churn under a 0 -> 280MiB live ramp = 47-59 fulls, each marking
-     * the whole live set). With the slack, the per-cycle churn budget is
-     * live + young, the count drops to ~O(log), and peak heap stays
-     * bounded at (1+factor) x live + young. The slack also SUBSUMES the
-     * M3 garbage-rich doubling (its job — restoring nursery amortization
-     * for churn shapes like mixed512 — is now the goal's floor), and a
-     * measured doubling on top of the slack overshot peak heap to
+     * collections. The slack term is what a RAMPING live set needs: a
+     * pure factor x live goal pins the garbage fraction near
+     * 1/(1+factor) every cycle, so the collector runs at the ramp
+     * integral (bootstrap: 5.13GiB of churn under a 0 -> 280MiB live
+     * ramp = 47-59 fulls, each marking the whole live set). With the
+     * slack, the per-cycle churn budget is live + young, the count drops
+     * to ~O(log), and peak heap stays bounded at (1+factor) x live +
+     * young. A doubling on top of the slack would overshoot peak heap to
      * ~4x live on ramp-then-churn profiles (bootstrap RSS 1.8GiB), so
      * no rich branch exists. */
     size_t live_target = live * _gc_goal_factor;
@@ -1640,367 +1519,18 @@ void gc_set_goal_params(size_t factor, size_t min_heap) {
     if (goal < base) __atomic_store_n(&_gc_unified_goal, base, __ATOMIC_RELAXED);
 }
 
-/* gc_internal.h: the young allocation budget — since v3.1 the unified
- * heap goal's ADDITIVE churn slack on top of the factor x live base
- * (§9.2); historically the v2 nursery's allocation budget. */
+/* gc_internal.h: the young allocation budget — the unified heap goal's
+ * ADDITIVE churn slack on top of the factor x live base. */
 size_t gc_young_budget_cap(void) {
     return _gc_young_budget;
-}
-
-static EMPEROR_NO_ASAN void gc_collect_main(void) {
-    if (_emperor_gc_disabled) return;
-    if (!_emperor_gc_stack_bottom || _emperor_gc_collecting) return;
-    /* Green tea (GC v3): the span-heap driver replaces the whole cycle. */
-    if (_gc_greentea) {
-        _emperor_sched_perf_gc_begin();
-        gc_collect_greentea(0);
-        _emperor_sched_perf_gc_end();
-        return;
-    }
-    /* Conservative mode: the inline sequential full collect below. */
-    _emperor_sched_perf_gc_begin();
-    _emperor_gc_collecting = 1;
-    __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
-    uint64_t _gc_st_t0 = 0;
-    if (_gc_timing) { _gc_st_t0 = _gc_st_ns_now(); _gc_st_fulls++; }
-
-    /* Spill ALL registers (especially callee-saved ones: rbx, rbp, r12-r15 on
-     * x86-64) onto the stack before scanning. A conservative GC that only walks
-     * the stack misses any live pointer that is sitting in a register at the
-     * moment of collection — those objects then get swept, their memory reused,
-     * and the program observes heap corruption (e.g. a SourceLocation.filename
-     * pointer that now reads as a numeric pointer value, or a BoundType* whose
-     * bits are ASCII from a reused string buffer). setjmp's jmp_buf is a local
-     * in this frame, so it lies within [stack_top, stack_bottom) and the scan
-     * below covers the spilled register words. This is the standard
-     * register-flush technique used by conservative collectors (e.g. Boehm GC).
-     * The volatile asm barrier stops the compiler from optimizing the setjmp
-     * away or reordering the stack-pointer read above it. */
-    jmp_buf _gc_register_buf;
-    setjmp(_gc_register_buf);
-    __asm__ volatile("" ::: "memory");
-
-    void* raw_co_sp = _emperor_gc_get_stack_pointer();
-    void* stack_top = raw_co_sp;
-
-    /* Coroutine scheduler interop (scheduler.c): when a collection triggers on
-     * a coroutine's mmap'd stack, the raw stack pointer belongs to a different
-     * memory region and [main_bottom, sp) would span unrelated mappings. Scan
-     * the main stack only up to the watermark recorded at the last switch
-     * (with a setjmp register flush, so main's callee-saved registers are on
-     * its stack and covered); the coroutine's own stack — including every
-     * other coroutine's — is a registered scan region below. */
-    if (_emperor_sched_am_on_coroutine() && _emperor_sched_main_watermark()) {
-        stack_top = _emperor_sched_main_watermark();
-    }
-
-    /* Resolve interior pointers to their owning block during marking (see
-     * gc_resolve_block). If the sorted index cannot be refreshed (allocation
-     * failure in the full-rebuild fallback), retain everything this cycle
-     * instead of risking a partial marking. */
-    if (!gc_refresh_sorted()) {
-        _emperor_gc_collecting = 0;
-        _emperor_sched_perf_gc_end();
-        return;
-    }
-
-    for (int i = 0; i < _emperor_gc_global_root_count; i++) {
-        void* obj = *(void**)_emperor_gc_global_roots[i];
-        _emperor_gc_mark_object(obj);
-    }
-
-    /* Meta pinned objects (see the pinning note above): marked every cycle
-     * in every mode — the baked i64 holders are not ref-mapped anywhere.
-     * Resolve first: a pinned value may be a plain integer (most #fun
-     * returns are), and marking straight through it would read a header at
-     * (int - 24). */
-    for (size_t i = 0; i < _emperor_gc_pinned_count; i++) {
-        void* owner = gc_resolve_block(_emperor_gc_pinned[i]);
-        if (owner) {
-            _emperor_gc_mark_object(owner);
-        }
-    }
-
-    /* Precise frame chains: the running stack's head plus every PARKED
-     * coroutine's saved head (the running coroutine's saved value is stale —
-     * its frames are linked on the current head — so the scheduler's walker
-     * skips it; phase 2: additional roots alongside the conservative scans
-     * below, GC_VERIFY reports the delta between the two root sets). */
-    gc_mark_frame_chain(_emperor_gc_frame_head);
-    _emperor_sched_each_frame_head(gc_mark_frame_chain);
-
-    /* Registered raw buffers (container element storage) and coroutine
-     * stacks: scan the LIVE portion of each region like an extension of the
-     * stack so GC references inside stay live. Coroutine regions are narrowed
-     * to their parked sp (scheduler); the RUNNING coroutine's region (the one
-     * containing the raw stack pointer) is capped at the collect-time sp so
-     * only its live frames — never its own dead slots below sp — are roots,
-     * exactly like the sequential main-stack model this replaces. */
-    for (size_t r = 0; r < _emperor_gc_scan_region_count; r++) {
-        char* lo = _emperor_gc_scan_regions[r].live_lo;
-        if (lo < _emperor_gc_scan_regions[r].base) lo = _emperor_gc_scan_regions[r].base;
-        char* raw_lo = (char*)raw_co_sp;
-        char* rbase = _emperor_gc_scan_regions[r].base;
-        char* rend = rbase + _emperor_gc_scan_regions[r].bytes;
-        if (_emperor_sched_am_on_coroutine() &&
-            raw_lo >= rbase && raw_lo < rend && raw_lo < lo) {
-            lo = raw_lo;
-        }
-    /* Same alignment guarantee as _emperor_gc_scan_set_live: every load
-     * must stay word-aligned within [lo, rend). */
-        lo = (char*)((uintptr_t)lo & ~((uintptr_t)sizeof(void*) - 1));
-        char** p = (char**)lo;
-        char** end = (char**)rend;
-        for (; p < end; p++) {
-            void* candidate = *p;
-            void* owner = gc_resolve_block(candidate);
-            if (owner) {
-                _emperor_gc_mark_object(owner);
-            }
-        }
-    }
-
-    /* GC_VERIFY differential (conservative mode): everything marked so far (globals +
-     * frame chains + regions — the phase-3 precise root set) is restamped
-     * 3; the conservative stack scan below then marks the remaining
-     * reachable objects 1. Objects left at 1 are what the precise net would
-     * MISS — the number that must reach "only explainable strays" before
-     * phase 3 drops the conservative scan. Reported once per type name.
-     * Precise mode skips the scan entirely (and the differential). */
-    int verify_phase = _emperor_gc_verify && !_gc_greentea;
-    if (verify_phase) {
-        for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) {
-            if (h->marked == 1) h->marked = 3;
-        }
-    }
-
-    _emperor_gc_mark_conservative(_emperor_gc_stack_bottom, stack_top);
-    /* Other registered threads' parked stacks (M3; no-op single-threaded). */
-    _emperor_sched_each_parked_main_stack(_emperor_gc_mark_conservative);
-
-    if (verify_phase) {
-        static const char* reported[128];
-        static int reported_count = 0;
-        size_t conservative_only = 0;
-        static GCHeader* miss_set[8192];
-        size_t miss_n = 0;
-        for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) {
-            if (h->marked != 1) continue;
-            conservative_only++;
-            if (miss_n < 8192) miss_set[miss_n++] = h;
-            if (!h->is_string && h->size >= (int)sizeof(void*)) {
-                EmperorClassMetadata* meta = *(EmperorClassMetadata**)((char*)h + sizeof(GCHeader));
-                const char* name = meta ? meta->name : NULL;
-                int seen = 0;
-                for (int i = 0; i < reported_count; i++) {
-                    if ((name == NULL && reported[i] == NULL) ||
-                        (name != NULL && reported[i] != NULL && strcmp(name, reported[i]) == 0)) {
-                        seen = 1;
-                        break;
-                    }
-                }
-                if (!seen && reported_count < 128) {
-                    reported[reported_count++] = name;
-                    fprintf(stderr,
-                            "emperor gc: GC_VERIFY: conservative-only retention of %s "
-                            "(precise roots would miss it — frame-slot gap?)\n",
-                            name ? name : "(anonymous)");
-                }
-            }
-            h->marked = 3; /* keep it: verify is diagnostic, never destructive */
-        }
-        if (conservative_only > 0) {
-            /* Diagnostics: the misses above are often TRANSITIVE (a stack
-             * word roots A, A's ref-map reaches them; the real gap is A's
-             * slot). Report the stack words that point INTO the miss set,
-             * plus the live frame chain, so the gap can be attributed to a
-             * specific function's frame. */
-            int printed = 0;
-            static char* miss_text_lo;
-            static char* miss_text_hi;
-            if (!miss_text_lo) {
-                FILE* maps = fopen("/proc/self/maps", "r");
-                if (maps) {
-                    char line[512];
-                    uintptr_t here = (uintptr_t)&_emperor_gc_collect;
-                    while (fgets(line, sizeof(line), maps)) {
-                        uintptr_t lo, hi;
-                        char perms[8];
-                        if (sscanf(line, "%llx-%llx %7s",
-                                   (unsigned long long*)&lo,
-                                   (unsigned long long*)&hi, perms) == 3 &&
-                            here >= lo && here < hi && strchr(perms, 'x')) {
-                            miss_text_lo = (char*)lo;
-                            miss_text_hi = (char*)hi;
-                            break;
-                        }
-                    }
-                    fclose(maps);
-                }
-                if (!miss_text_lo) miss_text_lo = miss_text_hi = (char*)1;
-            }
-            char* text_lo = miss_text_lo;
-            char* text_hi = miss_text_hi;
-            for (char** p = (char**)stack_top;
-                 p < (char**)_emperor_gc_stack_bottom && printed < 12; p++) {
-                void* owner = gc_resolve_block(*p);
-                if (!owner) continue;
-                for (size_t i = 0; i < miss_n; i++) {
-                    if ((char*)owner == (char*)miss_set[i] + sizeof(GCHeader)) {
-                        /* Strings have no metadata header — name by flag. */
-                        const char* mname = "?";
-                        if (miss_set[i]->is_string) {
-                            mname = "string";
-                        } else {
-                            EmperorClassMetadata* meta = *(EmperorClassMetadata**)owner;
-                            if (meta && meta->name) mname = meta->name;
-                        }
-                        /* Attribute the word to a frame: the owning frame's
-                         * descriptor is the closest one at or below the word;
-                         * "slot-start" tells uncovered-alloca apart from a
-                         * slot that exists but didn't get marked. */
-                        EmperorGcFrame* own = NULL;
-                        int is_slot_start = 0;
-                        for (EmperorGcFrame* f = (EmperorGcFrame*)_emperor_gc_frame_head;
-                             f; f = f->prev) {
-                            if ((char*)f < (char*)stack_top ||
-                                (char*)f >= (char*)_emperor_gc_stack_bottom) break;
-                            if ((char*)f <= (char*)p &&
-                                (!own || (char*)f > (char*)own)) {
-                                own = f;
-                            }
-                            for (int32_t s = 0; s < f->slot_count; s++) {
-                                if (*(void**)&f->slots[s] == (void*)p) is_slot_start = 1;
-                            }
-                        }
-                        fprintf(stderr,
-                                "    miss-set stack word at stack_bottom-%td -> %s%s\n",
-                                (char*)_emperor_gc_stack_bottom - (char*)p,
-                                mname,
-                                is_slot_start ? " [IS a slot start]" : "");
-                        printed++;
-                        if (own && text_lo != (char*)1) {
-                            for (char** q = (char**)own;
-                                 q < (char**)_emperor_gc_stack_bottom; q++) {
-                                char* w = *q;
-                                if (w >= text_lo && w < text_hi) {
-                                    fprintf(stderr,
-                                            "      owner frame@stack_bottom-%td retaddr_off=+0x%lx\n",
-                                            (char*)_emperor_gc_stack_bottom - (char*)own,
-                                            (unsigned long)(w - text_lo));
-                                    break;
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-            if (printed == 0) {
-                fprintf(stderr, "    (no stack word points into the miss set)\n");
-            }
-            for (EmperorGcFrame* f = (EmperorGcFrame*)_emperor_gc_frame_head; f; f = f->prev) {
-                if ((char*)f < (char*)stack_top ||
-                    (char*)f >= (char*)_emperor_gc_stack_bottom) {
-                    break; /* off-stack guard */
-                }
-                fprintf(stderr, "    frame@stack_bottom-%td n=%d\n",
-                        (char*)_emperor_gc_stack_bottom - (char*)f,
-                        f->slot_count);
-                if (text_lo != (char*)1) {
-                    for (char** q = (char**)f;
-                         q < (char**)_emperor_gc_stack_bottom; q++) {
-                        char* w = *q;
-                        if (w >= text_lo && w < text_hi) {
-                            fprintf(stderr, "      retaddr_off=+0x%lx\n",
-                                    (unsigned long)(w - text_lo));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        if (conservative_only > 0) {
-            static uint64_t cycles_reported = 0;
-            if ((cycles_reported++ & 0x1FF) == 0) { /* every 512nd cycle: progress, not spam */
-                fprintf(stderr, "emperor gc: GC_VERIFY: conservative-only retention ongoing (last cycle: %zu object(s))\n",
-                        conservative_only);
-            }
-        }
-        /* Normalize back to 1 so the sweep below keeps every marked block. */
-        for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) {
-            if (h->marked == 3) h->marked = 1;
-        }
-    }
-
-    if (_emperor_gc_mark_failed) {
-        /* Partial marking happened — nothing may be swept this cycle. Reset
-         * flags (and the worklist top; stale entries are already-marked
-         * headers that a later pass would skip anyway) and retain all. */
-        _emperor_gc_mark_failed = 0;
-        _emperor_gc_mark_stack_top = 0;
-        for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) h->marked = 0;
-        _emperor_gc_collecting = 0;
-        _emperor_sched_perf_gc_end();
-        return;
-    }
-
-    uint64_t _gc_st_mk = 0; /* mark end / sweep start (profile phases) */
-    if (_gc_timing) _gc_st_mk = _gc_st_ns_now();
-    size_t freed;
-    if (_gc_timing) {
-        freed = _emperor_gc_sweep();
-        _gc_st_ns_sweep += _gc_st_ns_now() - _gc_st_mk;
-        _gc_st_ns_mark += _gc_st_mk - _gc_st_t0;
-    } else {
-        freed = _emperor_gc_sweep();
-    }
-    __atomic_sub_fetch(&_emperor_gc_total_allocated, freed, __ATOMIC_RELAXED);
-
-    /* Threshold follows the LIVE heap (Boehm-style growth): a workload that
-     * allocates many short-lived strings collects >90% garbage every cycle,
-     * so the old "double only when little was freed" rule never fired and the
-     * threshold stayed at 256KB — a full mark-sweep every 256KB of allocation
-     * (thousands of collections over one compiler run, each rebuilding the
-     * sorted index and re-scanning the whole live heap). Sizing the threshold
-     * to 2x the surviving live set bounds collections to O(total_alloc /
-     * live_set) while capping peak memory at ~3x live.
-     *
-     * The complement case (freed < live/4: the live heap dominates, e.g. the
-     * LSP recompiling a large project per keystroke) grows x4 instead of x2:
-     * each collection costs O(live blocks) in mark, so collecting every
-     * `threshold` bytes while freeing almost nothing is pure overhead. The
-     * x4 growth trades peak RSS (live + threshold) for far fewer full scans;
-     * capped at 4TB to bound the multiplication. */
-    size_t live = __atomic_load_n(&_emperor_gc_total_allocated, __ATOMIC_RELAXED);
-    size_t live_target = live * 2;
-    if (live_target > _emperor_gc_threshold) {
-        _emperor_gc_threshold = live_target;
-    } else if (freed < live / 4) {
-        if (_emperor_gc_threshold < (1ULL << 42)) {
-            _emperor_gc_threshold *= 4;
-        }
-    }
-    _emperor_gc_collecting = 0;
-    __atomic_store_n(&_emperor_gc_want_collect, 0, __ATOMIC_RELAXED);
-    if (_gc_st_t0) { _gc_st_ns_full += _gc_st_ns_now() - _gc_st_t0; _gc_st_note_live(); }
-    _emperor_sched_perf_gc_end();
 }
 
 /* Public entry = the penguin `gc_collect()` builtin (and gc_torture):
  * explicit "collect now" semantics — see _emperor_gc_explicit_cycle. */
 EMPEROR_NO_ASAN void _emperor_gc_collect(void) {
     _emperor_gc_explicit_cycle = 1;
-    gc_collect_main();
+    gc_collect_auto();
     _emperor_gc_explicit_cycle = 0;
-}
-
-/* Internal entry for the automatic cycles (safepoint polls' full triggers,
- * stress collects): quarantine cover applies; the conservative main-stack
- * cover rides inside gc_minor/gc_collect_generational via
- * _gc_stack_cover_poll (default on — see its declaration). */
-static void gc_collect_auto(void) {
-    gc_collect_main();
 }
 
 /* ---- GC Init ---- */
@@ -2008,7 +1538,6 @@ static void gc_collect_auto(void) {
 void _emperor_gc_init(void* stack_bottom) {
     _emperor_gc_allocation_list = NULL;
     __atomic_store_n(&_emperor_gc_total_allocated, 0, __ATOMIC_RELAXED);
-    _emperor_gc_threshold = 256 * 1024;
     __atomic_store_n(&_gc_unified_goal, _gc_goal_min_heap, __ATOMIC_RELAXED);
     _emperor_gc_sorted_count = 0;
     _emperor_gc_pending_count = 0;
@@ -2035,29 +1564,20 @@ void _emperor_gc_init(void* stack_bottom) {
     const char* kill = getenv("EMPEROR_GC_DISABLE");
     _emperor_gc_disabled = (kill != NULL && kill[0] != '\0' && kill[0] != '0');
     if (_emperor_gc_disabled) {
-        _emperor_gc_threshold = 8ULL << 40;
         __atomic_store_n(&_gc_unified_goal, 8ULL << 40, __ATOMIC_RELAXED);
     }
     const char* verify = getenv("GC_VERIFY");
     _emperor_gc_verify = (verify != NULL && verify[0] != '\0' && verify[0] != '0');
     const char* mode = getenv("EMPEROR_GC_MODE");
-    _emperor_gc_mode_conservative =
-        (mode != NULL && mode[0] != '\0' && strcmp(mode, "conservative") == 0);
-    /* Green tea (GC v3, DEFAULT): span heap + the driver above. The v2
-     * generational collector was deleted at M4b; "precise"/"legacy" now
-     * warn and fall back to greentea (bisect with an older tree).
-     * "conservative" keeps the pre-v2 inline-collect emergency fallback. */
-    _gc_greentea = 1;
-    if (mode != NULL && mode[0] != '\0' &&
-        (strcmp(mode, "precise") == 0 || strcmp(mode, "legacy") == 0)) {
+    if (mode != NULL && mode[0] != '\0') {
         fprintf(stderr,
-                "emperor gc: EMPEROR_GC_MODE=%s was removed with the v2 "
-                "generational collector; using greentea\n", mode);
+                "emperor gc: EMPEROR_GC_MODE is obsolete — the green-tea "
+                "collector is the only runtime\n");
     }
     const char* young = getenv("EMPEROR_GC_YOUNG");
     if (young != NULL && young[0] != '\0') {
         unsigned long long b = strtoull(young, NULL, 10);
-        if (b >= GC_CHUNK_SLICE) _gc_young_budget = (size_t)b;
+        if (b >= 64 * 1024) _gc_young_budget = (size_t)b;
     }
     const char* stress = getenv("EMPEROR_GC_STRESS_EVERY");
     if (stress != NULL && stress[0] != '\0') {
@@ -2075,8 +1595,8 @@ void _emperor_gc_init(void* stack_bottom) {
             _gc_hard_cap = (size_t)8ULL << 30; /* 8 GiB default */
         }
     }
-    if (_gc_greentea) {
-        /* Unified-goal knobs (spec §9.2/§12): factor and min-heap floor. */
+    /* Unified-goal knobs: factor and min-heap floor. */
+    {
         size_t gf = 0, mh = 0;
         const char* gfs = getenv("EMPEROR_GC_GOAL_FACTOR");
         if (gfs != NULL && gfs[0] != '\0') gf = (size_t)strtoull(gfs, NULL, 10);
@@ -2084,20 +1604,22 @@ void _emperor_gc_init(void* stack_bottom) {
         if (mhs != NULL && mhs[0] != '\0') mh = (size_t)strtoull(mhs, NULL, 10);
         gc_set_goal_params(gf, mh);
     }
+    /* Poll gate: the env-derived bits go up once, here, after every knob has
+     * been parsed. The WORK bit is raised per-request by gc_request_collect()
+     * and lowered by the collect driver. */
+    __atomic_store_n(&_emperor_gc_poll_gate, gc_poll_gate_static_bits(),
+                     __ATOMIC_RELAXED);
 }
 
 /* ---- Runtime ABI version ----
- * The emitted code and the C runtime evolve in lockstep (ref-maps, write
- * barriers, typed buffer tracking). Consumers that mix an emission against
+ * The emitted code and the C runtime evolve in lockstep (ref-maps, frame
+ * chains, typed buffer tracking). Consumers that mix an emission against
  * a foreign runtime — a stale .penguin-lib, a JIT module from another
  * build — must compare this symbol and refuse loudly instead of
- * misbehaving. Bump on every layout/protocol change below. */
-/* Bumped at M4c (GC v3): the emitter stopped emitting write-barrier
- * calls, so code emitted by an M4c+ compiler REQUIRES a v3 runtime
- * (barrier-less .ll under a v2 runtime loses remembered-set coverage);
- * symmetrically, old emissions still link against the no-op symbols.
- * Mixed dynlib builds compare this tag and refuse (see above). */
-const char* const _emperor_runtime_abi = "emperor-rt-gc3-gt1";
+ * misbehaving. Bump on every layout/protocol/symbol-set change below.
+ * gt2 dropped the write-barrier symbols; current emissions do not
+ * reference them. */
+const char* const _emperor_runtime_abi = "emperor-rt-gc3-gt2";
 
 /* ---- GC Info ---- */
 
@@ -2108,7 +1630,7 @@ uint64_t _emperor_gc_info(void) {
      * everything allocated since the last span refill. */
     return (uint64_t)__atomic_load_n(&_emperor_gc_total_allocated,
                                      __ATOMIC_RELAXED) +
-           (_gc_greentea ? gt_heap_bytes_exact() : 0);
+           gt_heap_bytes_exact();
 }
 
 int _emperor_gc_probe_tracked(void* user) {
@@ -2120,40 +1642,25 @@ int _emperor_gc_sweeping(void) {
     return _emperor_gc_in_sweep;
 }
 
-uint64_t _emperor_gc_debug_pin_count(void) {
-    return (uint64_t)_gc_pin_total;
-}
-
+/* Debug split (test-only): the malloc large-object heap's bytes vs the
+ * span heap's exact live figure (unflushed arena deltas included). */
 void _emperor_gc_info_split(uint64_t* old_bytes, uint64_t* young_bytes) {
     *old_bytes = (uint64_t)__atomic_load_n(&_emperor_gc_total_allocated,
                                             __ATOMIC_RELAXED);
-    *young_bytes = (uint64_t)(_gc_greentea ? gt_heap_bytes_exact() : 0);
+    *young_bytes = gt_heap_bytes_exact();
 }
 
+/* The heap charge of a tracked allocation of SIZE body bytes: the
+ * size-class slot, or header + round8(size) on the malloc large path.
+ * gc_torture's exact live/die delta assertions use this. */
 size_t _emperor_gc_alloc_charge(int size) {
-    if (_gc_greentea) {
-        unsigned slot = gt_slot_size_for(size);
-        if (slot) return slot;
-    }
+    unsigned slot = gt_slot_size_for(size);
+    if (slot) return slot;
     int asize = (size + 7) & ~7;
     if (asize < 8) asize = 8;
     return sizeof(GCHeader) + asize;
 }
 
-/* ---- Generational write barriers (see emperor_gc.h) ---- */
-
-/* Write barriers: no-ops since GC v3 — the collector is single-generation
- * and stop-the-world on the only mutator, so no remembered set exists.
- * The symbols stay for ABI compatibility: emissions still carry the calls
- * until the M4c emitter change retires them (and previously emitted .ll
- * keeps linking). */
-void _emperor_gc_write_barrier(void* obj, void** slot) {
-    (void)obj; (void)slot;
-}
-
-void _emperor_gc_write_barrier_map(void* obj, void* slot, const int32_t* map) {
-    (void)obj; (void)slot; (void)map;
-}
 
 /* ---- GC-tracked Allocation ---- */
 
@@ -2166,7 +1673,7 @@ size_t _emperor_gc_hard_cap(void) { return _gc_hard_cap; }
 uint64_t _emperor_gc_live_bytes(void) {
     return (uint64_t)__atomic_load_n(&_emperor_gc_total_allocated,
                                      __ATOMIC_RELAXED) +
-           (_gc_greentea ? gt_live_bytes() : 0);
+           gt_live_bytes();
 }
 /* (live_bytes pairs the swept malloc list with span-live; both are exact
  * post-sweep figures, no arena deltas outstanding — plain reads fine.) */
@@ -2221,7 +1728,7 @@ void* _emperor_gc_alloc(int size, int is_string) {
          * and the park loop re-checks after every wake. */
         if ((size_t)(__atomic_load_n(&_emperor_gc_total_allocated,
                                      __ATOMIC_RELAXED) +
-                     (_gc_greentea ? gt_heap_bytes() : 0)) +
+                     (size_t)gt_heap_bytes()) +
                 charge >
             _gc_hard_cap) {
             /* The valve check sits OUTSIDE the allocator lock: concurrent
@@ -2236,7 +1743,7 @@ void* _emperor_gc_alloc(int size, int is_string) {
             while (_emperor_sched_alloc_park((size_t)charge) &&
                    (size_t)(__atomic_load_n(&_emperor_gc_total_allocated,
                                             __ATOMIC_RELAXED) +
-                            (_gc_greentea ? gt_heap_bytes() : 0)) +
+                            (size_t)gt_heap_bytes()) +
                            charge >
                        _gc_hard_cap) {
                 /* Parked; resumed by the boundary's unpark after its
@@ -2245,24 +1752,28 @@ void* _emperor_gc_alloc(int size, int is_string) {
             }
         }
     }
-    /* M5 v1: the span fast path is per-arena and LOCK-FREE (the arena's
-     * current span is exclusively owned by this thread; quarantine is
-     * pushed with the arena in hand). NULL falls through to the malloc
-     * path — a failed superchunk acquisition (deferred to the boundary
-     * under a parallel delta, or collected inline otherwise) or an
-     * exhausted registry. */
-    if (_gc_greentea && !_emperor_gc_collecting && size <= GT_MAX_BODY) {
+    /* Resolve this thread's arena BEFORE taking the allocator lock: its
+     * first-use registration takes gc_alloc_lock itself, and the malloc
+     * path below needs the arena for the quarantine push (the first
+     * allocation of a process may be a large one). */
+    GtArena* arena = gt_arena_thread();
+    /* The span fast path is per-arena and LOCK-FREE (the arena's current
+     * span is exclusively owned by this thread; quarantine is pushed with
+     * the arena in hand). NULL falls through to the malloc path — a failed
+     * superchunk acquisition (deferred to the boundary under a parallel
+     * delta, or collected inline otherwise) or an exhausted registry. */
+    if (!_emperor_gc_collecting && size <= GT_MAX_BODY) {
         void* small = gt_alloc_small(size, is_string);
         if (small) return small;
     }
     gc_alloc_lock();
-    void* r = gc_alloc_locked(size, is_string);
+    void* r = gc_alloc_locked(size, is_string, arena);
     gc_alloc_unlock();
-    /* Greentea goal bookkeeping OUTSIDE the lock (a finalizer inside the
-     * emergency collect allocates — it must not re-enter gc_alloc_lock).
-     * The fresh block is marked around the collect so the cycle its own
-     * allocation triggered cannot sweep it. */
-    if (r && _gc_greentea && !_emperor_gc_disabled && !_emperor_gc_collecting) {
+    /* Goal bookkeeping OUTSIDE the lock (a finalizer inside the emergency
+     * collect allocates — it must not re-enter gc_alloc_lock). The fresh
+     * block is marked around the collect so the cycle its own allocation
+     * triggered cannot sweep it. */
+    if (r && !_emperor_gc_disabled && !_emperor_gc_collecting) {
         if (gc_unified_goal_reached()) {
             if (__atomic_load_n(&_emperor_gc_total_allocated, __ATOMIC_RELAXED) +
                     (size_t)gt_heap_bytes() >=
@@ -2273,20 +1784,19 @@ void* _emperor_gc_alloc(int size, int is_string) {
                 gc_collect_greentea_emergency();
                 h->marked = 0;
             } else {
-                __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
+                gc_request_collect();   /* flag + poll gate, kept in step */
             }
         }
     }
     return r;
 }
 
-static void* gc_alloc_locked(int size, int is_string) {
-    /* The malloc "large" path (and the conservative-mode heap — every
-     * object when !_gc_greentea). Small greentea objects allocate on the
-     * per-arena lock-free fast path in _emperor_gc_alloc; this runs for
-     * them only on fallthrough (superchunk OOM / registry exhaustion) and
-     * while collecting (finalizer-time allocations — the sweep in
-     * progress must not judge them via the span bitmaps). */
+static void* gc_alloc_locked(int size, int is_string, GtArena* arena) {
+    /* The malloc "large" path. Small objects allocate on the per-arena
+     * lock-free fast path in _emperor_gc_alloc; this runs for them only on
+     * fallthrough (superchunk OOM / registry exhaustion) and while
+     * collecting (finalizer-time allocations — the sweep in progress must
+     * not judge them via the span bitmaps). */
     int total = (int)sizeof(GCHeader) + size;
     if (_gc_timing) {
         __atomic_add_fetch(&_gc_st_allocs, 1, __ATOMIC_RELAXED);
@@ -2303,44 +1813,23 @@ static void* gc_alloc_locked(int size, int is_string) {
     __atomic_add_fetch(&_emperor_gc_total_allocated, (size_t)total,
                        __ATOMIC_RELAXED);
 
-    /* Register with the incremental sorted index (see gc_refresh_sorted):
-     * MUST happen before the threshold collection below so the very
-     * collection this allocation may trigger sees the block. On append
-     * failure mark the index stale — the next refresh falls back to a full
-     * rebuild, and until then appends are skipped (nothing can go missing:
-     * the rebuild walks the authoritative list). */
+    /* Register with the incremental sorted index (see gc_refresh_sorted) so
+     * the next collection's interior-pointer resolution sees the block. On
+     * append failure mark the index stale — the next refresh falls back to
+     * a full rebuild, and until then appends are skipped (nothing can go
+     * missing: the rebuild walks the authoritative list). */
     gc_pending_append((char*)header + sizeof(GCHeader));
 
-    gt_quarantine_push(gt_arena_thread(), (char*)header + sizeof(GCHeader));
-
-    /* Conservative mode keeps the legacy malloc-only threshold and its
-     * inline-collect behavior exactly (single-threaded mode). Greentea
-     * goal bookkeeping lives in _emperor_gc_alloc, OUTSIDE the lock — a
-     * finalizer inside the emergency collect allocates, and the lock is
-     * not recursive.
-     *
-     * An inline collection here may run BEFORE this pointer reaches the
-     * caller, so the fresh block is marked around it (a marked block skips
-     * the body scan — safe, the body is still zero-filled) — otherwise the
-     * collection its own allocation triggered would sweep it (dangling
-     * return → tcache reuse corrupts the header/list). */
-    if (!_emperor_gc_disabled && !_emperor_gc_collecting && !_gc_greentea) {
-        if (__atomic_load_n(&_emperor_gc_total_allocated, __ATOMIC_RELAXED) >=
-            _emperor_gc_threshold) {
-            header->marked = 1;
-            gc_collect_auto();
-            header->marked = 0;
-        }
-    }
+    gt_quarantine_push(arena, (char*)header + sizeof(GCHeader));
 
     return (char*)header + sizeof(GCHeader);
 }
 
 /* Safepoint poll: called by emitted code before every call and at every
- * allocation site. Cheap when no collection is pending: one load + ret.
- * greentea: the heap-goal flag runs the span collector's full cycle;
- * conservative mode never polls (allocations collect inline). */
-/* Poll-side STW escalation (free-mt / long deltas): want_collect that the
+ * allocation site. Cheap when no collection is pending: one load + ret;
+ * the heap-goal flag runs the full green-tea cycle.
+ *
+ * Poll-side STW escalation (free-mt / long deltas): want_collect that the
  * boundary cannot drain — the delta never converges (a busy service) —
  * escalates after EMPEROR_GC_STW_MS (default 250, 0 = off): the polling
  * coroutine files onto the hard-cap valve's parked list, forcing the
@@ -2358,13 +1847,28 @@ static int64_t _gc_stw_now_ms(void) {
     return (int64_t)(_gc_st_ns_now() / 1000000);
 }
 
+static void _emperor_gc_poll_slow(void);
+
 void _emperor_gc_poll(void) {
+    /* Steady state: ONE relaxed load of the gate + a not-taken branch. Every
+     * reason this poll could have to do something (a collection is wanted,
+     * stress mode is live, the poll counter is on) is folded into that word,
+     * so the fast path reads no other global and writes nothing at all —
+     * including the STW age clock, which the driver re-arms instead
+     * (gc_internal.h holds the bit layout and the raisers). */
+    if (__atomic_load_n(&_emperor_gc_poll_gate, __ATOMIC_RELAXED) == 0) return;
+    _emperor_gc_poll_slow();
+}
+
+/* The gate is up: a request is outstanding, or the counter/stress bits ask
+ * for this call. The original poll body, in the original order. */
+static void _emperor_gc_poll_slow(void) {
     /* Every field this touches runs on EVERY coroutine from EVERY thread —
      * plain accesses here are write-write/read-write races by construction
      * (TSan flagged the whole family when the back-edge safepoint made
      * polls ubiquitous). All bookkeeping: RELAXED is the right order. */
     if (_gc_timing) __atomic_fetch_add(&_gc_st_polls, 1, __ATOMIC_RELAXED);
-    if (_emperor_gc_mode_conservative || _emperor_gc_collecting ||
+    if (_emperor_gc_collecting ||
         !_emperor_gc_stack_bottom || _emperor_gc_disabled) {
         return;
     }
@@ -2372,11 +1876,12 @@ void _emperor_gc_poll(void) {
         if (_emperor_gc_stress_max &&
             __atomic_load_n(&_emperor_gc_collect_count, __ATOMIC_RELAXED) >= _emperor_gc_stress_max) {
             __atomic_store_n(&_emperor_gc_stress_every, 0, __ATOMIC_RELAXED); /* budget exhausted — normal polls */
+            gc_poll_gate_drop_stress();      /* …so drop the gate's STRESS bit */
         } else if (__atomic_fetch_add(&_emperor_gc_stress_counter, 1, __ATOMIC_RELAXED) + 1 >=
                    __atomic_load_n(&_emperor_gc_stress_every, __ATOMIC_RELAXED)) {
             __atomic_store_n(&_emperor_gc_stress_counter, 0, __ATOMIC_RELAXED);
             __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);
-            __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED); /* stress = full collection */
+            gc_request_collect();   /* stress = full collection (flag + gate) */
             if (_emperor_sched_parallel_active()) {
                 /* Parallel delta in flight: workers hold coroutine stacks
                  * mid-flight — collecting here would race the mutators.
@@ -2388,17 +1893,11 @@ void _emperor_gc_poll(void) {
         return;
     }
     if (!__atomic_load_n(&_emperor_gc_want_collect, __ATOMIC_RELAXED)) {
-        /* Re-arm the age clock — but WRITE ONLY WHEN IT IS SET: this is
-         * the per-back-edge hot path (one call per loop iteration of every
-         * coroutine), and an unconditional store had every thread of a
-         * parallel delta writing the same shared line per iteration —
-         * cache-line ping-pong that made 4-thread free-mt compute ~70%
-         * SLOWER than one thread (the edge-detect example). A conditional
-         * store keeps the drained steady state a pure read (shared-clean
-         * line, no coherency traffic). */
-        if (__atomic_load_n(&_gc_stw_first_seen, __ATOMIC_RELAXED) != 0) {
-            __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED);
-        }
+        /* The gate outlived the flag: stress mode just ended, or a raiser's
+         * two stores were observed out of order. Nothing to do — and the
+         * age-clock re-arm that used to live here (with a conditional store,
+         * to keep the drained hot path a pure read) moved into the driver,
+         * which now resets the clock exactly when it lowers the gate. */
         return;
     }
     __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);

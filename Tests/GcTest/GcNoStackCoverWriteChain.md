@@ -1,7 +1,7 @@
 # GcNoStackCoverWriteChain
 
 ## Description
-GC v2 cover-retirement guard for WRITE-CHAIN / alias-assign / unbox registers: a chain temp (`o.mid.inner.v = f(x)`, a mut-this receiver `o.mid.inner.bump(f(x))`, a value-class interior chain `h.p.x = f(x)`, a ref-global chain `g.f.x = f(x)`, an unbox alias view) exists only as an SSA/gep value between its def and the consuming WRMBR/call — every poll in that window (argument evaluation) moves the target unless something pins it. The emitter homes these registers as write-only PIN mirror slots (`%reg.gcpin` + the `_emperor_gc_pin_refmap` sentinel): the minor's Phase-A pin pass resolves the mirror (interior-tolerant — an inline-struct chain's gep pins its OWNER) before any promotion, so the SSA copy never dangles into a recycled chunk. With `EMPEROR_GC_NO_STACK_COVER=1` and `EMPEROR_GC_YOUNG=65536` the chain temps cross dozens of un-covered minors; a missing mirror reads a recycled chunk (silent corruption or SIGSEGV).
+WRITE-CHAIN / alias-assign / unbox register guard (the "NoStackCover" name is historical — the cover-off knob is gone with the generational machine): a chain temp (`o.mid.inner.v = f(x)`, a mut-this receiver `o.mid.inner.bump(f(x))`, a value-class interior chain `h.p.x = f(x)`, a ref-global chain `g.f.x = f(x)`, an unbox alias view) exists only as an SSA/gep value between its def and the consuming WRMBR/call — every poll in that window (argument evaluation) must find the target rooted or the later write lands on recycled memory. The emitter homes these registers as write-only PIN mirror slots (`%reg.gcpin` + the `_emperor_gc_pin_refmap` sentinel; the mark treats a pin slot like a bare reference and the collector never moves objects, so the mirror's interior-tolerant resolve — an inline-struct chain's gep roots its OWNER — is all the SSA copy needs). With `EMPEROR_GC_YOUNG=65536` the chain temps cross dozens of collections; a missing mirror reads a recycled slot (silent corruption or SIGSEGV).
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -103,7 +103,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_NO_STACK_COVER=1 EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `acc=340543

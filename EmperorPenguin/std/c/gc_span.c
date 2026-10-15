@@ -1,30 +1,23 @@
-/* gc_span.c — green-tea span heap (GC v3).
+/* gc_span.c — the green-tea span heap.
  *
  * Small objects (24B GCHeader + body, slot <= 512B) allocate from 8KiB
  * SPANS cut from superchunks; one span serves exactly one size class and
  * its slots are bitmap-managed. Larger objects stay on gc.c's malloc block
- * list (the "large" path). Design: docs/impl-notes/25_EmperorPenguinGC.md
- * §4–§8; plan: .agents/plans/gc-greentea-span-heap.md.
+ * list (the "large" path). Design: docs/en/impl-notes/29_EmperorPenguinGC.md.
  *
- * M5 v1: allocation state is PER-THREAD (GtArena, gc_internal.h) — the
- * per-class current span plus the thread's quarantine ring. The fast path
+ * Allocation state is PER-THREAD (GtArena, gc_internal.h) — the per-class
+ * current span plus the thread's quarantine ring. The fast path
  * (gt_alloc_small on a current span with a free slot) takes no lock; span
  * retire/refill, superchunk acquisition and the malloc path funnel through
  * gc.c's gc_alloc_lock (once per span fill, not per allocation). The
  * collector stays ONE stop-the-world pass over every arena's spans; the
- * local/shared domain split with promotion at the handoff points (design
- * doc §10.2-10.6) is the next stage.
- *
- * M1 scope: the allocation side plus a per-object mark/sweep adaptation —
- * colors ride the shared GCHeader.marked bit and sweep probes every dead
- * slot for a finalizer. The span-batched gray/black bitmap marker (green
- * tea proper) lands in M2; the gray/black bitmaps below are allocated and
- * held zero for it.
+ * local/shared domain split with promotion at the handoff points is a
+ * future stage.
  *
  * Address -> span is O(1): spans are 8KiB-aligned by construction, so the
  * lookup is a range test + mask + magic (the magic guards false hits on
  * malloc arenas that interleave with our superchunks address-wise — the
- * GC v2 _gc_super_ranges lesson).
+ * exact-range lesson recorded below).
  */
 #include "emperor_gc.h"
 #include "gc_internal.h"
@@ -37,7 +30,7 @@
  * delta) — the refill emergency collect must not race live mutators. */
 extern int _emperor_sched_parallel_active(void);
 
-/* ---- Layout constants (spec §4.1) ---- */
+/* ---- Layout constants ---- */
 
 #define GT_SPAN_SIZE    8192              /* one span, 8KiB-aligned        */
 #define GT_SPAN_HDR     128               /* sizeof(GtSpan), fixed         */
@@ -52,28 +45,28 @@ extern int _emperor_sched_parallel_active(void);
 
 /* ---- Span ---- */
 
-#define GT_F_ENQUEUED    0x01   /* M2: span sits in the mark work queue  */
-#define GT_F_REP_PENDING 0x02   /* M2: representative fast-path state    */
-#define GT_F_REP_HIT     0x04   /* M2: >=2 objects grayed                */
+#define GT_F_ENQUEUED    0x01   /* span sits in the mark work queue      */
+#define GT_F_REP_PENDING 0x02   /* representative fast-path state        */
+#define GT_F_REP_HIT     0x04   /* >=2 objects grayed                    */
 
 typedef struct GtSpan {
     uint32_t magic;              /* GT_SPAN_MAGIC, guards gt_span_of()    */
     uint8_t  size_class;         /* index into gt_classes[]               */
-    uint8_t  flags;              /* GT_F_* (M2)                           */
+    uint8_t  flags;              /* GT_F_*                                 */
     uint16_t nslots;             /* slots per span for this class         */
     uint16_t free_index;         /* next slot probe hint (alloc)          */
     uint16_t live_count;         /* allocated (not yet swept-dead) slots  */
-    uint16_t rep_slot;           /* M2: representative slot index         */
+    uint16_t rep_slot;           /* representative slot index             */
     uint64_t alloc_bits[GT_BITMAP_WORDS];  /* slot in use                 */
-    uint64_t gray_bits[GT_BITMAP_WORDS];   /* M2: reachable, unscanned    */
-    uint64_t black_bits[GT_BITMAP_WORDS];  /* M2: reachable, scanned      */
+    uint64_t gray_bits[GT_BITMAP_WORDS];   /* reachable, unscanned       */
+    uint64_t black_bits[GT_BITMAP_WORDS];  /* reachable, scanned         */
     struct GtSpan* next;         /* pool list link                        */
     struct GtSuper* super;       /* owning superchunk                     */
 } GtSpan;
 
 _Static_assert(sizeof(GtSpan) == GT_SPAN_HDR, "GtSpan must fit GT_SPAN_HDR");
 
-/* ---- Size classes (spec §4.2): Go's table up to 512B ---- */
+/* ---- Size classes: Go's table up to 512B ---- */
 
 static const struct { uint16_t slot_size; uint16_t nslots; } gt_classes[GT_NCLASS] = {
     {32, 252}, {48, 168}, {64, 126}, {80, 100}, {96, 84},  {112, 72},
@@ -107,7 +100,7 @@ typedef struct GtSuper {
     uint32_t nempty;             /* spans on the class-agnostic pool      */
 } GtSuper;
 
-/* ---- Heap state (M5 v1: per-thread arenas + shared pools) ----
+/* ---- Heap state (per-thread arenas + shared pools) ----
  * Allocation state (the per-class CURRENT span) is PER-THREAD (GtArena,
  * registry below) — the fast path in gt_alloc_small touches only the
  * caller's arena. Everything below is shared, mutated either under
@@ -139,7 +132,7 @@ typedef struct GtHeap {
      * gt_alloc_small now polls gc_unified_goal_reached(); the goal knobs
      * (factor/min-heap) live in gc.c behind gc_set_goal_params. */
     size_t last_freed;           /* set by gt_sweep_reclaim */
-    /* cumulative stats (gc_gt_stats / spec §12) */
+    /* cumulative stats (gc_gt_stats) */
     uint64_t n_cycles;           /* completed sweeps                      */
     uint64_t n_wholesale;        /* spans recycled whole                  */
     uint64_t n_rep_scans;        /* representative fast-path scans        */
@@ -147,7 +140,7 @@ typedef struct GtHeap {
 
 static GtHeap _gt; /* zero-init: live/heap bytes start at 0 */
 
-/* ---- Per-thread arena registry (M5 v1) ----
+/* ---- Per-thread arena registry ----
  * Arenas are process-lifetime (a finished worker's current span stays
  * sweepable — the STW sweep walks the registry, not the live threads).
  * Registration appends to the compact pointer list under gc_alloc_lock;
@@ -190,7 +183,6 @@ void gt_each_arena(void (*fn)(GtArena* a, void* ctx), void* ctx) {
  * the allocating thread, and the collector consumes it only at
  * stop-the-world moments. */
 void gt_quarantine_push(GtArena* a, void* user) {
-    if (!_gc_greentea) return;
     a->quarantine[a->quarantine_next] = user;
     a->quarantine_next =
         (unsigned short)((a->quarantine_next + 1) % GC_QUARANTINE_RING);
@@ -198,8 +190,8 @@ void gt_quarantine_push(GtArena* a, void* user) {
 }
 static char* _gt_heap_lo = (char*)(intptr_t)-1;
 static char* _gt_heap_hi = (char*)0;
-/* Exact superchunk ranges, sorted by start (the GC v2 _gc_super_ranges
- * lesson): the [lo,hi) span covers unmapped gaps between the supers'
+/* Exact superchunk ranges, sorted by start: the loose [lo,hi) span covers
+ * unmapped gaps between the supers'
  * mmaps, and gt_span_of DEREFERENCES the masked base — a conservative-scan
  * candidate landing in a gap would SIGSEGV on the magic read. Membership
  * in an actual super makes the read safe by construction (supers are
@@ -309,7 +301,7 @@ static GtSpan* gt_span_class(unsigned cls) {
     return s;
 }
 
-/* ---- Address -> span / owner (spec §4.3, §7.1) ---- */
+/* ---- Address -> span / owner ---- */
 
 /* Membership in an ACTUAL super (binary search over the exact ranges):
  * makes gt_span_of's deref safe — the masked base of an in-super
@@ -357,14 +349,14 @@ void* gt_slot_owner(const void* p) {
     GCHeader* h = gt_slot_header(s, (unsigned)idx);
     if (h->size < 0) return NULL;
     char* user = (char*)(h + 1);
-    /* Same containment rule as v2's gc_resolve_block: interior pointers
+    /* Same containment rule as gc_resolve_block: interior pointers
      * (enum payloads at +16, nested value classes) root their owner;
      * c == user is the exact-base case. */
     if (c < user + h->size) return user;
     return NULL;
 }
 
-/* ---- Allocation (spec §6; M5 v1: per-arena fast path) ---- */
+/* ---- Allocation (per-arena fast path) ---- */
 
 static GtSpan* gt_take_span_for(unsigned cls) {
     GtSpan* s = _gt.partial[cls];
@@ -424,7 +416,7 @@ static GtSpan* gt_retire_refill(GtArena* a, unsigned cls) {
         gc_alloc_unlock();
     }
     if (!s) {
-        __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
+        gc_request_collect();   /* flag + poll gate, kept in step */
     }
     return s;
 }
@@ -460,7 +452,7 @@ static void* gt_alloc_in_span(GtArena* a, GtSpan* s, unsigned cls,
         }
         if (!_emperor_gc_disabled && gc_unified_goal_reached()) {
             /* idempotent until the poll drains */
-            __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
+            gc_request_collect();
         }
         gt_quarantine_push(a, (char*)(h + 1));
         return (char*)(h + 1);
@@ -490,7 +482,7 @@ void* gt_alloc_small(int size, int is_string) {
     return gt_alloc_in_span(a, s, cls, 0, size, is_string);
 }
 
-/* ---- Green-tea mark state (M2, spec §7) ----
+/* ---- Green-tea mark state ----
  * Work items are SPANS, not objects: a slot's color lives in its span's
  * bitmaps (white = neither bit, gray = reachable/unscanned, black =
  * reachable/scanned). The FIFO queue holds spans with >= 2 gray candidates
@@ -566,7 +558,7 @@ static int gt_rep_push(GtSpan* s) {
     return 1;
 }
 
-/* Gray one slot: dedup + representative/queue bookkeeping (spec §7.2). */
+/* Gray one slot: dedup + representative/queue bookkeeping. */
 static void gt_gray_slot(GtSpan* s, unsigned idx) {
     uint64_t bit = 1ull << (idx & 63);
     unsigned w = idx >> 6;
@@ -607,10 +599,10 @@ int gt_gray_object(void* obj) {
     return 1;
 }
 
-/* Combined resolve+gray for the mark leaves (spec §7.1): ONE range lookup
+/* Combined resolve+gray for the mark leaves: ONE range lookup
  * decides span vs large — the resolve-then-gray pairing would pay the
- * super-range binary search twice per reference word otherwise (the M2
- * profile: gt_slot_owner + gt_gray_object's re-resolve dominated mark). */
+ * super-range binary search twice per reference word otherwise (profiled:
+ * gt_slot_owner + gt_gray_object's re-resolve dominated mark). */
 int gt_mark_candidate(void* candidate) {
     GtSpan* s = gt_span_of(candidate);
     if (!s) return 0;
@@ -630,7 +622,7 @@ int gt_mark_candidate(void* candidate) {
 }
 
 /* Full bitmap scan of one span: blacken `gray & ~black` word-at-a-time
- * and scan exactly those objects (spec §7.3). Scanning can gray NEW slots
+ * and scan exactly those objects. Scanning can gray NEW slots
  * in this same span — the outer loop re-passes until gray == black. */
 static void gt_scan_span(GtSpan* s) {
     s->flags &= (uint8_t)~GT_F_REP_PENDING; /* (if HIT promoted it) */
@@ -654,7 +646,7 @@ static void gt_scan_span(GtSpan* s) {
 }
 
 /* Drain all mark work: the large-object worklist first (its walks gray
- * span slots), then queued spans, then lone representatives (spec §7.3).
+ * span slots), then queued spans, then lone representatives.
  * The mutator is stopped — no new gray bits can appear once all three
  * structures are empty. */
 void gt_drain(void) {
@@ -735,7 +727,7 @@ void gt_verify_invariants(void) {
     }
 }
 
-/* ---- Sweep (spec §8) ---- */
+/* ---- Sweep ---- */
 
 /* Walk every LIVE span: the shared full/partial pools plus every
  * registered arena's current span. Stop-the-world moment only (a span

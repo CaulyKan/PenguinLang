@@ -2,6 +2,8 @@
 ## Description
 The multi-waiter directed-wake shape on the deferred Event: FOUR stealable waiters (Event is ISync — at EMPEROR_THREADS=4 they genuinely distribute across threads), each waiting THREE times; every `wait ev` is a fresh one-shot subscription, so each waiter independently observes EVERY emission through its own value slot — the total (61+62+63+64 = 250) is deterministic despite cross-thread placement. The emitter paces with DOUBLE `wait 0` between emissions — the sound idiom under design doc §7.1 (same-delta cross-coroutine order is unspecified): the boundary kick lands the waiters in the SAME delta as the emitter's owed requeue, and at N>1 the emitter's next emit would race the waiters' RE-subscription (the next wait's subscription is created only when the waiter's coroutine gets scheduled); one settling round guarantees every waiter parked on a fresh subscription before the next emit fires.
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): three re-runs at EMPEROR_SHUFFLE_DELTAS=1/7/42 with byte-identical output.
 ## Apply To
 * EmperorPenguin Pass3
 
@@ -44,9 +46,40 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: `EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `all 250
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `all 250
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `all 250
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `all 250

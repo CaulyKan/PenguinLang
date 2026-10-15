@@ -2,6 +2,8 @@
 ## Description
 M5 v0 pressure valve (design doc §10.1): a delta can be arbitrarily long while collection only happens at its boundary, so the allocator carries a hard cap (EMPEROR_GC_HARD_CAP) and a coroutine whose next charge would cross it parks on "wait for GC" — a CO_COND park that is NOT runnable. Four parallel churn coroutines each allocate far past the tiny 256KB cap; the valve parks them, the all-blocked delta converges into the boundary's stop-the-world collection, the freed garbage releases the parkers and the loop makes progress — no deadlock, no OOM. Runs under EMPEROR_THREADS=4 so the parks happen inside the parallel window (workers park mid-delta); the checksum keeps stdout deterministic. With the valve disabled this same shape is just an allocation storm.
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): three re-runs at EMPEROR_SHUFFLE_DELTAS=1/7/42 with byte-identical output.
 ## Apply To
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
@@ -46,9 +48,40 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: `EMPEROR_GC_HARD_CAP=262144 EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `sum 1099988
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=262144 EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `sum 1099988
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=262144 EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `sum 1099988
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_GC_HARD_CAP=262144 EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `sum 1099988

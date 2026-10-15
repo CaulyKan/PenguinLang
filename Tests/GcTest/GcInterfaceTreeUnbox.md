@@ -1,6 +1,6 @@
 # GcInterfaceTreeUnbox
 ## Description
-GC v2 receiver/unbox-idiom smoke: builds 300 expression trees (depth 30) of interface-typed nodes (`IE`), where every method body down-casts its immutable receiver via `cast<LitExpr>(this)` — the unbox alias-view idiom. The tree is held through `Option<IE>` fields and traversed after construction, so every old→young edge (write barrier), every boxed receiver slot and every Option payload must survive the tiny-nursery minors. This was the shape of the 3c cover-retirement receiver crash (poll-before-read, promotion-then-tombstone).
+Receiver/unbox-idiom smoke: builds 300 expression trees (depth 30) of interface-typed nodes (`IE`), where every method body down-casts its immutable receiver via `cast<LitExpr>(this)` — the unbox alias-view idiom. The tree is held through `Option<IE>` fields and traversed after construction, so every boxed receiver slot and every Option payload must survive every collection with the interface-alias view reading the same object. `EMPEROR_GC_YOUNG=65536` lowers the goal's churn slack so collections fire often during construction.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -67,7 +67,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `len=18300 head=x+1+1+1+1+

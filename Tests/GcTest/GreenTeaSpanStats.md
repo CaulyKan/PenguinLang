@@ -1,7 +1,6 @@
 # GreenTeaSpanStats
 ## Description
-GC v3 green-tea span-heap introspection end-to-end guard. Runs under
-`EMPEROR_GC_MODE=greentea` (the span collector) and asserts the additive
+Green-tea span-heap introspection end-to-end guard. Asserts the additive
 `gc_gt_stats(which)` counters behave: after allocating a wave of
 small objects and dropping them, an explicit collect must (a) run exactly
 one cycle (which=7 — the ~1MB wave stays far under the unified goal floor
@@ -10,9 +9,8 @@ cycle fires), (b) recycle whole spans wholesale (which=5 > 0 — the dead
 wave's spans emptied), (c) take the representative fast path (which=6 > 0
 — the kept object is its span's only gray slot), (d) report a live set
 bounded by the kept object (which=0 < 1MiB), and (e) the span-resident
-object survives the collect. Outside greentea mode all counters read 0
-(the sweep functions are greentea-driver-only, so the stub never
-increments). Pass2/Pass3 only: the extern binds the EmperorPenguin C
+object survives the collect.
+Pass2/Pass3 only: the extern binds the EmperorPenguin C
 runtime.
 
 ## Apply To
@@ -74,7 +72,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=greentea`
+Env: ``
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `cycles 1

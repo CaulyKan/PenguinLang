@@ -1,7 +1,7 @@
 # GcNoStackCoverRegionPin
 
 ## Description
-GC v2 cover-retirement guard for TYPED-REGION elements: the container's element walk must run at its mode-correct point in the minor. In the default REWRITE mode the walk is the LAST root step — after every pin-only source (frame mirrors, quarantine ring) — so elements evacuate and their slots are rewritten; under `EMPEROR_GC_REGION_PINS=1` (pins-only bisect) the walk runs in Phase A, BEFORE the root evacuations. The original ordering bug: the walk sat in Phase D behind the globals/frame-chain evacuations, so an object a container element pointed at got promoted first and the slot kept a frozen tombstone (`buf.push(n)` then reading `buf.at(0)` back after a minor resolves the object's stale pre-evacuation children — the List.at corruption family). The conservative main-stack cover used to mask this (recently-pushed values were also stack-visible and got pinned in Phase A); `EMPEROR_GC_NO_STACK_COVER=1` exposes the ordering bug. `EMPEROR_GC_YOUNG=65536` forces a minor every 64KB so pushes and read-backs cross dozens of polls. The container below mirrors `_utils.List` (`_malloc` buffer + `#__track_buffer` registration + `#__store` element writes).
+Typed-region element guard (the "NoStackCover" name is historical — the cover-off knob is gone with the generational machine): a container's raw malloc'd element buffer must be walked as a root on every collection, so an element's target stays live from `buf.push(n)` until every later `buf.at(...)` read-back. The historical failure shape: the element walk ran at the wrong point in the cycle, so an object a container element pointed at was judged through stale state (`buf.push(n)` then reading `buf.at(0)` back after a collection resolved the object's stale pre-collection children — the List.at corruption family); the conservative main-stack cover used to mask this (recently-pushed values were also stack-visible). `EMPEROR_GC_YOUNG=65536` lowers the goal's churn slack so collections fire every ~64KB and pushes and read-backs cross dozens of them. The container below mirrors `_utils.List` (`_malloc` buffer + `#__track_buffer` registration + `#__store` element writes).
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -86,7 +86,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_NO_STACK_COVER=1 EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `acc=33711

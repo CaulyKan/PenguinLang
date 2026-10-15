@@ -2,6 +2,8 @@
 ## Description
 Real multi-threading under EMPEROR_THREADS=4: two Pass-10-STEALABLE pure-compute coroutines are distributed at spawn time across the worker set and run in parallel within one delta; the parent joins both. The sum is order-independent, so the assertion is deterministic regardless of placement. (Verified alongside a 4x20M-iteration variant: N=1 ~207ms vs N=4 ~60ms with identical output — the speedup itself is not asserted here, only correctness.)
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): three re-runs at EMPEROR_SHUFFLE_DELTAS=1/7/42 with byte-identical output.
 ## Apply To
 * EmperorPenguin Pass3
 
@@ -33,9 +35,40 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: `EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `two 5995
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `two 5995
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `two 5995
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `two 5995

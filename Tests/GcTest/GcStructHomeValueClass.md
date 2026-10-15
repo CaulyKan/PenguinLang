@@ -1,6 +1,6 @@
 # GcStructHomeValueClass
 ## Description
-GC v2 cover-retirement smoke: immutable value-class / Option<string> registers (embedded references) promoted onto the struct-home storage model. `EMPEROR_GC_YOUNG=65536` forces a minor collection every 64KB, so the loop churns through dozens of minors while `Option<string>` temps, value-class fields (`Rec` inside `Holder`) and enum payloads cross safepoint polls as SSA values. Before the struct-home promotion these lived only in clang spill slots no frame descriptor could name — the conservative main-stack cover was the only net and the precise mode corrupted. Green on all four GC modes = the frame descriptors fully root the embedded references.
+Struct-home rooting smoke: immutable value-class / Option<string> registers (embedded references) live on the struct-home storage model, so their frame descriptors name them precisely. `EMPEROR_GC_YOUNG=65536` lowers the goal's churn slack so collections fire every ~64KB, and the loop churns through dozens of them while `Option<string>` temps, value-class fields (`Rec` inside `Holder`) and enum payloads cross safepoint polls as SSA values. Green = the frame descriptors fully root the embedded references.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -43,7 +43,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `acc=24370

@@ -18,6 +18,8 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 ## Compile           （Args / Env / Stdin / ExpectedExitCode / ExpectedStdout / ExpectedStderr）
 ## Run               （可选；负向编译测试省略）
 ## Build N           （多阶段构建，仅 Pass2/3；每阶段有自己的 Test Code）
+## Run N             （同一可执行文件的多次运行，每节有自己的 Args/Env/期望；
+                     BabyPenguin 只执行 Run 1）
 ## Run LSP           （仅 Prebuilt 的 LSP 会话）
 ## Skip              （无条件跳过）
 ```
@@ -37,7 +39,7 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 * **MemGate**（421–573）：派生前按估计峰值 RSS 的 FIFO 准入控制（pass2/3 元编译为 Heavy 5 GiB、Light 512 MiB、1.5 GiB `MemAvailable` 活下限、15 分钟放弃）——防止过度并行下 OOM 杀手（退出码 137）；也限制 `--parallel`。
 * **基线**：`build/testruns/latest.json`（默认对比）、`--compare-with none|latest|<path>`；`--baseline` 把本次运行记录为新基线（普通运行绝不覆盖它）。差异标记新失败/通过/跳过与时间/内存回归（`--time-regression-pct`、`--mem-regression-pct`，默认都 50%）。
 * **报告**：`SummaryReporter.WriteHtml`（2323）——自包含的 `summary.html`（统计卡、每编译器通过率、可过滤表格、每阶段详情浮层、暗色模式）；`WriteJson`（2799）写 `summary.json`。
-* 选项（596–648）：`--compilers`、`--filter <glob|substr>`、`--probe`（忽略 Apply To）、`--parallel <n>`（默认核数−1）、`--timeout-compile 600`、`--timeout-run 60`、`--env KEY=VAL`（如 `EMPEROR_GC_MODE=greentea`）、`--baseline`、回归阈值。
+* 选项（596–648）：`--compilers`、`--filter <glob|substr>`、`--probe`（忽略 Apply To）、`--parallel <n>`（默认核数−1）、`--timeout-compile 600`、`--timeout-run 60`、`--env KEY=VAL`（如 `EMPEROR_GC_STRESS_EVERY=64`）、`--baseline`、回归阈值。
 
 ### 进程内单元测试
 

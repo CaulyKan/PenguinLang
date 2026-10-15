@@ -1,6 +1,6 @@
 # GcEnumPayloadChurn
 ## Description
-GC v2 enum-payload stress: 50,000 iterations building `Expr` enums with string payloads, pattern-matching both variants, and concatenating into an accumulator. `EMPEROR_GC_YOUNG=65536` forces a minor on nearly every allocation — each enum crosses polls as an SSA struct whose payload reference the frame descriptor must root, and each promotion must rewrite the payload slot. Exercises the per-tag payload ref-map machinery end to end.
+Enum-payload stress: 50,000 iterations building `Expr` enums with string payloads, pattern-matching both variants, and concatenating into an accumulator. Each enum crosses safepoint polls as an SSA struct whose payload reference the frame descriptor must root, and the per-tag payload ref-map must dispatch to the right slot on every scan. `EMPEROR_GC_YOUNG=65536` lowers the goal's churn slack so collections fire on nearly every allocation.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -41,7 +41,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `len=388890 head=n0txn1tx

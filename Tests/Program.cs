@@ -65,16 +65,15 @@ public static class Program
         // --env KEY=VAL overrides: layered over every stage's Env (after the
         // markdown's own Env). Used to run an existing suite under a different
         // runtime knob without forking the .md files (e.g. the whole GcTest
-        // suite under EMPEROR_GC_MODE=greentea for the GC v3 gates).
+        // suite under EMPEROR_GC_STRESS_EVERY=64).
         if (opts.EnvOverrides.Count > 0)
         {
             foreach (var t in tests)
             {
                 var stages = new List<StageSpec>();
                 stages.Add(t.Compile);
-                if (t.Run != null) stages.Add(t.Run);
+                stages.AddRange(t.Runs);
                 stages.AddRange(t.Builds);
-                if (t.IsRunLsp && t.Run != null) { /* already added */ }
                 foreach (var kv in opts.EnvOverrides)
                     foreach (var st in stages)
                         st.Env[kv.Key] = kv.Value;
@@ -715,7 +714,7 @@ public sealed class Options
           --mem-regression-pct <pct>    Flag memory regressions > pct (default 50).
           --env KEY=VAL           (repeatable) Override an env var on every stage,
                                   after the markdown's own Env (e.g. run the GcTest
-                                  suite under EMPEROR_GC_MODE=greentea).
+                                  suite under EMPEROR_GC_STRESS_EVERY=64).
           --migrate ep-e2e|bp-behaviorial|all [--merge-regions]
                                   (Phase B/C) Migrate legacy C# tests into Tests/*.md.
           --help                  Show this help.
@@ -962,7 +961,14 @@ public sealed class MarkdownTestCase
     public List<ApplyTarget> ApplyTo = new();
     public string Code = "";
     public StageSpec Compile = new();
-    public StageSpec? Run;
+    /// <summary>Every run section (`## Run`, or `## Run 1`/`## Run 2`/… for
+    /// multiple): the SAME linked executable is run once per entry with that
+    /// entry's own Args/Env/Stdin/expectations. Empty = compile-only test.</summary>
+    public List<StageSpec> Runs = new();
+    /// <summary>Single-run view: the FIRST run section (null when none) — what
+    /// every single-run reader (Run LSP wiring, report, baseline timings) means
+    /// by "the run".</summary>
+    public StageSpec? Run => Runs.Count > 0 ? Runs[0] : null;
     /// <summary>Multi-stage builds (e.g. build a .penguin-lib, then an exe against it). When
     /// non-empty, these replace Compile; the Run stage runs the last build's exe artifact.</summary>
     public List<StageSpec> Builds = new();
@@ -1003,6 +1009,9 @@ public static class MarkdownTestParser
         // A `## Test Code` block applies to the NEXT `## Build N` (per-build code);
         // the last one is also the test's global Code (legacy single-compile / Run).
         string? pendingCode = null;
+        // Which run indices got an explicit `## Run`/`## Run N` header (multi-run
+        // tests must be dense from Run 1 — a gap is an authoring mistake).
+        var runHeaders = new HashSet<int>();
 
         for (int i = 0; i < lines.Length; i++)
         {
@@ -1017,10 +1026,18 @@ public static class MarkdownTestParser
             if (trimmed.StartsWith("## "))
             {
                 section = trimmed[3..].Trim().ToLowerInvariant();
-                if (section == "run" && tc.Run == null) tc.Run = new StageSpec();
+                if (section == "run" && tc.Runs.Count == 0)
+                {
+                    tc.Runs.Add(new StageSpec());
+                    runHeaders.Add(0);
+                }
                 if (section == "run lsp")
                 {
-                    tc.Run ??= new StageSpec();
+                    if (tc.Runs.Count == 0)
+                    {
+                        tc.Runs.Add(new StageSpec());
+                        runHeaders.Add(0);
+                    }
                     tc.IsRunLsp = true;
                 }
                 continue;
@@ -1043,6 +1060,21 @@ public static class MarkdownTestParser
                     tc.Builds[buildIdx].Code = pendingCode;
                     pendingCode = null;
                 }
+            }
+
+            // Multi-run: "## Run 1", "## Run 2", ... (1-based). An unnumbered
+            // `## Run` IS Run 1; numbered sections re-run the SAME linked
+            // executable with their own Args/Env/Stdin/expectations.
+            bool isRunIdx = section != null && section.StartsWith("run ") && section != "run lsp";
+            int runIdx = -1;
+            if (isRunIdx)
+            {
+                var idxStr = section![4..].Trim();
+                if (!int.TryParse(idxStr, out var ri) || ri < 1)
+                    throw new FormatException($"Bad section '## {section}': expected '## Run <N>' (1-based).");
+                runIdx = ri - 1;
+                while (tc.Runs.Count <= runIdx) tc.Runs.Add(new StageSpec());
+                runHeaders.Add(runIdx);
             }
 
             switch (section)
@@ -1079,9 +1111,13 @@ public static class MarkdownTestParser
                 case "run":
                 case "run lsp":
                 case string s when isBuild:
+                case string _ when isRunIdx:
                     {
                         if (section == "compile") tc.HasCompileSection = true;
-                        var stage = section == "compile" ? tc.Compile : isBuild ? tc.Builds[buildIdx] : tc.Run!;
+                        var stage = section == "compile" ? tc.Compile
+                                  : isBuild ? tc.Builds[buildIdx]
+                                  : isRunIdx ? tc.Runs[runIdx]
+                                  : tc.Runs[0];
                         var km = Regex.Match(trimmed, @"^([A-Za-z]+):\s*(.*)$");
                         if (km.Success)
                         {
@@ -1102,7 +1138,7 @@ public static class MarkdownTestParser
                                 break;
                             }
                         }
-                        ParseStageLine(trimmed, stage, isRun: section is "run" or "run lsp");
+                        ParseStageLine(trimmed, stage, isRun: section is "run" or "run lsp" || isRunIdx);
                         break;
                     }
             }
@@ -1123,6 +1159,24 @@ public static class MarkdownTestParser
             foreach (var t in tc.ApplyTo)
                 if (t.Compiler is CompilerKind.BabyPenguin or CompilerKind.BabyPenguinCs or CompilerKind.EmperorPenguinPass1)
                     throw new FormatException($"Multi-stage test '{tc.Name}' (## Build N) may only Apply To EmperorPenguin Pass2/Pass3, not {t.Compiler}.");
+        }
+        if (tc.Runs.Count > 1)
+        {
+            // Each run past the first re-executes the SAME linked executable with
+            // its own Args/Env — only compilers that link a native executable can
+            // do that. Interpreted backends (BabyPenguin) run the program inside
+            // the compile process (one execution, compile's args) and therefore
+            // execute ONLY Run 1; a multi-run test must Apply To at least one
+            // native backend or its extra runs execute nowhere.
+            if (tc.ApplyTo.All(t => t.Compiler is CompilerKind.BabyPenguin or CompilerKind.BabyPenguinCs))
+                throw new FormatException($"Multi-run test '{tc.Name}' (## Run N) must Apply To at least one compiler that links a native executable (EmperorPenguin Pass1/Pass2/Pass3, Prebuilt) — on BabyPenguin-only tests the extra runs would execute nowhere.");
+            // Dense from Run 1: a default-filled gap would silently execute with
+            // empty expectations — almost certainly an authoring mistake.
+            for (int i = 0; i < tc.Runs.Count; i++)
+                if (!runHeaders.Contains(i))
+                    throw new FormatException($"Multi-run test '{tc.Name}' is missing its '## Run {i + 1}' section (runs are dense from Run 1).");
+            if (tc.IsRunLsp)
+                throw new FormatException($"Run LSP test '{tc.Name}' must have exactly one run section (## Run).");
         }
         if (tc.IsRunLsp)
         {
@@ -1804,6 +1858,10 @@ public sealed class ComboResult
 
     public StageResult? Compile;
     public StageResult? Run;
+    /// <summary>Multi-run (## Run N) — one StageResult per executed run, in
+    /// order; Run is the first entry. Single-run tests have exactly one.</summary>
+    public List<StageResult> Runs = new();
+
     /// <summary>Multi-stage builds (## Build N) — one StageResult per build, in order.</summary>
     public List<StageResult> Builds = new();
 
@@ -1905,7 +1963,7 @@ public static class TestRunner
                 // (or the run) consume it. Skipped for failed/negative builds
                 // and when nothing downstream needs the linked artifact.
                 if (proc.ExitCode == 0 && !proc.TimedOut
-                    && (bi < test.Builds.Count - 1 || test.Run != null)
+                    && (bi < test.Builds.Count - 1 || test.Runs.Count > 0)
                     && backend.BuildLinkProcess(repoRoot, artifactPath, stage, workDir) is { } linkPsi)
                 {
                     linkPsi.Environment["TMPDIR"] = workDir;
@@ -1926,7 +1984,7 @@ public static class TestRunner
                 return result;
             }
             // All builds passed; run the last artifact if a Run stage exists.
-            if (test.Run == null)
+            if (test.Runs.Count == 0)
             {
                 result.Status = Status.Pass;
                 result.Message = "all builds ok (no run step)";
@@ -2010,7 +2068,7 @@ public static class TestRunner
         // Emission-only compilers write .ll; link the exe via the emperor
         // driver script before the run stage executes it (compile-only tests
         // never need the linked artifact).
-        if (!isNegative && failures.Count == 0 && test.Run != null
+        if (!isNegative && failures.Count == 0 && test.Runs.Count > 0
             && backend.BuildLinkProcess(repoRoot, exeFile, test.Compile, workDir) is { } exeLinkPsi)
         {
             exeLinkPsi.Environment["TMPDIR"] = workDir;
@@ -2041,7 +2099,7 @@ public static class TestRunner
         }
 
         // ── Run stage ──
-        if (test.Run == null)
+        if (test.Runs.Count == 0)
         {
             // Compile-only test (success expected, no run).
             result.Status = Status.Pass;
@@ -2054,19 +2112,22 @@ public static class TestRunner
     }
 
     // ── Run stage (shared by the single-compile and multi-stage paths) ──
+    // Executes EVERY `## Run`/`## Run N` section against the same linked
+    // executable, each with its own Args/Env/Stdin/expectations. Failures are
+    // prefixed "run N " only when the test defines more than one run.
     private static async Task<ComboResult> RunStageAsync(
         MarkdownTestCase test, ICompilerBackend backend, string repoRoot, string workDir, string exeFile,
         ComboResult result, Options opts, CancellationToken ct,
         ProcResult? compileProc, StageResult? compileStage, ProcessStartInfo? psiOverride = null)
     {
-        StageResult runStage;
-        string runStdout;
         if (backend.IsInterpreted && compileProc != null)
         {
-            // BabyPenguin already ran the program during the compile process; the
-            // process's peak RSS is already accounted for in the compile stage, so
-            // leave the run stage's peak at 0 to avoid double-counting.
-            runStage = new StageResult
+            // BabyPenguin already ran the program during the compile process
+            // (interpreted backends execute only Run 1 of a multi-run test —
+            // see the parse-time validation); the process's peak RSS is already
+            // accounted for in the compile stage, so the run stage's peak stays
+            // 0 to avoid double-counting.
+            var runStage = new StageResult
             {
                 ExitCode = compileProc.ExitCode,
                 DurationMs = 0,
@@ -2075,23 +2136,27 @@ public static class TestRunner
                 Stderr = compileProc.Stderr,
                 Command = compileStage?.Command ?? "",
             };
-            runStdout = compileProc.Stdout;
+            await EvaluateRunAsync(test, test.Runs[0], runStage, compileProc.Stdout, result, workDir, opts);
+            return result;
         }
-        else
+
+        if (!File.Exists(exeFile))
         {
-            if (!File.Exists(exeFile))
-            {
-                result.Status = Status.Error;
-                result.Message = $"compile exited 0 but produced no executable at {exeFile}";
-                await WriteResultJsonAsync(workDir, result);
-                return result;
-            }
-            var runPsi = psiOverride ?? backend.BuildRunProcess(exeFile, test.Run!, workDir)!;
+            result.Status = Status.Error;
+            result.Message = $"compile exited 0 but produced no executable at {exeFile}";
+            await WriteResultJsonAsync(workDir, result);
+            return result;
+        }
+
+        for (int ri = 0; ri < test.Runs.Count; ri++)
+        {
+            var spec = test.Runs[ri];
+            var runPsi = psiOverride ?? backend.BuildRunProcess(exeFile, spec, workDir)!;
             runPsi.Environment["TMPDIR"] = workDir;
             // Stdin goes through the same ${VAR} expansion as Args/Env, so LSP
             // sessions can open real files via file://${PENGUIN_ROOT}/... uris
             // (project-discovery tests need on-disk multi-file projects).
-            var runStdin = EnvHelper.Expand(test.Run!.Stdin, workDir);
+            var runStdin = EnvHelper.Expand(spec.Stdin, workDir);
             // The server consumes bytes, not patterns: expansion changed the
             // body sizes (${PENGUIN_ROOT} is longer on CI than on the author's
             // disk), so recompute the stdin framing counts — stale ones desync
@@ -2099,9 +2164,9 @@ public static class TestRunner
             // first size-mismatched frame. (The ExpectedStdout side wildcards
             // its counts with MATCH \d+ goldens instead.)
             if (test.IsRunLsp) runStdin = LspFraming.FixContentLengths(runStdin);
-            var runTimeoutSec = test.Run.TimeoutSec ?? opts.TimeoutRunSec;
-            var rproc = await ProcessRunner.RunAsync(runPsi, runStdin, runTimeoutSec * 1000, closeStdin: test.Run.StdinClose);
-            runStage = new StageResult
+            var runTimeoutSec = spec.TimeoutSec ?? opts.TimeoutRunSec;
+            var rproc = await ProcessRunner.RunAsync(runPsi, runStdin, runTimeoutSec * 1000, closeStdin: spec.StdinClose);
+            var runStage = new StageResult
             {
                 ExitCode = rproc.ExitCode,
                 DurationMs = rproc.Duration.TotalMilliseconds,
@@ -2111,33 +2176,63 @@ public static class TestRunner
                 Stderr = rproc.Stderr,
                 Command = "$ " + runPsi.FileName + " " + runPsi.Arguments,
             };
-            await WriteLogAsync(Path.Combine(workDir, "run.log"), runPsi, rproc);
-            runStdout = rproc.Stdout;
+            await WriteLogAsync(Path.Combine(workDir, test.Runs.Count > 1 ? $"run{ri + 1}.log" : "run.log"), runPsi, rproc);
+            await EvaluateRunAsync(test, spec, runStage, rproc.Stdout, result, workDir, opts, ri);
         }
-        result.Run = runStage;
-        result.ActualStdout = runStdout;
-        result.ExpectedStdout = test.Run!.ExpectedStdout.Operand ?? "";
+        return result;
+    }
+
+    // Evaluates ONE executed run against its expectations and folds the verdict
+    // into the combo result. The summary's expected/actual diff view shows run 1
+    // by default and is taken over by the FIRST failing run.
+    private static async Task EvaluateRunAsync(
+        MarkdownTestCase test, StageSpec spec, StageResult runStage, string runStdout,
+        ComboResult result, string workDir, Options opts, int runIndex = 0)
+    {
+        bool firstRun = result.Runs.Count == 0;
+        bool firstFailure = result.Status != Status.Fail && result.Status != Status.Error;
+        result.Runs.Add(runStage);
+        result.Run ??= runStage;
 
         var runFailures = new List<string>();
-        if (runStage.TimedOut) runFailures.Add($"run timed out after {test.Run.TimeoutSec ?? opts.TimeoutRunSec}s");
-        if (!CheckExit(test.Run!.ExpectedExitCode, runStage.ExitCode, out _))
-            runFailures.Add($"run exit {runStage.ExitCode} (expected {test.Run.ExpectedExitCode})");
+        // Single-run messages keep their historical shape ("run exit 1 …");
+        // multi-run failures say WHICH run ("run 2 exit 1 …").
+        string Pfx(string rest) => test.Runs.Count > 1 ? $"run {runIndex + 1} {rest}" : $"run {rest}";
+        if (runStage.TimedOut) runFailures.Add(Pfx($"timed out after {spec.TimeoutSec ?? opts.TimeoutRunSec}s"));
+        if (!CheckExit(spec.ExpectedExitCode, runStage.ExitCode, out _))
+            runFailures.Add(Pfx($"exit {runStage.ExitCode} (expected {spec.ExpectedExitCode})"));
         if (!runStage.TimedOut)
         {
-            if (!test.Run.ExpectedStdout.IsDiscard &&
-                !test.Run.ExpectedStdout.Evaluate(runStdout, out var r1) && r1.Length > 0)
-                runFailures.Add("run stdout: " + r1);
-            if (!test.Run.ExpectedStderr.IsDiscard &&
-                !test.Run.ExpectedStderr.Evaluate(runStage.Stderr, out var r2) && r2.Length > 0)
-                runFailures.Add("run stderr: " + r2);
+            if (!spec.ExpectedStdout.IsDiscard &&
+                !spec.ExpectedStdout.Evaluate(runStdout, out var r1) && r1.Length > 0)
+                runFailures.Add(Pfx("stdout: " + r1));
+            if (!spec.ExpectedStderr.IsDiscard &&
+                !spec.ExpectedStderr.Evaluate(runStage.Stderr, out var r2) && r2.Length > 0)
+                runFailures.Add(Pfx("stderr: " + r2));
         }
         runStage.Failures = runFailures.ToArray();
 
-        if (runFailures.Count == 0) { result.Status = Status.Pass; result.Message = "ok"; }
-        else { result.Status = runStage.TimedOut ? Status.Error : Status.Fail; result.Message = string.Join("; ", runFailures); }
+        if (firstRun || (runFailures.Count > 0 && firstFailure))
+        {
+            result.ExpectedStdout = spec.ExpectedStdout.Operand ?? "";
+            result.ActualStdout = runStdout;
+        }
+        if (runFailures.Count > 0)
+        {
+            result.Status = runStage.TimedOut ? Status.Error : Status.Fail;
+            // A passing earlier run left "ok" behind — drop it, not "ok; run 2 …".
+            var prior = result.Message == "ok" ? "" : result.Message;
+            result.Message = prior.Length > 0
+                ? prior + "; " + string.Join("; ", runFailures)
+                : string.Join("; ", runFailures);
+        }
+        else if (firstRun)
+        {
+            result.Status = Status.Pass;
+            result.Message = "ok";
+        }
 
         await WriteResultJsonAsync(workDir, result);
-        return result;
     }
 
     private static bool CheckExit(string expected, int actual, out string reason)
@@ -2186,6 +2281,7 @@ public static class TestRunner
             actualStdout = r.ActualStdout,
             compile = r.Compile != null ? StageDto(r.Compile) : null,
             run = r.Run != null ? StageDto(r.Run) : null,
+            runs = r.Runs.Count > 1 ? r.Runs.Select(StageDto).ToArray() : null,
         };
         await File.WriteAllTextAsync(Path.Combine(workDir, "result.json"),
             JsonSerializer.Serialize(dto, JsonOpts));
@@ -2528,11 +2624,13 @@ public static class SummaryReporter
             sb.Append("<section class='csec'>");
             sb.Append($"<h3 class='csec-h'><span class='mono'>{HE(r.Compiler.Display())}</span><span class='pill {status}'>{status}</span>{BaselineMarkBadgeInline(r, marks)}</h3>");
             sb.Append(StageHtml("Compile", r.Compile));
-            sb.Append(StageHtml("Run", r.Run));
+            for (int ri = 0; ri < r.Runs.Count; ri++)
+                sb.Append(StageHtml(r.Runs.Count > 1 ? $"Run {ri + 1}" : "Run", r.Runs[ri]));
             var rel = Rel(runDir, r.WorkDir);
             sb.Append("<div class='lbl'>Artifacts</div>");
             sb.Append($"<a class='fl' href='{HE(rel)}/compile.log' target='_blank'>compile.log</a>");
-            if (r.Run != null) sb.Append($"<a class='fl' href='{HE(rel)}/run.log' target='_blank'>run.log</a>");
+            for (int ri = 0; ri < r.Runs.Count; ri++)
+                sb.Append($"<a class='fl' href='{HE(rel)}/{(r.Runs.Count > 1 ? $"run{ri + 1}" : "run")}.log' target='_blank'>{(r.Runs.Count > 1 ? $"run{ri + 1}" : "run")}.log</a>");
             sb.Append($"<a class='fl' href='{HE(rel)}/result.json' target='_blank'>result.json</a>");
             sb.Append($"<div class='mono' style='font-size:11px;color:var(--muted);margin-top:6px'>{HE(rel)}/</div>");
             sb.Append("</section>");
@@ -2546,7 +2644,8 @@ public static class SummaryReporter
         var sb = new StringBuilder();
         sb.Append("<h3 class='blk'>Expectations</h3>");
         sb.Append(StageExpectHtml("Compile", spec.Compile, false));
-        if (spec.Run != null) sb.Append(StageExpectHtml("Run", spec.Run, true));
+        for (int ri = 0; ri < spec.Runs.Count; ri++)
+            sb.Append(StageExpectHtml(spec.Runs.Count > 1 ? $"Run {ri + 1}" : "Run", spec.Runs[ri], true));
         return sb.ToString();
     }
 

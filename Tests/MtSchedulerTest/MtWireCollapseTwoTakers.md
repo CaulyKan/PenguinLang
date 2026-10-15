@@ -2,6 +2,8 @@
 ## Description
 Wire collapse + competing consumers in one shape: two writes in the SAME delta collapse to the final value (one transaction), the next delta's write is a second transaction — two single-take consumers drain the two transactions in order; which consumer gets which is nondeterministic, the sum is not (2+3=5, the design's set-comparison mode). Pins that same-delta collapse loses the shadowed value (1) entirely for takers while the second write lands as its own transaction — and that the directed wake clears BOTH parked takers per boundary commit with stale handles no-op'ing.
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): three re-runs at EMPEROR_SHUFFLE_DELTAS=1/7/42 with byte-identical output.
 ## Apply To
 * EmperorPenguin Pass3
 
@@ -35,9 +37,40 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: `EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `collapse 5
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `collapse 5
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `collapse 5
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_THREADS=4 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `collapse 5

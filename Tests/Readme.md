@@ -53,7 +53,7 @@ ExpectedStderr: DISCARD
 | `## Apply To` | **required** | Bullet list of compilers (`*` or `-`). At least one. |
 | `## Test Code` | **required** | A fenced code block with the penguin source. |
 | `## Compile` | **required**¹ | Compile-stage expectations. |
-| `## Run` | optional | Run-stage expectations. Omit for negative/compile-only tests. |
+| `## Run` | optional | Run-stage expectations. Omit for negative/compile-only tests. Numbered sections (`## Run 1`, `## Run 2`, …) re-run the SAME executable with per-run Args/Env/expectations — see *Multiple runs* below. |
 | `## Run LSP` | optional² | Prebuilt-exe LSP session — **no compile stage** (replaces `## Compile`; the two are mutually exclusive). `Args` names the server binary (e.g. `` `build/linux/penguin-lsp` ``, built by `make lsp`); `Stdin` is the JSON-RPC session; `ExpectedStdout` asserts the response frames. `Stdin` supports the same `${VAR}` expansion as `Args`/`Env` (`${PENGUIN_ROOT}`, `${WORKDIR}`) — use `file://${PENGUIN_ROOT}/...` uris to open real on-disk files (project-discovery tests point at `Tests/LspTest/fixtures/` trees). `ExpectedStdout`/`ExpectedStderr` operands expand env `${VAR}` tokens too (not `${WORKDIR}` — expectations parse before a workdir exists), so goldens may carry `${PENGUIN_ROOT}` inside frames that echo an opened uri. Assert framed streams with **`ExpectedStdout: MATCH`** — the operand is matched literally except regex holes (`\d+`, `\s*`, `.*`, … see the MATCH docs in Program.cs), so LSP `Content-Length` counts are written as `\d+` instead of a number: counts vary with the expanded ${PENGUIN_ROOT} length and no hardcoded value fits every machine (the 4 CI regressions of 2026-09-15). The runner recomputes the **Stdin** frame counts after expansion — the server consumes real bytes, stale counts desync its framer; a frame whose terminator never arrives (deliberately partial stdin feed) is left untouched. Extra key: `StdinClose: false` keeps the stdin pipe OPEN while awaiting exit — for sessions that end via their own `exit` frame, not stdin EOF (the closed form can never exercise the keep-waiting scheduling path). Apply To must be `Prebuilt` only. ¹Omitted by `## Run LSP` tests. ²The runner starts the server from the repo root (the LSP resolves its stdlib cwd-first). |
 
 ### `## Apply To`
@@ -210,6 +210,45 @@ ExpectedStderr: DISCARD
 - The `## Run` stage runs the **last** build's artifact.
 - Multi-stage tests may **only** Apply To `EmperorPenguin Pass2/Pass3`
   (BabyPenguin is single-process; Pass1 is VM/cs-driven and cannot dyn-link).
+
+### Multiple runs (`## Run N`)
+
+A test may define **several run stages against the SAME compiled executable**:
+number the sections `## Run 1`, `## Run 2`, … (an unnumbered `## Run` IS
+`## Run 1`). The executable is compiled (and linked) once, then run once per
+section with that section's own `Args`/`Env`/`Stdin`/`Timeout`/`StdinClose`
+and its own `ExpectedExitCode`/`ExpectedStdout`/`ExpectedStderr` — the
+typical use is re-running one program under different runtime knobs
+(env vars) or argument sets without recompiling:
+
+```
+## Run 1
+Env: `KNOB=alpha`
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `alpha
+`
+ExpectedStderr: DISCARD
+
+## Run 2
+Env: `KNOB=beta`
+ExpectedExitCode: 3
+ExpectedStdout: EQUALS `beta
+`
+ExpectedStderr: DISCARD
+```
+
+- Every run must PASS its own expectations; a failure in any run fails the
+  combo with a `run N`-prefixed message (`run 2 exit 1 (expected 0)`).
+- Runs are dense from `## Run 1` — a gap is a parse error.
+- Artifacts: run 1 writes `run.log`, run N writes `runN.log`; the summary's
+  expected/actual view shows run 1, taken over by the first failing run.
+- Runs past the first need a compiler that links a native executable — a
+  multi-run test must Apply To at least one of `EmperorPenguin
+  Pass1/Pass2/Pass3`/`Prebuilt`. The interpreted BabyPenguin backends run
+  the program inside the compile process and therefore execute **only
+  Run 1** (the extra runs are silently skipped there). Combined with
+  `## Run LSP`: exactly one run.
+- Works with multi-stage builds: the runs execute the LAST build's artifact.
 
 #### Match modes
 

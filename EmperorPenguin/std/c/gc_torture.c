@@ -12,6 +12,25 @@
  *   clang -I../include -g -fsanitize=address -o /tmp/gc_torture gc_torture.c gc.c gc_span.c scheduler.c
  * (scheduler.c provides the per-thread interop accessors;
  *  pull core_builtin.c too if the link demands it.)
+ *
+ * The exact managed-byte DELTA assertions below are only meaningful when no
+ * stale pointer to the object under test survives in a SCANNED word: the
+ * conservative stack cover reads every word of every live frame, so one
+ * incidental hit retains the object and the delta misses by exactly one
+ * slot. That makes them ADDRESS-DEPENDENT — unlike the graph/content checks
+ * (checksums, interior-pointer reads, GT-VERIFY invariants), which hold under
+ * any layout. ASLR re-rolls those addresses on every run, so a build whose
+ * data segment shifted by a few hundred bytes can flip a delta assertion
+ * nondeterministically (observed: a runtime change that moved the binary's
+ * brk start, 50/50 vs 28/50 pass on the same source). Run the delta suite
+ * with the address space pinned:
+ *
+ *   setarch -R /tmp/gc_torture        (alias: setarch $(uname -m) -R ...)
+ *
+ * Same spirit as the ASan option below: pin the environment the assertions
+ * implicitly assume. ASan runs additionally need
+ *   ASAN_OPTIONS=detect_stack_use_after_return=0
+ * (fake stacks put locals where the cover cannot see them).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -154,6 +173,43 @@ static void plant_poison(TOuter* o, TShape* e2) {
     memcpy(e2->payload, &s4, sizeof(void*));
 }
 
+/* Value-integrity check in its OWN frame: the comparison chain's
+ * expression temps hold copies of the target pointers — in the caller's
+ * frame those spills are LIVE stack words (scrub() only clears the DEAD
+ * frames below sp), so the conservative cover would retain the very
+ * object a later assertion frees. In a helper, the temps die with the
+ * frame and scrub() erases them. */
+static int targets_intact(void** s1, void** s2, void** s5, uint64_t magic) {
+    return s1[0] == (void*)magic && s2[0] == (void*)(magic + 1) &&
+           s5[0] == (void*)(magic + 4);
+}
+
+/* Publish a fresh string into E's bare-ptr payload variant from a HELPER
+ * frame. The raw pointer must never appear in refmap_section's LIVE frame:
+ * the always-on conservative cover reads every live-frame word, so a local
+ * copy would pin the target and the tag-flip assertion below would measure
+ * this build's frame layout instead of the enum dispatch (four spilled
+ * copies of a dead local pinned it on master, 2026-10). Returns the
+ * published target's heap charge. */
+static size_t shape_publish_ptr(TShape* e) {
+    size_t live = 0;
+    void** s = (void**)track_alloc(32, 1, &live);
+    s[0] = (void*)0xC0FFEE02;
+    e->tag = 1; /* bare-ptr payload variant */
+    memcpy(e->payload, &s, sizeof(void*));
+    if (s[0] != (void*)0xC0FFEE02) {
+        fprintf(stderr, "FAIL: payload target corrupted at publish\n");
+        exit(1);
+    }
+    return live;
+}
+
+/* Flip E to the no-payload variant from a helper frame (see
+ * shape_publish_ptr). */
+static void shape_flip_none(TShape* e) {
+    e->tag = 0;
+}
+
 static int refmap_section(void) {
     /* Loose precondition: only the kept chain (KEPT-1 nodes) plus stale-scan
      * slop may be live; the exactness below is measured in DELTAS. */
@@ -182,17 +238,15 @@ static int refmap_section(void) {
     i2->name = NULL;
     void** s1 = (void**)track_alloc(32, 1, &live);
     void** s2 = (void**)track_alloc(32, 1, &live);
-    void** s3 = (void**)track_alloc(32, 1, &live);
     void** s5 = (void**)track_alloc(32, 1, &live);
     s1[0] = (void*)magic;
     s2[0] = (void*)(magic + 1);
-    s3[0] = (void*)(magic + 2);
     s5[0] = (void*)(magic + 4);
 
     TShape* e1 = (TShape*)track_alloc((int)sizeof(TShape), 0, &live);
     e1->meta = &META_SHAPE;
-    e1->tag = 1; /* bare-ptr payload variant */
-    memcpy(e1->payload, &s3, sizeof(void*));
+    e1->tag = 0; /* flipped to the ptr variant by shape_publish_ptr below */
+    e1->payload[0] = (char)0xAA;
     TShape* e2 = (TShape*)track_alloc((int)sizeof(TShape), 0, &live);
     e2->meta = &META_SHAPE;
     e2->tag = 0; /* no-payload variant: the S4 bytes below must be ignored */
@@ -210,6 +264,7 @@ static int refmap_section(void) {
     o->in.name = s1;
     o->s = s2;
     i2->name = s5;
+    live += shape_publish_ptr(e1);
 
     scrub();
     CLEAR_CALLEE_SAVED();
@@ -227,50 +282,40 @@ static int refmap_section(void) {
                 (unsigned long long)before);
         return 1;
     }
-    if (s1[0] != (void*)magic || s2[0] != (void*)(magic + 1) ||
-        s3[0] != (void*)(magic + 2) || s5[0] != (void*)(magic + 4)) {
+    if (!targets_intact(s1, s2, s5, magic)) {
         fprintf(stderr, "FAIL: refmap graph target corrupted\n");
         return 1;
     }
     printf("refmap section: precise delta exact (%zu bytes live, poison ignored)\n", live);
 
     /* Tag flip: e1 goes from the ptr-payload variant to "none" while its
-     * payload bytes still hold S3 — S3 must now be collected. The s3 LOCAL
-     * slot must be cleared too: the still-conservative stack scan would
-     * otherwise retain its target regardless of the walk's precision. */
+     * payload bytes still hold the target — the precise walk must now
+     * skip those bytes and the target must be collected. The flip (and
+     * the publish above) run in helper frames so no live word of THIS
+     * frame ever held the target pointer. */
     uint64_t before2 = _emperor_gc_info();
-    e1->tag = 0;
-    s3 = NULL;
+    shape_flip_none(e1);
     scrub();
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
     uint64_t after2 = _emperor_gc_info();
-    size_t s3_total = _emperor_gc_alloc_charge(32);
-    if (after2 != before2 - s3_total) {
+    size_t payload_total = _emperor_gc_alloc_charge(32);
+    if (after2 != before2 - payload_total) {
         fprintf(stderr, "FAIL: stale payload retained after tag flip "
                 "(delta %lld, want -%zu)\n",
-                (long long)(after2 - before2), s3_total);
+                (long long)(after2 - before2), payload_total);
         return 1;
     }
     printf("refmap section: enum tag flip frees stale payload target\n");
     /* The rooted handles are STACK locals — unregister before returning or
-     * the next collect (the generational section) dereferences a dead
-     * frame (ASan: stack-use-after-return; a minor would REWRITE it). */
+     * the next collect (the greentea section) dereferences a dead frame
+     * (ASan: stack-use-after-return). */
     _emperor_gc_remove_root((void**)&o);
     _emperor_gc_remove_root((void**)&i2);
     _emperor_gc_remove_root((void**)&e1);
     _emperor_gc_remove_root((void**)&e2);
     return 0;
 }
-
-
-/* G8 — AUTO minor under load: no explicit collect (no conservative main-
- * stack cover), 16MB of young churn across ~256 chunks, survivors rooted
- * through precise global roots only. This is the shape the fd-parked md
- * test exercises: bug shows only at default budget scale, not at tiny
- * budgets (reproduced: EMPEROR_GC_YOUNG=64K hides it). */
-
-
 
 
 static Node* kept_head = NULL;
@@ -282,11 +327,12 @@ static uint64_t kept_checksum(void) {
     return s;
 }
 
-/* ---- Generational section (GC v2 phase 3b) ----
- * Only meaningful under EMPEROR_GC_MODE=precise (the nursery). Handles live
- * in GLOBAL roots and file statics (never live-stack locals): the explicit
- * collect's conservative cover would pin anything the active frames still
- * reference, and these tests assert MOVEMENT. */
+/* ---- Finalizer-observable objects ----
+ * A destructor-stamped metadata class shared by the correctness sections
+ * and the finstorm benchmark. Handles live in GLOBAL roots and file
+ * statics (never live-stack locals): the explicit collect's conservative
+ * cover would pin anything the active frames still reference, and the
+ * exact-delta assertions must not depend on frame layout. */
 
 static int g_dispose_ran = 0;
 
@@ -309,15 +355,14 @@ static const EmperorClassMetadata META_DISPOSE = {
 
 
 
-/* ---- Green-tea span heap section (GC v3) ----
- * EMPEROR_GC_MODE=greentea only. Covers the span/malloc-path split at the
- * 512B slot boundary: a mixed small<->large graph (span slot <-> malloc
- * block, both directions) must survive churn + explicit collects byte-exact
- * (M1's per-object marking resolves through BOTH heaps); dead span slots
- * run their finalizers exactly once; and dropping the graph returns
- * gc_info EXACTLY to the pre-section baseline (dead spans reclaimed
- * wholesale, no slot leakage). Exact deltas hold because span slots are
- * charged by size class via _emperor_gc_alloc_charge. */
+/* ---- Green-tea span heap section ----
+ * Covers the span/malloc-path split at the 512B slot boundary: a mixed
+ * small<->large graph (span slot <-> malloc block, both directions) must
+ * survive churn + explicit collects byte-exact; dead span slots run their
+ * finalizers exactly once; and dropping the graph returns gc_info EXACTLY
+ * to the pre-section baseline (dead spans reclaimed wholesale, no slot
+ * leakage). Exact deltas hold because span slots are charged by size
+ * class via _emperor_gc_alloc_charge. */
 typedef struct GtSmallNode {
     const void* meta;         /* NULL: conservative body scan, like Node */
     struct GtBigNode* big;    /* span -> malloc edge (600B body: large)   */
@@ -347,14 +392,6 @@ static const EmperorClassMetadata META_GT_DISPOSE = {
     "GtDispose", 40, 0, NULL, NULL, NULL, 0, NULL, gt_dispose, NULL};
 
 static int greentea_section(void) {
-    const char* mode = getenv("EMPEROR_GC_MODE");
-    int gt = mode == NULL || mode[0] == '\0' ||
-             strcmp(mode, "greentea") == 0 || strcmp(mode, "default") == 0;
-    if (!gt) {
-        printf("greentea section: skipped (not in greentea mode)\n");
-        return 0;
-    }
-
     scrub();
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
@@ -368,7 +405,7 @@ static int greentea_section(void) {
     sm->meta = NULL; sm->big = bg; sm->v[0] = 0xAA112233445566ULL; sm->v[1] = 2;
     bg->meta = NULL; bg->back = sm; bg->v[0] = 0xBB778899AABBCCULL;
     st[0] = 'g'; st[1] = '\0';
-    /* Root via the registry like the generational section's statics: a
+    /* Root via the registry like the finalizer section's statics: a
      * stack-local handle is only covered by the conservative scan up to
      * _emperor_gc_init's anchor — locals above it are legitimately
      * uncoverable (the emitted main passes llvm.frameaddress, the frame
@@ -460,10 +497,15 @@ static int greentea_section(void) {
         free(all);
     }
 
-    /* Wholesale reclaim: drop the graph, exact return to baseline. */
+    /* Wholesale reclaim: drop the graph, exact return to baseline. The
+     * local clears go through volatile lvalues — plain dead stores would
+     * be optimized away and the conservative cover would read the stale
+     * pointers (same family as the refmap section's tag-flip clear). */
     _emperor_gc_remove_root((void**)&sm);
     _emperor_gc_remove_root((void**)&st);
-    sm = NULL; bg = NULL; st = NULL; /* locals: the conservative cover reads them */
+    *(volatile void**)&sm = NULL;
+    *(volatile void**)&bg = NULL;
+    *(volatile void**)&st = NULL;
     scrub();
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
@@ -497,7 +539,7 @@ static int greentea_section(void) {
  * gc_bench.sh tabulates per collector mode. The *_WORKLOADS list at the end
  * is duplicated in gc_bench.sh — keep them in sync.
  *
- *   churn       — infant-mortality churn (the v2 nursery's home turf)
+ *   churn       — infant-mortality churn
  *   ptrdense    — pointer-dense: persistent linked graph + relink churn
  *   container   — typed-region (container buffer) element churn
  *   deepsurvive — deep survival: a growing persistent forest + churn

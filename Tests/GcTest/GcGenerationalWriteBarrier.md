@@ -1,6 +1,6 @@
 # GcGenerationalWriteBarrier
 ## Description
-Generational GC (GC v2 phase 3b) write-barrier end-to-end guard. `EMPEROR_GC_MODE=precise` turns on the nursery; an explicit `gc_collect()` promotes the Holder into the old generation (first-survival promotion), then every loop iteration stores a FRESH young string into the OLD object's field — exactly the old→young edge the emitter's `_emperor_gc_write_barrier` records into the remembered set. `EMPEROR_GC_NO_RS_FALLBACK=1` disables the whole-old-generation scan fallback, so a missing/incorrect barrier leaves the field pointing at a recycled nursery address and the output corrupts (or crashes). Each iteration immediately collects again (a minor that must rewrite `h.s` to the promoted copy). Green = barrier emission, remembered set, promotion, and slot rewriting all correct. Known-good on BabyPenguin's semantics; native-only because the barrier is EmperorPenguin runtime machinery (BabyPenguin ignores the env vars and passes trivially — that combination is not in Apply To).
+Store-into-live-object survival guard (historically the v2 write-barrier end-to-end test; the barrier machinery itself is gone — the collector is single-generation). An explicit `gc_collect()` marks the Holder live, then every loop iteration replaces its field with a FRESH string and collects again immediately: a cycle that misjudges the just-stored target (mark order, quarantine cover, sweep phasing) reads a recycled slot and prints CORRUPT or a wrong final value. The interleaved `churn` allocates ~300 short strings between iterations to keep the heap churning across each collect. Green = field stores into live objects survive immediate collections byte-exact. Native-only because `gc_collect()` is EmperorPenguin runtime machinery (BabyPenguin has no C runtime — that combination is not in Apply To).
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -56,7 +56,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_NO_RS_FALLBACK=1`
+Env: ``
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `young-59

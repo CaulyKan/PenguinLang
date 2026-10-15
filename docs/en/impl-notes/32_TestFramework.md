@@ -18,6 +18,8 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 ## Compile           (Args / Env / Stdin / ExpectedExitCode / ExpectedStdout / ExpectedStderr)
 ## Run               (optional; omit for negative compile tests)
 ## Build N           (multi-stage builds, Pass2/3 only; each stage has its own Test Code)
+## Run N             (multiple runs of the SAME exe, each with its own Args/Env/
+                     expectations; BabyPenguin executes Run 1 only)
 ## Run LSP           (Prebuilt-only LSP sessions)
 ## Skip              (unconditional skip)
 ```
@@ -37,7 +39,7 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 * **MemGate** (421–573): FIFO admission control on estimated peak RSS before spawning (Heavy 5 GiB for pass2/3 meta compiles, Light 512 MiB, live floor 1.5 GiB `MemAvailable`, 15-min give-up) — prevents the OOM killer (exit 137) under oversubscribed parallelism; also caps `--parallel`.
 * **Baselines**: `build/testruns/latest.json` (default comparison), `--compare-with none|latest|<path>`; `--baseline` records the run as the new baseline (plain runs never overwrite it). Diffs flag new failures/passes/skips and time/memory regressions (`--time-regression-pct`, `--mem-regression-pct`, both default 50%).
 * **Reporting**: `SummaryReporter.WriteHtml` (2323) — a self-contained `summary.html` (stat cards, per-compiler pass %, filterable table, per-stage detail overlays, dark mode); `WriteJson` (2799) writes `summary.json`.
-* Options (596–648): `--compilers`, `--filter <glob|substr>`, `--probe` (ignore Apply To), `--parallel <n>` (default cores−1), `--timeout-compile 600`, `--timeout-run 60`, `--env KEY=VAL` (e.g. `EMPEROR_GC_MODE=greentea`), `--baseline`, regression thresholds.
+* Options (596–648): `--compilers`, `--filter <glob|substr>`, `--probe` (ignore Apply To), `--parallel <n>` (default cores−1), `--timeout-compile 600`, `--timeout-run 60`, `--env KEY=VAL` (e.g. `EMPEROR_GC_STRESS_EVERY=64`), `--baseline`, regression thresholds.
 
 ### In-process unit tests
 

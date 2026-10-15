@@ -1429,7 +1429,7 @@ All 29 `IRInstruction` variants have a corresponding `emit_*` lowering in the `e
 | File | Contents |
 |------|------|
 | `std/c/core_builtin.c` | built-in function implementations (print, string operations, GC allocation, type conversions, file I/O) |
-| `std/c/gc.c` | conservative mark-sweep GC (stack scanning, root registration, finalizer invocation) |
+| `std/c/gc.c` | green-tea collector (root discovery, marking, sweep, heap goal, safepoint polls) |
 | `std/c/penguinlang_interop.c` | interop helpers: `_emperor_vtable_lookup`, `_emperor_isinstance`, `_emperor_check_class` |
 | `std/c/scheduler.c` | coroutine scheduler (`_emperor_sched_run`, `_emperor_co_spawn_fn0`) |
 | `std/c/meta_stubs.c` / `std/c/penguin_jit.cpp` | metaprogramming JIT host |

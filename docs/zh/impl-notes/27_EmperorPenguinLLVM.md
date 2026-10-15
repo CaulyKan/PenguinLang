@@ -1429,7 +1429,7 @@ LLVM Module 文本（.ll）
 | 文件 | 内容 |
 |------|------|
 | `std/c/core_builtin.c` | 内置函数实现（print、字符串操作、GC 分配、类型转换、文件 I/O） |
-| `std/c/gc.c` | 保守标记-清除 GC（栈扫描、根注册、finalizer 调用） |
+| `std/c/gc.c` | green-tea 收集器（根发现、标记、清扫、堆目标、安全点轮询） |
 | `std/c/penguinlang_interop.c` | 互操作辅助：`_emperor_vtable_lookup`、`_emperor_isinstance`、`_emperor_check_class` |
 | `std/c/scheduler.c` | 协程调度器（`_emperor_sched_run`、`_emperor_co_spawn_fn0`） |
 | `std/c/meta_stubs.c` / `std/c/penguin_jit.cpp` | 元编程 JIT 宿主 |

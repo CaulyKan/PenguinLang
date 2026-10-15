@@ -1,6 +1,6 @@
 # GcEnumGlobalState
 ## Description
-GC v2: a mutable ENUM global (`cur: mut Shape`) is a value-class global registered as a scan region; `getcur()` returns it by value (struct home) and `setcur` stores a fresh variant. Under a tiny nursery the global's inline payload (the `label` string) must be rewritten in place by every minor — a missed region walk or a bad enum ref-map leaves the payload pointing at recycled nursery memory.
+A mutable ENUM global (`cur: mut Shape`) is a value-class global registered as a scan region; `getcur()` returns it by value (struct home) and `setcur` stores a fresh variant. The global's inline payload (the `label` string) must be re-walked by every collection — a missed region walk or a bad enum ref-map leaves the payload unmarked and the label reads recycled memory. `EMPEROR_GC_YOUNG=65536` lowers the goal's churn slack so collections fire often.
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -29,7 +29,7 @@ ExpectedStderr: DISCARD
 
 ## Run
 Args: ``
-Env: `EMPEROR_GC_MODE=precise EMPEROR_GC_YOUNG=65536`
+Env: `EMPEROR_GC_YOUNG=65536`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `done

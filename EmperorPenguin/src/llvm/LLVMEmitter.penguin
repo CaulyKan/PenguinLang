@@ -315,7 +315,7 @@ class LLVMEmitter {
     has_boxing: mut bool = false;
     has_main: mut bool = false;
     needs_memset: mut bool = false;
-    // GC v2 3b: generational write barriers + typed buffer tracking.
+    // Typed buffer tracking (container element storage).
     needs_gc_track: mut bool = false;
     needs_gc_track_bare: mut bool = false;
     // GC v2 3c: PIN-mirror slots (scalar ref/string params + ref receivers)
@@ -4368,11 +4368,6 @@ class LLVMEmitter {
                 let field_ptr: string = this.gep_class_field(base_ptr, layout, fl);
                 let coerced_value: string = this.coerce_operand(value_resolved, store_type);
                 this.emit_line("  store " + store_type + " " + coerced_value + ", ptr " + field_ptr);
-                // GC v3 (M4c): no write barrier — the collector is
-                // single-generation and stop-the-world on the only mutator
-                // (spec 25_EmperorPenguinGC.md §11). The runtime keeps
-                // no-op barrier symbols so previously emitted .ll still
-                // links and runs.
                 return;
             }
         }
@@ -4382,7 +4377,6 @@ class LLVMEmitter {
         // store needs the load (mirrors the layout branch's coerce_operand).
         let coerced_value: string = this.coerce_operand(value_resolved, llvm_type);
         this.emit_line("  store " + llvm_type + " " + coerced_value + ", ptr " + obj_resolved);
-        // GC v3 (M4c): no write barrier — see the layout branch above.
     }
 
     // ADDRESS_OF: yield the storage address of a value-backed operand (u64).

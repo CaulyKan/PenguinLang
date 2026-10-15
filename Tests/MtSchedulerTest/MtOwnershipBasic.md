@@ -2,6 +2,8 @@
 ## Description
 Ownership<T> v1 (design doc §9): the explicit exclusive-transfer wrapper. Construction `new Ownership<T>(v)` passes the binder's whole-graph freshness check (v = a `new` expression here); `.move()` returns the payload and consumes the wrapper (is_owned flips to false); the moved-out Cell is then used normally — the receiver became the sole holder. A second `.move()` on the consumed wrapper is a runtime error (exit 1, code 101) — covered by MtOwnershipDoubleMove; aliasing construction is rejected at compile time — MtOwnershipAliasRejected. Pass 10 treats Ownership<U> as Shareable for ANY payload U, so an Ownership argument makes its spawn STEALABLE even though the payload is a mutable reference class — the whole point: the ONLY sanctioned way to move a reference across a thread boundary (verified by MtOwnershipCrossSpawn).
 
+
+Multi-run net (migrated from the CI MT-scheduler regression step): one re-run at EMPEROR_THREADS=4 and three at EMPEROR_SHUFFLE_DELTAS=1/7/42 (EMPEROR_THREADS=1) — the output must stay byte-identical in every configuration.
 ## Apply To
 * EmperorPenguin Pass3
 
@@ -24,9 +26,50 @@ ExpectedExitCode: 0
 ExpectedStdout: DISCARD
 ExpectedStderr: DISCARD
 
-## Run
+## Run 1
 Args: ``
 Env: ``
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `moved 42 owned=false
+`
+ExpectedStderr: DISCARD
+
+
+
+## Run 2
+Args: ``
+Env: `EMPEROR_THREADS=4`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `moved 42 owned=false
+`
+ExpectedStderr: DISCARD
+
+
+## Run 3
+Args: ``
+Env: `EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=1`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `moved 42 owned=false
+`
+ExpectedStderr: DISCARD
+
+
+## Run 4
+Args: ``
+Env: `EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=7`
+Stdin: ``
+ExpectedExitCode: 0
+ExpectedStdout: EQUALS `moved 42 owned=false
+`
+ExpectedStderr: DISCARD
+
+
+## Run 5
+Args: ``
+Env: `EMPEROR_THREADS=1 EMPEROR_SHUFFLE_DELTAS=42`
 Stdin: ``
 ExpectedExitCode: 0
 ExpectedStdout: EQUALS `moved 42 owned=false

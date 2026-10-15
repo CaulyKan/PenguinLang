@@ -2760,7 +2760,11 @@ int _emperor_sched_parallel_active(void) {
 }
 
 void _emperor_sched_request_collect(void) {
-    __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_SEQ_CST);
+    /* Same funnel as every other raiser: the semantic flag AND the safepoint
+     * poll gate (gc.c). The polls are best-effort by construction, so the
+     * RELAXED ordering the allocation-side raisers use is enough here too. */
+    extern void _emperor_gc_request_collect(void);
+    _emperor_gc_request_collect();
 }
 
 /* Run ONE coroutine and file it by park status. */
@@ -3402,7 +3406,8 @@ int64_t _emperor_mt_run_delta(void) {
             extern int _emperor_gc_cap_blocks(uint64_t charge);
             extern void _emperor_gc_oom_abort(const char* why, uint64_t charge);
             size_t min_charge = mt_gc_parked_min_charge;
-            __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
+            extern void _emperor_gc_request_collect(void);
+            _emperor_gc_request_collect();
             _emperor_gc_collect_now();
             if (_emperor_gc_cap_blocks((uint64_t)min_charge)) {
                 _emperor_gc_oom_abort(
