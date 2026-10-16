@@ -6,6 +6,47 @@ namespace emperor {
 // compile -> validate (lib) -> emit LLVM IR (.ll). LINKING is external (the
 // emperor / emperor_penguin.bat driver scripts run clang + the C runtime make) so the
 // emitted IR is platform-independent and each platform just links it.
+
+// Locate an auto-loaded stdlib source (core_builtin / io / scheduler*):
+// beside the compiler executable FIRST — a released compiler always compiles
+// against the std tree shipped next to the emitter (build/<platform>/, the
+// vscode extension's server/<platform>/), never against whatever std sources
+// happen to surround it on the machine (version-skew hazard: a deployed
+// binary mixing with a mismatched source tree). The std dynlib follows the
+// same rule (--enable-std auto-probes libemperorpenguin-std.penguin-lib
+// beside the exe, no filesystem search). The cwd (dev + bootstrap
+// invocations run from the repo root) and an upward walk from the exe dir
+// (in-repo build dirs) remain as fallbacks for binaries deployed WITHOUT a
+// bundled tree — the bootstrap passes, the dotnet VM. Same candidate set as
+// the LSP's load_stdlib_text (MagellanicPenguin/LspServer/
+// LspCompilationUnit.penguin), prioritized for self-contained deploys.
+fun locate_stdlib_source(name: string) -> string {
+    let candidates: mut _utils.List<string> = new _utils.List<string>();
+    let exe_dir: string = compiler_exe_dir();
+    candidates.push(exe_dir + "/EmperorPenguin/std/penguin/" + name);
+    candidates.push("EmperorPenguin/std/penguin/" + name);
+    let dir: mut string = exe_dir;
+    let hops: mut i64 = 0;
+    while (hops < 12) {
+        let parent: string = get_parent_dir(dir);
+        if (parent == dir || parent == ".") { break; }
+        dir = parent;
+        candidates.push(dir + "/EmperorPenguin/std/penguin/" + name);
+        hops = hops + 1;
+    }
+    let i: mut i64 = 0;
+    while (i < cast<i64>(candidates.size())) {
+        let path: string = candidates.at(cast<u64>(i)).some;
+        if (_utils.file_exists(path)) {
+            return _utils.file_read_text(path);
+        }
+        i = i + 1;
+    }
+    __builtin.eprintln("[EmperorPenguin] Error: cannot locate stdlib source '" + name + "' — looked beside the compiler executable (" + exe_dir + "), in the working directory and the exe dir's parents. Run from the repo root, or deploy EmperorPenguin/std/penguin beside the emitter.");
+    __builtin.exit(1);
+    return "";
+}
+
 initial {
     let args: _utils.List<string> = _utils.args();
     if (args.size() == 0) {
@@ -157,12 +198,12 @@ initial {
         }
     }
 
-    let stdlib_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/core_builtin.penguin");
+    let stdlib_source: string = locate_stdlib_source("core_builtin.penguin");
     // io stdlib (console/stdin/stdout, io.File handles, whole-file + fs ops) —
     // auto-loaded on the same path as core_builtin, so every compiled program
     // sees the `io` namespace. Unreferenced externs are dropped by the emitter,
     // so non-io programs pay nothing for it.
-    let io_source: string = _utils.file_read_text("EmperorPenguin/std/penguin/io.penguin");
+    let io_source: string = locate_stdlib_source("io.penguin");
     // Scheduler stdlib (the coroutine/concurrency runtime: the C-microkernel
     // externs, IFuture/timers/async futures, channels + Event, and the
     // delta-round policy loop __sched_run) — auto-loaded ONLY with
@@ -182,11 +223,11 @@ initial {
         // "scheduler.penguin" so diagnostics and libmeta naming are
         // unaffected by which policy file is loaded.
         if (config.clock_model_enabled) {
-            sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler_mt.penguin");
+            sched_source = locate_stdlib_source("scheduler_mt.penguin");
         } else if (config.multithread_scheduler_enabled) {
-            sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler_free.penguin");
+            sched_source = locate_stdlib_source("scheduler_free.penguin");
         } else {
-            sched_source = _utils.file_read_text("EmperorPenguin/std/penguin/scheduler.penguin");
+            sched_source = locate_stdlib_source("scheduler.penguin");
         }
     }
 

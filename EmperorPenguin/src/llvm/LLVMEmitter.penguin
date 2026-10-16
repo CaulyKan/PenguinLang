@@ -3962,6 +3962,78 @@ class LLVMEmitter {
         this.emit_line("  " + result_name + " = " + cast_op + " " + from_llvm + " " + operand_resolved + " to " + to_llvm);
     }
 
+    // A `+` whose result type is ref<string> concatenates, but the bound
+    // operands keep their OWN types (e.g. `"x" + n` has an i64 right operand —
+    // BabyPenguin's VM stringifies lazily at runtime there, RuntimeFrame's
+    // StringValue fast path). The native backend must convert non-string
+    // operands explicitly before the _emperor_string_concat call: passing a
+    // raw i64/f64 as the ptr argument is invalid IR ("defined with type 'i64'
+    // but expected 'ptr'"). Mirror emit_cast's per-type to-string arms
+    // (sign-/float-extend details included). Non-primitive operands keep the
+    // historical passthrough.
+    fun coerce_concat_operand_to_string(mut this, value: IRValue, resolved: string) -> string {
+        let from_ir: string = value.get_ir_type();
+        if (this.is_string_type(from_ir)) { return resolved; }
+        let from_llvm: mut string = this.ir_type_to_llvm(from_ir);
+        if (from_ir == "void" || from_llvm == "void") {
+            let reg_type: string = this.get_llvm_type(resolved);
+            if (reg_type != "" && reg_type != "void") { from_llvm = reg_type; }
+        }
+        let tmp: string = this.next_tmp();
+        if (this.is_icmp_value(resolved)) {
+            this.needs_bool_to_string = true;
+            this.emit_line("  " + tmp + " = call ptr @_emperor_bool_to_string(i1 " + resolved + ")");
+            return tmp;
+        }
+        if (this.is_bool_type(from_ir)) {
+            this.needs_bool_to_string = true;
+            this.emit_line("  " + tmp + " = call ptr @_emperor_bool_to_string(i8 " + resolved + ")");
+            return tmp;
+        }
+        if (from_ir == "char") {
+            this.needs_char_to_string = true;
+            this.emit_line("  " + tmp + " = call ptr @_emperor_char_to_string(i32 " + resolved + ")");
+            return tmp;
+        }
+        if (this.is_int_type(from_ir) || this.is_int_type(from_llvm)) {
+            this.needs_int_to_string = true;
+            // Effective SOURCE type mirrors emit_cast: the semantic spelling
+            // decides signedness (u8's LLVM spelling is i8, but it must NOT
+            // be sign-extended — narrow types pass through like emit_cast's
+            // else arm and clang's C-style promotion keeps the bit pattern).
+            let effective_from: string = if (from_ir == "void" && this.is_int_type(from_llvm)) {
+                from_llvm
+            } else {
+                from_ir
+            };
+            if (effective_from == "i64") {
+                this.emit_line("  " + tmp + " = call ptr @_emperor_i64_to_string(" + from_llvm + " " + resolved + ")");
+            } else if (effective_from == "i8" || effective_from == "i16") {
+                // Signed i8/i16 must be sign-extended to i32 before calling
+                // _emperor_int_to_string(i32); zero-extension would turn
+                // negative values into large positive integers.
+                let sext_tmp: string = this.next_tmp();
+                this.emit_line("  " + sext_tmp + " = sext " + from_llvm + " " + resolved + " to i32");
+                this.emit_line("  " + tmp + " = call ptr @_emperor_int_to_string(i32 " + sext_tmp + ")");
+            } else {
+                this.emit_line("  " + tmp + " = call ptr @_emperor_int_to_string(" + from_llvm + " " + resolved + ")");
+            }
+            return tmp;
+        }
+        if (this.is_float_type(from_ir) || from_llvm == "float" || from_llvm == "double") {
+            this.needs_double_to_string = true;
+            if (from_llvm == "float") {
+                let fpext_tmp: string = this.next_tmp();
+                this.emit_line("  " + fpext_tmp + " = fpext float " + resolved + " to double");
+                this.emit_line("  " + tmp + " = call ptr @_emperor_double_to_string(double " + fpext_tmp + ")");
+            } else {
+                this.emit_line("  " + tmp + " = call ptr @_emperor_double_to_string(double " + resolved + ")");
+            }
+            return tmp;
+        }
+        return resolved;
+    }
+
     fun emit_binop(mut this, inst: IRBinOp) {
         if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_binop(inst=" + inst.display() + ")");
  }
@@ -3970,10 +4042,14 @@ class LLVMEmitter {
         let right_resolved: string = this.resolve_value(inst.right);
         let llvm_type: string = this.ir_type_to_llvm(inst.ir_type);
 
-        // String concatenation: BINOP add with ref<string> type
+        // String concatenation: BINOP add with ref<string> type. The operands
+        // keep their own bound types, so coerce non-string ones to strings
+        // before the runtime call.
         if (inst.op == "add" && this.is_string_type(inst.ir_type)) {
             this.needs_string_concat = true;
-            this.emit_line("  " + result_name + " = call ptr @_emperor_string_concat(ptr " + left_resolved + ", ptr " + right_resolved + ")");
+            let left_str: string = this.coerce_concat_operand_to_string(inst.left, left_resolved);
+            let right_str: string = this.coerce_concat_operand_to_string(inst.right, right_resolved);
+            this.emit_line("  " + result_name + " = call ptr @_emperor_string_concat(ptr " + left_str + ", ptr " + right_str + ")");
             return;
         }
 

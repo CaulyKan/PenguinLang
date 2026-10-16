@@ -29,8 +29,9 @@ rem ── locate the PenguinLang tree (dir containing EmperorPenguin\) ──�
 set "ROOT="
 if exist "%SCRIPT_DIR%\EmperorPenguin\std" set "ROOT=%SCRIPT_DIR%"
 if not defined ROOT if exist "%SCRIPT_DIR%\..\EmperorPenguin\std" set "ROOT=%SCRIPT_DIR%\.."
+if not defined ROOT if exist "%SCRIPT_DIR%\..\..\EmperorPenguin\std" set "ROOT=%SCRIPT_DIR%\..\.."
 if not defined ROOT (
-    echo [emperor] error: cannot locate EmperorPenguin\std relative to %SCRIPT_DIR% ^(expected ^<dir^>\EmperorPenguin\std or ^<dir^>\..\EmperorPenguin\std^) >&2
+    echo [emperor] error: cannot locate EmperorPenguin\std relative to %SCRIPT_DIR% ^(expected ^<dir^>\EmperorPenguin\std, ^<dir^>\..\EmperorPenguin\std or ^<dir^>\..\..\EmperorPenguin\std^) >&2
     exit /b 1
 )
 for %%i in ("%ROOT%") do set "ROOT=%%~fi"

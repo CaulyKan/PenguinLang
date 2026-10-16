@@ -31,8 +31,8 @@ The root `Makefile` drives everything, and all build artifacts live under `build
 make clean          # remove the build/ tree
 make bootstrap      # self-bootstrap EmperorPenguin -> build/bootstrap/pass2..pass4 (+ std dynlib + pass5 md5 convergence; host only)
 make release        # release the host platform's emitter + driver script (release_linux / release_win)
-make release_linux  # -> build/linux/emperor_penguin_llvm_emitter (thin exe), build/linux/libemperorpenguin.penguin-lib, build/linux/libemperorpenguin-std.penguin-lib, build/linux/emperor_penguin (+ EmperorPenguin/scripts/*.sh)
-make release_win    # -> build/win/emperor_penguin_llvm_emitter.exe, build/win/emperor_penguin.bat (+ EmperorPenguin/scripts/*.bat; linux host cross-compiles via emperor)
+make release_linux  # -> build/linux/emperor_penguin_llvm_emitter (thin exe), build/linux/libemperorpenguin.penguin-lib, build/linux/libemperorpenguin-std.penguin-lib, build/linux/emperor_penguin, build/linux/EmperorPenguin/{std,src} (self-contained: emitter resolves the stdlib beside its exe, script builds the C runtime beside itself) (+ EmperorPenguin/scripts/*.sh)
+make release_win    # -> build/win/emperor_penguin_llvm_emitter.exe, build/win/emperor_penguin.bat, build/win/EmperorPenguin/{std,src} (+ EmperorPenguin/scripts/*.bat; linux host cross-compiles via emperor)
 make release_babypenguin        # self-contained single-file BabyPenguin publish (host) -> build/<host>/baby_penguin[.exe]
 make release_babypenguin_linux  # -> build/linux/baby_penguin (Builtin.penguin/Utils.penguin copied beside it)
 make release_babypenguin_win    # -> build/win/baby_penguin.exe (linux host cross-publishes via dotnet -r win-x64)

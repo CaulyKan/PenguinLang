@@ -592,11 +592,48 @@ build/linux/libemperorpenguin-std.penguin-lib: $(BS)/pass4.d/libemperorpenguin-s
 	@mkdir -p $(@D)
 	@cp -f $< $@
 
+# The std + compiler-source trees deployed BESIDE the released compiler, so
+# build/<platform>/ is a SELF-CONTAINED deploy (the same shape the publish
+# stage assembles under MagellanicPenguin/vscode/server/<platform>/): the
+# emitter resolves the auto-loaded stdlib beside its exe (locate_stdlib_source
+# in main.penguin), the driver script builds the C runtime from the tree beside
+# itself, and MetaEngine's unit B reads EmperorPenguin/src exe-relative when a
+# #fun program is compiled from a foreign cwd.
+EP_STD_DEPLOY := $(wildcard EmperorPenguin/std/penguin/*.penguin)
+EP_SRC_DEPLOY := $(wildcard EmperorPenguin/src/*.penguin EmperorPenguin/src/*/*.penguin)
+
+define deploy-std-tree
+	@mkdir -p $(1)
+	@rm -rf $(1)/std
+	@mkdir -p $(1)/std
+	@cp -r EmperorPenguin/std/penguin EmperorPenguin/std/c EmperorPenguin/std/include $(1)/std/
+	@rm -f $(1)/std/c/*.o $(1)/std/c/*.a
+	@touch $(1)/std/.stamp
+endef
+
+build/linux/EmperorPenguin/std/.stamp: $(EP_STD_DEPLOY) $(C_RT)
+	$(call deploy-std-tree,build/linux/EmperorPenguin)
+
+build/win/EmperorPenguin/std/.stamp: $(EP_STD_DEPLOY) $(C_RT)
+	$(call deploy-std-tree,build/win/EmperorPenguin)
+
+build/linux/EmperorPenguin/src/.stamp: $(EP_SRC_DEPLOY)
+	@mkdir -p $(@D)
+	@rm -rf build/linux/EmperorPenguin/src
+	@cp -r EmperorPenguin/src build/linux/EmperorPenguin/src
+	@touch $@
+
+build/win/EmperorPenguin/src/.stamp: $(EP_SRC_DEPLOY)
+	@mkdir -p $(@D)
+	@rm -rf build/win/EmperorPenguin/src
+	@cp -r EmperorPenguin/src build/win/EmperorPenguin/src
+	@touch $@
+
 build/linux/emperor_penguin: EmperorPenguin/emperor_penguin
 	@mkdir -p $(@D)
 	@cp -f EmperorPenguin/emperor_penguin $@
 
-release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib build/linux/emperor_penguin
+release_linux: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib build/linux/emperor_penguin build/linux/EmperorPenguin/std/.stamp build/linux/EmperorPenguin/src/.stamp
 	@# Helper scripts (dependency installers etc.) ride along with the release.
 	@mkdir -p build/linux
 	@for f in EmperorPenguin/scripts/*.sh; do if [ -f "$$f" ]; then cp -f "$$f" build/linux/; fi; done
@@ -613,7 +650,7 @@ build/win/emperor_penguin.bat: EmperorPenguin/emperor_penguin.bat
 	@mkdir -p $(@D)
 	@cp -f EmperorPenguin/emperor_penguin.bat $@
 
-release_win: build/win/emperor_penguin_llvm_emitter.exe build/win/emperor_penguin.bat
+release_win: build/win/emperor_penguin_llvm_emitter.exe build/win/emperor_penguin.bat build/win/EmperorPenguin/std/.stamp build/win/EmperorPenguin/src/.stamp
 	@# Helper scripts (*.bat) ride along with the release.
 	@mkdir -p build/win
 	@for f in EmperorPenguin/scripts/*.bat; do if [ -f "$$f" ]; then cp -f "$$f" build/win/; fi; done
@@ -721,7 +758,11 @@ lsp: lsp_$(HOST)
 # Linux: like the LSP, a thin consumer of the RELEASE dynlib — the emitter,
 # the formatter/mangle/libmeta implementations all come from
 # build/linux/libemperorpenguin.penguin-lib via --lib.
-build/tools/penguin-tools.ll: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib $(TOOLS_SRC) $(EP_STD)
+# build/tools/penguin-tools.ll runs the DEPLOYED emitter (exe-first stdlib
+# resolution: it reads build/linux/EmperorPenguin/std/penguin and — for
+# argparse's #fun JIT — MetaEngine's unit B reads build/linux/EmperorPenguin/src),
+# so the deployed trees are prerequisites here to stay fresh.
+build/tools/penguin-tools.ll: build/linux/emperor_penguin_llvm_emitter build/linux/libemperorpenguin.penguin-lib build/linux/libemperorpenguin-std.penguin-lib build/linux/EmperorPenguin/std/.stamp build/linux/EmperorPenguin/src/.stamp $(TOOLS_SRC) $(EP_STD)
 	@mkdir -p $(@D) build/logs
 	@echo "Tools: emitting build/tools/penguin-tools.ll"
 	@set -o pipefail; { \

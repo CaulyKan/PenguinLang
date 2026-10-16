@@ -101,11 +101,13 @@ EOF
 
 # ── locate the PenguinLang tree (dir containing EmperorPenguin/) ──────
 if [ -d "$SCRIPT_DIR/EmperorPenguin/std" ]; then
-    ROOT=$SCRIPT_DIR                       # released layout: server/<platform>/
+    ROOT=$SCRIPT_DIR                       # self-contained deploy: tree beside the script
 elif [ -d "$SCRIPT_DIR/../EmperorPenguin/std" ]; then
     ROOT=$(cd "$SCRIPT_DIR/.." && pwd)     # dev layout: <repo>/EmperorPenguin/
+elif [ -d "$SCRIPT_DIR/../../EmperorPenguin/std" ]; then
+    ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)  # in-repo build dir: <repo>/build/<platform>/
 else
-    die "cannot locate EmperorPenguin/std relative to $SCRIPT_DIR (expected <dir>/EmperorPenguin/std or <dir>/../EmperorPenguin/std)"
+    die "cannot locate EmperorPenguin/std relative to $SCRIPT_DIR (expected <dir>/EmperorPenguin/std, <dir>/../EmperorPenguin/std or <dir>/../../EmperorPenguin/std)"
 fi
 
 case "$(uname -s)" in
