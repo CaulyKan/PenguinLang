@@ -219,6 +219,15 @@ class MetaEngine {
     // as the primary synth in compile_meta_function) and return its source text.
     // Used to include OTHER #funs into unit B so a #fun body can call them.
     fun synthesize_meta_function_text(mut this, mf: BoundMetaFunctionDefinition) -> string {
+        return this.synthesize_meta_function_def(mf).build_text();
+    }
+
+    // Build the plain FunctionDefinition synthesized from a #fun (parameter /
+    // return-type substitutions + meta-call rewrite). Shared by the primary
+    // unit-B synthesis and the "every other #fun" include below — the latter
+    // also needs the def itself to emit a matching top-level forwarder when
+    // the #fun is namespace-wrapped.
+    fun synthesize_meta_function_def(mut this, mf: BoundMetaFunctionDefinition) -> FunctionDefinition {
         let synth: FunctionDefinition = new FunctionDefinition(mf.name);
         let pi: mut i64 = 0;
         while (pi < cast<i64>(mf.parameters.size())) {
@@ -282,7 +291,7 @@ class MetaEngine {
             synth.body = new Option<Expression>.some(this.rewrite_meta_calls_in_expr(synth.body.some));
         }
         synth.location = mf.location;
-        return synth.build_text();
+        return synth;
     }
 
     // Wrap synthesized #fun text in its enclosing (dotted) namespace so the
@@ -476,15 +485,22 @@ class MetaEngine {
         // #fun body can call it by plain name (e.g. a value-template #fun foo
         // whose body calls #test — after rewrite_meta_calls_in_expr the body has
         // a plain `test(...)` call, which resolves only if `test` is in unit B).
+        // A wrapped (namespaced) #fun also gets the bare-name TOP-LEVEL
+        // FORWARDER the primary path emits: top-level callers reach it by plain
+        // name too — the __specializing_* gate wrappers are never wrapped and
+        // call gate #funs like std's json_deserializable_type unqualified
+        // (without the forwarder, any Option<T>/Box<T> instantiation under
+        // --meta-src died with "Cannot resolve symbol" in unit B).
         let oi: mut i64 = 0;
         while (oi < cast<i64>(this.all_meta_function_defs.size())) {
             let other: BoundMetaFunctionDefinition = this.all_meta_function_defs.at(cast<u64>(oi)).some;
             if (other.name != bmf.name) {
-                let other_text: string = this.synthesize_meta_function_text(other);
+                let other_def: FunctionDefinition = this.synthesize_meta_function_def(other);
                 if (this.should_wrap_meta_fun(other)) {
-                    unit_b_source = unit_b_source + "\n" + this.wrap_in_namespace(other.enclosing_ns, other.file_usings, other_text);
+                    unit_b_source = unit_b_source + "\n" + this.wrap_in_namespace(other.enclosing_ns, other.file_usings, other_def.build_text())
+                        + "\n" + this.synthesize_top_level_forwarder(other, other_def);
                 } else {
-                    unit_b_source = unit_b_source + "\n" + other_text;
+                    unit_b_source = unit_b_source + "\n" + other_def.build_text();
                 }
             }
             oi = oi + 1;
