@@ -24,6 +24,14 @@ namespace BabyPenguin.SemanticPass
             {
                 AutoAddICopy(cls);
             }
+            // Step 2.5: Box interface forwarding (primitive interfaces round) —
+            // every interface T implements is re-implemented on a Box<T>
+            // specialization by a forwarding impl (`return this.value.m(...)`).
+            // Mirrors EmperorPenguin's MonomorphizePass.try_inject_box_forwarding.
+            foreach (var cls in items.OfType<IClassNode>())
+            {
+                InjectBoxForwarding(cls);
+            }
             // Step 3: an EXPLICIT `impl ICopy<T> for T` without a user-provided
             // `copy` is backed by the runtime clone, whose depth differs across
             // backends (VM: recursive clone; CS backend / EmperorPenguin: shallow
@@ -246,6 +254,130 @@ namespace BabyPenguin.SemanticPass
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Box interface forwarding (primitive interfaces round): when a
+        /// `__builtin.Box&lt;T&gt;` specialization exists, every interface T implements
+        /// (per T's vtable set — a BasicTypeNode's primitive impls, a class/enum's
+        /// impls, or an inner Box's forwarded impls for nested boxes) is
+        /// re-implemented on the Box by a forwarding impl whose methods delegate to
+        /// `this.value`. Runtime-marker interfaces are NOT forwarded (forwarding
+        /// ICopy would flip Box's reference semantics); interfaces the Box already
+        /// carries (IReferenceType) are skipped by the has-vtable check; generic
+        /// interfaces and interfaces with generic methods are skipped for now.
+        /// The impl text is assembled and parsed through
+        /// InterfaceForImplementation.FromString, then bound exactly like a source
+        /// impl block (BuiltVTable's tail: VTable + AddFunction + CatchUp + slots).
+        /// Mirrors EmperorPenguin's MonomorphizePass.try_inject_box_forwarding.
+        /// </summary>
+        void InjectBoxForwarding(IClassNode cls)
+        {
+            // The template's FullName carries the generic placeholder
+            // ("__builtin.Box<?>").
+            if (cls.GenericType?.FullName() != "__builtin.Box<?>")
+                return;
+            var t = cls.GenericArguments.FirstOrDefault();
+            if (t == null || t.TypeNode is not IVTableContainer tvt)
+                return;
+            // Nested boxes: forward the INNER Box's interfaces first so the outer
+            // one sees them (the inner vtable carries the injected forwarding).
+            if (t.TypeNode is IClassNode innerBox && innerBox.GenericType?.FullName() == "__builtin.Box")
+                InjectBoxForwarding(innerBox);
+            foreach (var intf in tvt.ImplementedInterfaces.ToList())
+            {
+                if (intf.FullName() == null)
+                    continue;
+                var tail = intf.FullName().Split('.').Last();
+                if (IsBoxForwardExcludedInterface(tail))
+                    continue;
+                // A generic interface (specialized name carries <...>, or the
+                // interface is an unspecialized template): its method signatures
+                // reference the interface's own template parameters, which do not
+                // resolve in the Box scope — not forwardable yet.
+                if (intf.FullName().Contains('<') || (intf.SyntaxNode as InterfaceDefinition)?.Template != null)
+                    continue;
+                if (intf.Functions.Count == 0)
+                    continue;
+                if (cls.VTables.Any(v => v.Interface.FullName() == intf.FullName()))
+                    continue;
+                var text = BuildBoxForwardImplText(intf);
+                if (text == null)
+                    continue;
+                var implSyntax = new InterfaceForImplementation();
+                implSyntax.FromString(text, Model.Reporter);
+                var vtable = new VTable(Model, implSyntax, cls, intf);
+                if (cls.VTables.Any(v => v.Interface.FullName() == vtable.Interface.FullName()))
+                    continue;
+                cls.VTables.Add(vtable);
+                foreach (var funcSyntax in implSyntax.Functions)
+                {
+                    if (!vtable.Interface.Functions.Any(f => f.Name == funcSyntax.Name))
+                        throw new BabyPenguinException($"Interface {vtable.Interface.Name} does not have a function {funcSyntax.Name} to implement in class {cls.Name}", null, code: ErrorCode.E_INTERFACE_IMPL);
+                    var func = new Function(Model, funcSyntax);
+                    (vtable as IRoutineContainer).AddFunction(func);
+                }
+                Model.CatchUp(vtable);
+                foreach (var interfaceFunc in vtable.Interface.Functions)
+                {
+                    if (vtable.Functions.Find(f => f.Name == interfaceFunc.Name) is IFunction implFunc)
+                    {
+                        vtable.Slots.RemoveAll(s => s.InterfaceSymbol.FullName() == interfaceFunc.FunctionSymbol!.FullName());
+                        vtable.Slots.Add(new VTableSlot(interfaceFunc.FunctionSymbol!, implFunc.FunctionSymbol!));
+                    }
+                }
+            }
+        }
+
+        static bool IsBoxForwardExcludedInterface(string tail) =>
+            tail is "ICopy" or "IReferenceType" or "IValueType" or "IMemoryDispose" or "IUniqueMangleName" or "ISync";
+
+        /// <summary>
+        /// Assemble `impl I { fun m(this, args...) -> R { return this.value.m(args...); } ... }`
+        /// from the interface's declared method signatures (re-spelled verbatim
+        /// from their syntax nodes). Returns null when a method is not
+        /// forwardable (missing type text).
+        /// </summary>
+        static string? BuildBoxForwardImplText(IInterfaceNode intf)
+        {
+            if (intf.SyntaxNode is not InterfaceDefinition idef)
+                return null;
+            var sb = new System.Text.StringBuilder();
+            // The BP grammar's `interfaceForImplementation` rule REQUIRES a
+            // `for` target; the vtable below is built directly against the
+            // Box specialization (the VTable constructor takes the container),
+            // so the for-clause is nominal.
+            sb.Append("impl ").Append(intf.Name).Append(" for __builtin.Box { ");
+            foreach (var funcSyntax in idef.Functions)
+            {
+                var thisP = funcSyntax.Parameters.FirstOrDefault(p => p.Name == "this");
+                // A `mut this` method's forwarding would need a mutable value
+                // slot, which Box does not provide — skip such interfaces.
+                if (thisP?.TypeSpecifier?.IsMutable == Mutability.Mutable)
+                    return null;
+                var args = funcSyntax.Parameters.Where(p => p.Name != "this").ToList();
+                sb.Append("fun ").Append(funcSyntax.Name).Append('(');
+                if (thisP != null)
+                    sb.Append(thisP.TypeSpecifier?.IsMutable == Mutability.Mutable ? "mut this" : "this");
+                foreach (var a in args)
+                {
+                    if (thisP != null || a != args[0])
+                        sb.Append(", ");
+                    sb.Append(a.Name).Append(" : ").Append(a.TypeSpecifier?.BuildText());
+                }
+                sb.Append(')');
+                var hasReturn = funcSyntax.ReturnType?.TypeName is { } rtn && rtn != "void";
+                if (hasReturn)
+                    sb.Append(" -> ").Append(funcSyntax.ReturnType!.BuildText());
+                sb.Append(" { ");
+                var call = string.Join(", ", args.Select(a => a.Name));
+                if (hasReturn)
+                    sb.Append("return this.value.").Append(funcSyntax.Name).Append('(').Append(call).Append("); } ");
+                else
+                    sb.Append("this.value.").Append(funcSyntax.Name).Append('(').Append(call).Append("); } ");
+            }
+            sb.Append(" }");
+            return sb.ToString();
         }
 
         /// <summary>
@@ -641,6 +773,8 @@ namespace BabyPenguin.SemanticPass
                 return;
 
             BuiltVTable(obj);
+            if (obj is IClassNode caughtUpCls)
+                InjectBoxForwarding(caughtUpCls);
             MergeVTables(obj);
             FinishVTable(obj);
             if (obj is IClassNode cls)

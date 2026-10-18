@@ -77,6 +77,12 @@ class MonomorphizePass {
             let spec_result: Option<BoundDefinition> = this.specialize_class_def(cls, inst.generic_args, mangled, global_scope);
             if (spec_result.is_none()) { return new Option<BoundDefinition>.none(); }
             let injected: BoundDefinition = this.run_specializing_for_spec(cls.full_name, inst, spec_result.some, global_scope);
+            // Box interface forwarding (primitive interfaces round): AFTER the
+            // source #specializing blocks (so forwarded impls never duplicate a
+            // block-injected one — the has-impl check below skips those) and
+            // BEFORE the caller's catch_up_def (so the forwarding method bodies
+            // bind like any injected fragment).
+            this.try_inject_box_forwarding(cls.full_name, inst, injected, global_scope);
             this.model.some.trace("monomorphize created specialization " + mangled);
             return new Option<BoundDefinition>.some(injected);
         }
@@ -557,6 +563,256 @@ class MonomorphizePass {
             }
             si = si + 1;
         }
+    }
+
+    // ==== Box interface forwarding (primitive interfaces round) ====
+    //
+    // When __builtin.Box<T> is specialized, every interface T implements (per
+    // the pass-1-visible declarations: class/enum interface_impls, the
+    // primitive_impl registry for primitives incl. string, and the interface
+    // set of an inner specialization for nested Box<Box<...>>) is automatically
+    // re-implemented on the Box by a forwarding impl:
+    //     fun m(this, args...) -> R { return this.value.m(args...); }
+    // Runtime-marker interfaces are NOT forwarded (forwarding ICopy would flip
+    // Box's reference semantics); interfaces Box already carries (its own
+    // IReferenceType, a #specializing-injected impl like std.IJsonSerializable)
+    // are skipped by the has-impl check. Generic interfaces and interfaces
+    // with generic methods are skipped for now (their method signatures
+    // reference the interface's own template parameters, which do not resolve
+    // in the Box specialization's scope).
+    //
+    // The impl text is assembled natively (no JIT — the core_builtin blocks'
+    // native-gate precedent) and parsed through the ordinary Lexer/Parser, so
+    // the fragment flows through inject_specializing_impl exactly like a
+    // source #specializing fragment and the caller's catch_up_def binds the
+    // forwarding bodies.
+
+    fun box_forward_iface_excluded(this, tail: string) -> bool {
+        return tail == "ICopy" || tail == "IReferenceType" || tail == "IValueType"
+            || tail == "IMemoryDispose" || tail == "IUniqueMangleName" || tail == "ISync";
+    }
+
+    fun try_inject_box_forwarding(mut this, template_full_name: string, inst: BoundType, spec: BoundDefinition, global_scope: mut BoundScope) {
+        // The template's full_name carries the compilation's scope prefix
+        // (e.g. "<global>.__builtin.Box"), so match on the qualified suffix.
+        if (string_find(template_full_name, "__builtin.Box") < 0) { return; }
+        if (cast<i64>(inst.generic_args.size()) != 1) { return; }
+        if (!(spec is BoundDefinition.class_def)) { return; }
+        let cls: mut BoundClassDefinition = spec.class_def;
+        if (cls.scope.is_none()) { return; }
+        let t_bt: BoundType = arg_as_bound_type(inst.generic_args.at(cast<u64>(0)).some);
+        // Nested boxes: when T is itself a generic instantiation, make sure
+        // ITS specialization (and therefore ITS forwarding impls) exists
+        // BEFORE reading T's interface set — ensure_specialized_def is
+        // idempotent, so this is safe when the inner spec already exists.
+        let t_iface_defs: mut _utils.List<BoundInterfaceDefinition> = new _utils.List<BoundInterfaceDefinition>();
+        if (cast<i64>(t_bt.generic_args.size()) > 0) {
+            // ensure returns none when the inner spec ALREADY exists — recover
+            // it by mangled-name lookup (the same lookup
+            // is_instantiation_already_exists uses, so the name is exact).
+            let inner_def: mut Option<BoundDefinition> = this.ensure_specialized_def(t_bt, global_scope);
+            if (inner_def.is_none()) {
+                if (let tmpl := t_bt.type_definition.some) {
+                    let iname: mut string = "";
+                    if (tmpl is BoundDefinition.class_def) { iname = tmpl.class_def.full_name; }
+                    if (tmpl is BoundDefinition.enum_def) { iname = tmpl.enum_def.full_name; }
+                    if (tmpl is BoundDefinition.interface_def) { iname = tmpl.interface_def.full_name; }
+                    if (string_length(iname) > 0) {
+                        let imangled: string = mangle_generic_name(iname, t_bt.generic_args);
+                        let isym: Option<BoundSymbol> = global_scope.lookup_type_in_scope(imangled);
+                        if (isym.is_some() && isym.some is BoundSymbol.type_sym) {
+                            if (let itd := isym.some.type_sym.bound_type.type_definition.some) {
+                                inner_def = new Option<BoundDefinition>.some(itd);
+                            }
+                        }
+                    }
+                }
+            }
+            if (inner_def.is_some() && inner_def.some is BoundDefinition.class_def) {
+                this.box_collect_class_ifaces(inner_def.some.class_def, t_iface_defs);
+            }
+            if (inner_def.is_some() && inner_def.some is BoundDefinition.enum_def) {
+                this.box_collect_enum_ifaces(inner_def.some.enum_def, t_iface_defs);
+            }
+        } else {
+            if (t_bt.kind is TypeKind.PrimitiveKind) {
+                this.box_collect_primitive_ifaces(t_bt.display_name(), t_iface_defs, global_scope);
+            } else {
+                if (let td := t_bt.type_definition.some) {
+                    if (td is BoundDefinition.class_def) { this.box_collect_class_ifaces(td.class_def, t_iface_defs); }
+                    if (td is BoundDefinition.enum_def) { this.box_collect_enum_ifaces(td.enum_def, t_iface_defs); }
+                }
+            }
+        }
+        // For each forwarded interface: assemble the impl text, parse, inject.
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(t_iface_defs.size())) {
+            let iface: BoundInterfaceDefinition = t_iface_defs.at(cast<u64>(ii)).some;
+            ii = ii + 1;
+            let tail: string = this.model.some.iface_name_key(iface.full_name);
+            if (this.box_forward_iface_excluded(tail)) { continue; }
+            // Generic interfaces: skip (method signatures reference the
+            // interface's own template params — unresolvable in the Box scope).
+            if (cast<i64>(iface.generic_params.size()) > 0) { continue; }
+            // Already implemented on the Box (its own IReferenceType, a
+            // #specializing-injected impl, or a previous forwarding round)?
+            if (this.box_class_implements(cls, tail)) { continue; }
+            let text_opt: Option<string> = this.box_forward_impl_text(iface);
+            if (text_opt.is_none()) { continue; }
+            let lex: Lexer = new Lexer(text_opt.some, "<box_forward>");
+            let toks: _utils.List<Token> = lex.tokenize();
+            let p: Parser = new Parser(toks);
+            let unit: CompilationUnit = p.parse_definitions_unit();
+            if (p.has_errors()) {
+                this.model.some.report_error(new ErrorCode.E_INTERNAL(),
+                    "Box interface forwarding: generated impl for '" + iface.full_name + "' failed to parse",
+                    new SourceLocation("", 0, 0));
+                continue;
+            }
+            if (cast<i64>(unit.definitions.size()) != 1) { continue; }
+            let def: Definition = unit.definitions.at(cast<u64>(0)).some;
+            if (def is Definition.impl_def) {
+                this.inject_specializing_impl(def.impl_def, spec, global_scope);
+            }
+        }
+    }
+
+    fun box_class_implements(this, cls: BoundClassDefinition, iface_tail: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cls.interface_impls.size())) {
+            let bi: BoundDefinition = cls.interface_impls.at(cast<u64>(i)).some;
+            if (bi is BoundDefinition.impl_def) {
+                if (this.model.some.iface_name_key(bi.impl_def.interface_type.display_name()) == iface_tail) {
+                    return true;
+                }
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun box_collect_class_ifaces(this, cls: BoundClassDefinition, out: mut _utils.List<BoundInterfaceDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(cls.interface_impls.size())) {
+            let bi: BoundDefinition = cls.interface_impls.at(cast<u64>(i)).some;
+            if (bi is BoundDefinition.impl_def) {
+                this.box_push_iface(bi.impl_def.interface_type, out);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun box_collect_enum_ifaces(this, e: BoundEnumDefinition, out: mut _utils.List<BoundInterfaceDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(e.interface_impls.size())) {
+            let bi: BoundDefinition = e.interface_impls.at(cast<u64>(i)).some;
+            if (bi is BoundDefinition.impl_def) {
+                this.box_push_iface(bi.impl_def.interface_type, out);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun box_collect_primitive_ifaces(this, prim_name: string, out: mut _utils.List<BoundInterfaceDefinition>, global_scope: mut BoundScope) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.model.some.primitive_impl_for_type.size())) {
+            if (this.model.some.primitive_impl_for_type.at(cast<u64>(i)).some == prim_name) {
+                let iface_name: string = this.model.some.primitive_impl_iface.at(cast<u64>(i)).some;
+                let sym: Option<BoundSymbol> = global_scope.lookup_type_anywhere(iface_name);
+                if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+                    this.box_push_iface(sym.some.type_sym.bound_type, out);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    fun box_push_iface(this, iface_bt: BoundType, out: mut _utils.List<BoundInterfaceDefinition>) {
+        if (iface_bt.type_definition.is_none()) { return; }
+        let td: BoundDefinition = iface_bt.type_definition.some;
+        if (!(td is BoundDefinition.interface_def)) { return; }
+        let iface: BoundInterfaceDefinition = td.interface_def;
+        let tail: string = this.model.some.iface_name_key(iface.full_name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(out.size())) {
+            if (this.model.some.iface_name_key(out.at(cast<u64>(i)).some.full_name) == tail) { return; }
+            i = i + 1;
+        }
+        out.push(iface);
+    }
+
+    // Assemble `impl <iface> { fun m(this, args...) -> R { return
+    // this.value.m(args...); } ... }` from the interface's declared methods
+    // (their AST signatures re-spelled verbatim). Returns none when the
+    // interface has a generic method (not forwardable yet) or no usable
+    // signature.
+    fun box_forward_impl_text(this, iface: BoundInterfaceDefinition) -> Option<string> {
+        let mut body = "";
+        let count: mut i64 = 0;
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(iface.methods.size())) {
+            let bm: BoundDefinition = iface.methods.at(cast<u64>(mi)).some;
+            if (bm is BoundDefinition.function_def) {
+                if (cast<i64>(bm.function_def.generic_params.size()) > 0) { return new Option<string>.none(); }
+                if (bm.function_def.ast_source.is_none()) { return new Option<string>.none(); }
+                let ast_src: Definition = bm.function_def.ast_source.some;
+                if (!(ast_src is Definition.function_def)) { return new Option<string>.none(); }
+                let astf: FunctionDefinition = ast_src.function_def;
+                let one: Option<string> = this.box_forward_method_text(astf);
+                if (one.is_none()) { return new Option<string>.none(); }
+                body = body + " " + one.some;
+                count = count + 1;
+            }
+            mi = mi + 1;
+        }
+        if (count == 0) { return new Option<string>.none(); }
+        // Short interface name: the impl binds in the Box specialization's
+        // scope, where bind_impl_def's anywhere fallback resolves
+        // cross-namespace interfaces (the #specializing-injection precedent).
+        // The full_name's "<global>." file-namespace prefix is NOT valid
+        // source syntax.
+        return new Option<string>.some("impl " + iface.name + " {" + body + " }");
+    }
+
+    fun box_forward_method_text(this, astf: FunctionDefinition) -> Option<string> {
+        // A `mut this` method's forwarding (`this.value.m()`) would need a
+        // mutable value slot, which Box deliberately does not provide (the
+        // constructor's immutable parameter cannot feed it on both
+        // compilers) — interfaces containing one are not forwarded.
+        let pi0: mut i64 = 0;
+        while (pi0 < cast<i64>(astf.parameters.size())) {
+            let prm0: Parameter = astf.parameters.at(cast<u64>(pi0)).some;
+            if (prm0.is_this && prm0.is_mutable) { return new Option<string>.none(); }
+            pi0 = pi0 + 1;
+        }
+        // Signature: this param mutability verbatim, other params re-spelled
+        // from their AST type specifiers.
+        let mut sig = "fun " + astf.name + "(";
+        let mut call_args = "";
+        let pi: mut i64 = 0;
+        let first: mut bool = true;
+        while (pi < cast<i64>(astf.parameters.size())) {
+            let prm: Parameter = astf.parameters.at(cast<u64>(pi)).some;
+            if (!first) { sig = sig + ", "; }
+            if (prm.is_this) {
+                if (prm.is_mutable) { sig = sig + "mut this"; } else { sig = sig + "this"; }
+            } else {
+                if (prm.type_spec.is_none()) { return new Option<string>.none(); }
+                sig = sig + prm.name + " : " + prm.type_spec.some.build_text();
+                if (string_length(call_args) > 0) { call_args = call_args + ", "; }
+                call_args = call_args + prm.name;
+            }
+            first = false;
+            pi = pi + 1;
+        }
+        sig = sig + ")";
+        if (astf.return_type.is_some()) {
+            sig = sig + " -> " + astf.return_type.some.build_text();
+            sig = sig + " { return this.value." + astf.name + "(" + call_args + "); }";
+        } else {
+            sig = sig + " { this.value." + astf.name + "(" + call_args + "); }";
+        }
+        return new Option<string>.some(sig);
     }
 
     // Recognize the native-gate form `umangleable(<param>)` on a #specializing

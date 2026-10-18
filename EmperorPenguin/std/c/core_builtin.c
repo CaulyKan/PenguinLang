@@ -98,6 +98,43 @@ EmperorClassMetadata _emperor_string_metadata = {
     NULL,     /* destructor */
 };
 
+/* Static metadata for every primitive type (primitive interfaces round).
+ * These have NO runtime consumers yet — primitives are unboxed scalars that
+ * never carry a metaptr, and `prim is IFace` folds at compile time via the
+ * compiler's primitive_impl registry. They exist so every type of the
+ * language has a uniform runtime metadata story (the same slot shape as
+ * _emperor_string_metadata): future runtime reflection / boxing paths can
+ * look primitives up by symbol instead of growing new ad-hoc tables. The
+ * `used` attribute keeps the linker from dropping the unreferenced
+ * definitions under -O2/LTO; interface_map stays empty until a runtime
+ * consumer defines what the entries should be. */
+#define EMPEROR_PRIM_METADATA(cname, pname)                                  \
+    __attribute__((used, visibility("default")))                             \
+    EmperorClassMetadata _emperor_##pname##_metadata = {                     \
+        cname,      /* name */                                               \
+        0,          /* instance_size (unboxed scalar) */                     \
+        0,          /* field_count */                                        \
+        NULL,       /* field_offsets */                                      \
+        NULL,       /* field_is_ptr */                                       \
+        NULL,       /* virtual_method_table */                               \
+        0,          /* interface_count */                                    \
+        NULL,       /* interface_map */                                      \
+        NULL,       /* refmap */                                             \
+    }
+
+EMPEROR_PRIM_METADATA("i8", i8);
+EMPEROR_PRIM_METADATA("i16", i16);
+EMPEROR_PRIM_METADATA("i32", i32);
+EMPEROR_PRIM_METADATA("i64", i64);
+EMPEROR_PRIM_METADATA("u8", u8);
+EMPEROR_PRIM_METADATA("u16", u16);
+EMPEROR_PRIM_METADATA("u32", u32);
+EMPEROR_PRIM_METADATA("u64", u64);
+EMPEROR_PRIM_METADATA("f32", f32);
+EMPEROR_PRIM_METADATA("f64", f64);
+EMPEROR_PRIM_METADATA("bool", bool);
+EMPEROR_PRIM_METADATA("char", char);
+
 _emperor_string* _emperor_string_alloc(int64_t len) {
     if (len < 0) len = 0;
     /* is_string=1 keeps the block opaque to the GC (never scanned, never

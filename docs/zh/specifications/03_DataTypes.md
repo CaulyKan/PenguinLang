@@ -51,7 +51,7 @@ for (let part : string in "one,two".split(",")) { ... }
 | 分割 | `split(sep) -> mut IIterator<string>`——惰性、可 for-in；按不重叠分隔符切分，尾随分隔符产出最后一个空片段（类 Python），空 `sep` 整串产出一次 |
 | 转换 | `to_int() -> i64`（失败 0）、`to_double() -> double` |
 
-所有操作按索引/单元计（原生运行时按字节单元，BabyPenguin VM 按 UTF-16 单元——ASCII 下一致），大小写/修剪表是 ASCII。方法调用直接分派——不要对 string 使用 `cast<IStringOps>`/`is IStringOps`（不支持基元的接口类型装箱）。
+所有操作按索引/单元计（原生运行时按字节单元，BabyPenguin VM 按 UTF-16 单元——ASCII 下一致），大小写/修剪表是 ASCII。方法调用直接分派。对静态已知类型的 string 使用 `s is IStringOps` 是合法的，且在编译期折叠——由基元接口注册表判定，不发射运行时检查。该规则同样适用于每个基元的 `impl I for <基元>` 接口与密封类型（值类、枚举，双向折叠）；引用类只折叠判定为真的分支（子类可能实现更多接口），接口类型变量维持运行时检查。不支持基元的接口类型装箱：未装箱基元的唯一接口类型用法是立即调用 `cast<I>(基元).m()`（重写为实现的直连调用）；其他任何位置的基元→接口 cast 都是编译错误，真多态请使用 `Box<T>`（见[接口](./07_Interface.md) § 基元接口）。
 
 ## 引用类型与值类型
 

@@ -87,6 +87,12 @@ namespace __builtin {
 
     #template(T: type)
     class Box {
+        // NOTE: forwarding (below) currently covers interfaces whose methods
+        // all take an IMMUTABLE `this` — a `mut this` method's forwarding
+        // (`this.value.m()`) would need a mutable value slot, which the
+        // constructor's `value: T` parameter cannot feed on both compilers
+        // (BP rejects the immutable→mut field assignment). Interfaces with
+        // mutable-this methods are skipped by the forwarder.
         value: T;
         impl IReferenceType;
         fun new(mut this, value: T) {

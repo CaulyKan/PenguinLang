@@ -51,7 +51,7 @@ for (let part : string in "one,two".split(",")) { ... }
 | Split | `split(sep) -> mut IIterator<string>` — lazy, for-in ready; pieces between non-overlapping separators, a trailing separator yields one final empty piece (Python-like), empty `sep` yields the whole string once |
 | Convert | `to_int() -> i64` (0 on failure), `to_double() -> double` |
 
-All operations are index/unit-based (byte units on the native runtime, UTF-16 units on the BabyPenguin VM — identical for ASCII) and the case/trim tables are ASCII. Method calls dispatch directly — do not use `cast<IStringOps>`/`is IStringOps` on a string (interface-typed boxing of primitives is not supported).
+All operations are index/unit-based (byte units on the native runtime, UTF-16 units on the BabyPenguin VM — identical for ASCII) and the case/trim tables are ASCII. Method calls dispatch directly. `s is IStringOps` on a statically-known string is legal and folds at compile time — the primitive interface registry answers it and no runtime check is emitted. The same holds for every primitive's `impl I for <prim>` interfaces and for sealed types (value classes, enums, both directions); reference classes fold only a positive answer (a subclass may implement more interfaces), and interface-typed variables keep the runtime check. Interface-typed boxing of primitives is not supported: the only legal interface-typed use of an unboxed primitive is the immediate call `cast<I>(prim).m()` (rewritten to the impl's direct call); any other primitive-to-interface cast is a compile error, and true polymorphism goes through `Box<T>` (see [Interfaces](./07_Interface.md) § Primitive Interfaces).
 
 ## Reference Types and Value Types
 

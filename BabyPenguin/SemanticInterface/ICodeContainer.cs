@@ -1,4 +1,5 @@
 using System.Reflection;
+using BabyPenguin.SemanticNode;
 
 namespace BabyPenguin.SemanticInterface
 {
@@ -1891,6 +1892,24 @@ namespace BabyPenguin.SemanticInterface
                             return new TypeReferenceType(fullType);
 
                         ResolveMemberAccessExpressionSymbol(exp, out var ownerType, out var symbol);
+                        // Interface-cast immediate-call exception: for
+                        // `cast<I>(prim).m(...)` the resolved ownerType is the
+                        // cast TARGET (an interface), which can never satisfy
+                        // the `this` check of an interface method below.
+                        // Substitute the cast's INNER primitive as the owner
+                        // so the check takes the primitive-impl path (exact
+                        // match for annotated `this: T` signatures, the
+                        // primitiveImplReceiver allowance otherwise). The IR
+                        // emission side (AddMemberAccessExpression) performs
+                        // the matching rewrite.
+                        if (ownerType?.TypeNode is IInterfaceNode
+                            && exp.BaseExpression?.GetEffectiveExpression() is CastExpression tcExpr
+                            && tcExpr.SubExpression != null)
+                        {
+                            var tcInner = TryResolveExpressionTypeQuiet(tcExpr.SubExpression);
+                            if (tcInner?.TypeNode is BasicTypeNode)
+                                ownerType = tcInner;
+                        }
                         if (symbol is FunctionSymbol fs && !fs.IsStatic)
                         {
                             // check this type
@@ -1909,7 +1928,26 @@ namespace BabyPenguin.SemanticInterface
 
                             if (ownerType.IsMutable == Mutability.Auto) ownerType = ownerType.WithMutability(Mutability.Immutable);
 
-                            if (!ownerType.CanImplicitlyCastTo(thisType))
+                            // Primitive interface-method dispatch: `impl IHash for i64`
+                            // attaches the vtable to the i64 BasicTypeNode, and the
+                            // member-resolution fallback returns the INTERFACE's
+                            // declaration symbol, whose unannotated `this` binds to the
+                            // interface type itself. A primitive receiver can never
+                            // implicitly cast to that — accept any primitive owner here;
+                            // the vtable's attach target (that exact primitive type)
+                            // already guarantees the receiver matches the impl.
+                            // Box interface forwarding: a forwarded method keeps the
+                            // interface's declared `this` type (e.g. IStringOps's
+                            // `this: string`), but the receiver is the Box — accept it
+                            // when the Box's T IS the declared this type (the forwarded
+                            // impl runs against this.value).
+                            var boxForwardReceiver = ownerType.TypeNode is IClassNode boxCls
+                                && boxCls.GenericType?.FullName() == "__builtin.Box<?>"
+                                && ownerType.GenericArguments.Count == 1
+                                && thisType.TypeNode is BasicTypeNode
+                                && ownerType.GenericArguments[0].TypeNode?.FullName() == thisType.TypeNode.FullName();
+                            var primitiveImplReceiver = (ownerType.TypeNode is BasicTypeNode && thisType.TypeNode is IInterfaceNode) || boxForwardReceiver;
+                            if (!primitiveImplReceiver && !ownerType.CanImplicitlyCastTo(thisType))
                                 throw new BabyPenguinException($"Cant use {ownerType} as 'this' param of type {thisType} for function {fs.FullName()}", exp.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
 
                             // pack fat pointer, remove first argument
@@ -2239,6 +2277,39 @@ namespace BabyPenguin.SemanticInterface
 
         public ISymbol AddMemberAccessExpression(MemberAccessExpression exp, ISymbol to, bool isVariableInitialize, out ISymbol? owner, out ISymbol? ownerBeforeImplicitConversion_)
         {
+            // Interface-cast immediate-call exception (primitive interfaces
+            // round): `cast<I>(prim).m(...)` — when the base is a cast to an
+            // INTERFACE whose inner expression is a primitive (incl. string),
+            // resolve the member on the INNER expression directly: the
+            // primitive's vtable-attached impl (the `a.hash()` fallback below)
+            // supplies the method, the receiver is the primitive value, and the
+            // cast node is DROPPED — so AddCastExpression's standalone-cast
+            // guard never sees it. The target interface must declare the
+            // member (cast<IHash>(a).foo() may not reach a method some OTHER
+            // primitive impl provides). Mirrors EmperorPenguin's
+            // bind_member_access rewrite.
+            if (exp.BaseExpression?.GetEffectiveExpression() is CastExpression bce
+                && bce.SubExpression != null && bce.CastTypeSpecifier != null)
+            {
+                var castTarget = Model.ResolveType(bce.CastTypeSpecifier.Name, scope: this);
+                if (castTarget?.TypeNode is IInterfaceNode ifaceNode)
+                {
+                    var innerQuiet = TryResolveExpressionTypeQuiet(bce.SubExpression);
+                    if (innerQuiet?.TypeNode is BasicTypeNode)
+                    {
+                        var ifaceMethod = Model.ResolveShortSymbol(exp.Member!.Name, scope: ifaceNode);
+                        if (ifaceMethod != null && ifaceMethod.IsFunction)
+                        {
+                            var innerVar = AddExpression(bce.SubExpression, false);
+                            AddInstruction(new ReadMemberInstruction(exp.SourceLocation, ifaceMethod, innerVar, to, true));
+                            owner = innerVar;
+                            ownerBeforeImplicitConversion_ = innerVar;
+                            return to;
+                        }
+                    }
+                }
+            }
+
             IType? ownerType;
             ISymbol? ownerBeforeImplicitConversion = null;
             ISymbol symbol;
@@ -2339,6 +2410,20 @@ namespace BabyPenguin.SemanticInterface
                 var exp = from.Left!;
                 if (ResolveExpressionType(exp).FullName() != to.TypeInfo.FullName())
                     throw new BabyPenguinException($"Cant cast type '{ResolveExpressionType(exp).FullName()}' to type '{to.TypeInfo.FullName()}'", exp.SourceLocation, code: ErrorCode.E_CAST_INVALID);
+
+                // Basic (incl. string) → interface USER cast: the ONLY legal
+                // form is the immediate-call receiver `cast<I>(p).m()` — the
+                // AddMemberAccessExpression rewrite intercepts that shape
+                // BEFORE the cast node ever reaches here (it is dropped
+                // entirely). A cast standing alone (assignment, argument,
+                // return, let-init, ...) is rejected; `let b : I = p` (no
+                // cast) keeps failing the implicit-cast check as before. The
+                // INTERNAL vtable-boxing casts (AddMemberAccessExpression's
+                // primitive impl fallback) pass an ISymbol (from.IsRight) and
+                // are NOT affected. Mirrors EmperorPenguin's bind_cast guard.
+                var castInnerQuiet = TryResolveExpressionTypeQuiet(exp.SubExpression!);
+                if (to.TypeInfo.IsInterfaceType && castInnerQuiet?.TypeNode is BasicTypeNode)
+                    throw new BabyPenguinException($"Cant cast primitive '{castInnerQuiet.FullName()}' to interface '{to.TypeInfo.FullName()}': interface cast of a primitive is only allowed as the receiver of an immediate method call (cast<I>(p).m()); for true polymorphism use Box<T>", exp.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
 
                 tempSymbol = AddExpression(exp.SubExpression!, false);
                 type = tempSymbol.TypeInfo;
@@ -2976,7 +3061,30 @@ namespace BabyPenguin.SemanticInterface
                                 var checkType = Model.ResolveType(exp.SubExpressions[1].Text, scope: this);
                                 if (checkType == null)
                                     throw new BabyPenguinException($"Cant resolve type '{exp.SubExpressions[1].Text}'", exp.SubExpressions[1].SourceLocation, code: ErrorCode.E_RESOLVE_TYPE);
-                                AddInstruction(new TypeCheckInstruction(exp.SourceLocation, leftVar, checkType, to));
+                                // Static `is I` folding (primitive interfaces round): a sealed
+                                // static type (primitive incl. string — BasicTypeNode carries the
+                                // `impl IHash for i64` vtables — value class, or enum) answers
+                                // interface membership at compile time from the type node's vtable
+                                // set; reference classes fold TRUE only (a subclass may implement
+                                // more interfaces). Undecidable cases (interface-typed or generic
+                                // LHS) keep the runtime TypeCheckInstruction.
+                                bool? folded = null;
+                                if (checkType.TypeNode is IInterfaceNode)
+                                {
+                                    var lhsNode = leftVar.TypeInfo?.TypeNode;
+                                    if (lhsNode is not IInterfaceNode && lhsNode is IVTableContainer container)
+                                    {
+                                        var rhsName = checkType.TypeNode.FullName();
+                                        var hit = container.ImplementedInterfaces.Any(i => i.FullName() == rhsName);
+                                        var sealedKind = lhsNode is BasicTypeNode || lhsNode is IEnumNode
+                                            || container.ImplementedInterfaces.Any(i => i.FullName() == "__builtin.IValueType");
+                                        folded = hit ? true : sealedKind ? false : null;
+                                    }
+                                }
+                                if (folded.HasValue)
+                                    AddInstruction(new AssignLiteralToSymbolInstruction(exp.SourceLocation, to, Model.BasicTypeNodes.Bool.ToType(Mutability.Immutable), folded.Value ? "true" : "false"));
+                                else
+                                    AddInstruction(new TypeCheckInstruction(exp.SourceLocation, leftVar, checkType, to));
                             }
                         }
                     }

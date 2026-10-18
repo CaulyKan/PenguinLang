@@ -72,6 +72,15 @@ A value whose static type is an interface dispatches method calls through a **vt
 
 Reference types are not copied: an interface reference and a class reference are the same pointer.
 
+## Primitive Interfaces
+
+Primitives (the numeric types, `bool`, `char`, `string`) can implement interfaces via `impl IHash for i64`. Such impls do not enter the boxing/vtable machinery: a method call on a statically-known primitive (`k.hash()`) compiles to a **direct call** of the impl's function. Two rules follow:
+
+* `prim is I` on a statically-known primitive (or any sealed type — value class, enum) folds to a compile-time constant from the impl registry, both directions; reference classes fold only a positive answer (a subclass may implement more interfaces), and interface-typed variables keep the runtime check.
+* The only interface-typed use of an unboxed primitive is the **immediate-call exception**: `cast<I>(prim).m(...)` is legal and rewritten to the direct call of the primitive's impl. A primitive-to-interface cast in any other position (assignment, argument, return, let-initializer) is a compile error — "interface cast of a primitive is only allowed as the receiver of an immediate method call" — as is an implicit `let b : I = prim`. For true polymorphism over a primitive, use `Box<T>`.
+
+`Box<T>` is that sanctioned bridge, and it forwards automatically: a `Box<T>` specialization re-implements every interface T implements by delegating each method to `this.value` — direct calls (`box.hash()`), interface-typed storage (`let b : IHash = box`), and the static `is` all work, including nested `Box<Box<T>>` (the inner Box's forwarded interfaces are forwarded again). Not forwarded: runtime-marker interfaces (`ICopy`, `IReferenceType`, `IValueType`, `IMemoryDispose`, `IUniqueMangleName`, `ISync` — forwarding ICopy would flip Box's reference semantics), generic interfaces, and interfaces whose methods take `mut this` (forwarding would need a mutable value slot).
+
 ## Marker Interfaces
 
 Several interfaces in the type system have no methods and act as markers (see [Data Types](./03_DataTypes.md)):

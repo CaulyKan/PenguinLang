@@ -504,6 +504,107 @@ class SemanticModel {
         return new Option<string>.none();
     }
 
+    // Normalize an interface name for static `is` matching: strip generic
+    // args ("IIterator<i64>" -> "IIterator") and take the last dotted
+    // segment ("__builtin.ICopy" -> "ICopy"), so the three spellings that
+    // meet here all compare equal — primitive_impl registry entries (the
+    // impl declaration's source text), vtable interface_types (display
+    // names) and `is` RHS type symbols (full names).
+    fun iface_name_key(this, name: string) -> string {
+        let n: mut string = name;
+        // Strip generic args ("IIterator<i64>" -> "IIterator"). lt == 0 is the
+        // compilation's "<global>." scope prefix (full names start with it),
+        // not a generic list — leave it to the last-dot strip below.
+        let lt: i64 = string_find(n, "<");
+        if (lt > 0) {
+            n = string_substring(n, 0, lt);
+        }
+        let last_dot: mut i64 = -1;
+        let i: mut i64 = 0;
+        while (i < string_length(n)) {
+            if (string_char_at(n, i) == ".") { last_dot = i; }
+            i = i + 1;
+        }
+        if (last_dot >= 0) {
+            n = string_substring(n, last_dot + 1, string_length(n) - last_dot - 1);
+        }
+        return n;
+    }
+
+    // Static `is I` folding query (primitive interfaces round): given the
+    // LHS static type and the RHS interface type, decide interface
+    // membership at compile time.
+    //   some(true)  — statically KNOWN to implement I
+    //   some(false) — statically KNOWN NOT to implement I (sealed kinds
+    //                 only: primitives incl. string, value classes, enums —
+    //                 nothing can add an impl later)
+    //   none()      — keep the runtime ISINSTANCE (interface-typed or
+    //                 generic LHS; reference-class negative side — a
+    //                 subclass may implement more interfaces)
+    fun static_is_interface(this, lhs: BoundType, rhs: BoundType) -> Option<bool> {
+        if (!(rhs.kind is TypeKind.InterfaceKind)) { return new Option<bool>.none(); }
+        let rhs_key: string = this.iface_name_key(rhs.display_name());
+        // Primitives (incl. string): the primitive_impl registry decides
+        // BOTH ways — `impl IHash for i64` records the (i64, IHash) pair at
+        // bind time; no record means no impl.
+        if (lhs.kind is TypeKind.PrimitiveKind) {
+            let lhs_name: string = lhs.display_name();
+            let i: mut i64 = 0;
+            while (i < cast<i64>(this.primitive_impl_for_type.size())) {
+                if (this.primitive_impl_for_type.at(cast<u64>(i)).some == lhs_name
+                    && this.iface_name_key(this.primitive_impl_iface.at(cast<u64>(i)).some) == rhs_key) {
+                    return new Option<bool>.some(true);
+                }
+                i = i + 1;
+            }
+            return new Option<bool>.some(false);
+        }
+        // Value classes and enums are sealed (no subclassing in the
+        // language): the vtable set decides both ways. type_definition-less
+        // placeholders (generic parameters) stay runtime.
+        if (lhs.is_value_type()) {
+            if (let ld := lhs.type_definition.some) {
+                if (ld is BoundDefinition.class_def) {
+                    let vi: mut i64 = 0;
+                    while (vi < cast<i64>(ld.class_def.vtables.size())) {
+                        if (this.iface_name_key(ld.class_def.vtables.at(cast<u64>(vi)).some.interface_type.display_name()) == rhs_key) {
+                            return new Option<bool>.some(true);
+                        }
+                        vi = vi + 1;
+                    }
+                }
+                if (ld is BoundDefinition.enum_def) {
+                    let vi: mut i64 = 0;
+                    while (vi < cast<i64>(ld.enum_def.vtables.size())) {
+                        if (this.iface_name_key(ld.enum_def.vtables.at(cast<u64>(vi)).some.interface_type.display_name()) == rhs_key) {
+                            return new Option<bool>.some(true);
+                        }
+                        vi = vi + 1;
+                    }
+                }
+                return new Option<bool>.some(false);
+            }
+            return new Option<bool>.none();
+        }
+        // Reference class: TRUE folds from the vtable set; FALSE stays a
+        // runtime check (a subclass may implement MORE interfaces than the
+        // static type shows — same conservatism as the class-is rule).
+        if (lhs.kind is TypeKind.ClassKind) {
+            if (let ld := lhs.type_definition.some) {
+                if (ld is BoundDefinition.class_def) {
+                    let vi: mut i64 = 0;
+                    while (vi < cast<i64>(ld.class_def.vtables.size())) {
+                        if (this.iface_name_key(ld.class_def.vtables.at(cast<u64>(vi)).some.interface_type.display_name()) == rhs_key) {
+                            return new Option<bool>.some(true);
+                        }
+                        vi = vi + 1;
+                    }
+                }
+            }
+        }
+        return new Option<bool>.none();
+    }
+
     // The hidden _Fanout hub full name for a netted variable (a connect
     // source registered at desugar time), or "". Resolution goes through the
     // scope: the hub symbol must resolve from here AND its owner-qualified

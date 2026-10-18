@@ -3671,6 +3671,34 @@ class BindExpressionsPass {
             // Comparison and `is` operators produce bool result
             if (cast<i64>(operators.size()) > 0) {
                 let first_op: BinaryOperator = operators.at(cast<u64>(0)).some;
+                // Static `is I` folding (primitive interfaces round): when the
+                // LHS static type and the RHS interface are both compile-time
+                // known and the static type is sealed (primitive/string/value
+                // class/enum — or a positive vtable hit on any class), `expr is I`
+                // folds to a bool literal and no runtime ISINSTANCE is emitted.
+                // This also removes the old VM/native divergence for
+                // `s is IStringOps` (native read string metadata's empty
+                // interface_map and said false).
+                if (first_op is BinaryOperator.Is
+                    && cast<i64>(operators.size()) == 1
+                    && cast<i64>(operands.size()) == 2) {
+                    let rhs_expr: BoundExpression = operands.at(cast<u64>(1)).some;
+                    if (rhs_expr is BoundExpression.identifier) {
+                        let id_e: BoundIdentifierExpression = rhs_expr.identifier;
+                        if (let tsym := id_e.symbol.some) {
+                            if (tsym is BoundSymbol.type_sym) {
+                                if (tsym.type_sym.bound_type.kind is TypeKind.InterfaceKind) {
+                                    let folded: Option<bool> = this.model.some.static_is_interface(operands.at(cast<u64>(0)).some.get_bound_type(), tsym.type_sym.bound_type);
+                                    if (let fv := folded.some) {
+                                        let text: string = if (fv) { "true" } else { "false" };
+                                        let lit: mut BoundLiteralExpression = new BoundLiteralExpression(text, this.model.some.type_registry.bool_type, new LiteralKind.BoolLiteral());
+                                        return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 if (first_op is BinaryOperator.Is
                     || first_op is BinaryOperator.Equal
                     || first_op is BinaryOperator.NotEqual
@@ -4114,8 +4142,87 @@ class BindExpressionsPass {
         return new BoundExpression.member_access(ma);
     }
 
+    // Quiet probes for the interface-cast immediate-call rewrite below: resolve
+    // a cast's target as an interface WITHOUT reporting (a failed resolution
+    // just means the rewrite does not apply and the cast binds normally).
+    // Uses the SAME resolution path as bind_cast (resolve_type_specifier with
+    // its anywhere fallbacks) so the two never disagree; failures resolve to
+    // the error type, which is not InterfaceKind, so the rewrite declines.
+    fun probe_cast_target_iface(mut this, ts: TypeSpecifier, scope: BoundScope) -> Option<BoundType> {
+        let saved: bool = this.model.some.suppress_report_errors;
+        this.model.some.suppress_report_errors = true;
+        let probe: mut BoundType = this.model.some.resolve_type_specifier(ts, scope);
+        this.model.some.suppress_report_errors = saved;
+        if (probe.kind is TypeKind.InterfaceKind) {
+            return new Option<BoundType>.some(probe);
+        }
+        return new Option<BoundType>.none();
+    }
+
+    fun probe_cast_target_iface_anywhere(this, name: string) -> Option<BoundType> {
+        let anywhere: Option<BoundSymbol> = this.model.some.global_scope.lookup_type_anywhere(name);
+        if (anywhere.is_some() && anywhere.some is BoundSymbol.type_sym) {
+            if (anywhere.some.type_sym.bound_type.kind is TypeKind.InterfaceKind) {
+                return new Option<BoundType>.some(anywhere.some.type_sym.bound_type);
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
     fun bind_member_access(mut this, expr: MemberAccessExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_member_access");        if (expr.base_expr.is_some()) {
+            // Interface-cast immediate-call exception (primitive interfaces
+            // round): `cast<I>(prim).m(...)` — when the base of this member
+            // access is a cast to an INTERFACE whose inner expression is a
+            // primitive (incl. string), rewrite to a plain `prim.m(...)` and
+            // rebind, so the primitive interface-method dispatch (the
+            // primitive_impl registry) resolves a direct call. This is the
+            // ONLY sanctioned position for a primitive-to-interface cast:
+            // the rewritten AST drops the cast node entirely, so bind_cast's
+            // E_TYPE_MISMATCH for every other position stays in force.
+            if (expr.base_expr.some is Expression.cast_expr) {
+                let rce: CastExpression = expr.base_expr.some.cast_expr;
+                let target_iface: Option<BoundType> = if (rce.target_type.is_some()) {
+                    this.probe_cast_target_iface(rce.target_type.some, scope)
+                } else {
+                    this.probe_cast_target_iface_anywhere(rce.type_name)
+                };
+                if (target_iface.is_some() && rce.inner.is_some()) {
+                    // The cast must be resolved through the TARGET interface's
+                    // member set: `cast<IHash>(a).foo()` may not reach a method
+                    // some OTHER primitive impl provides.
+                    let iface_declares: mut bool = false;
+                    if (let idef := target_iface.some.type_definition.some) {
+                        if (idef is BoundDefinition.interface_def) {
+                            if (idef.interface_def.scope.is_some()) {
+                                let msym: Option<BoundSymbol> = idef.interface_def.scope.some.lookup_symbol(expr.member_name);
+                                if (msym.is_some() && msym.some is BoundSymbol.function_sym) {
+                                    iface_declares = true;
+                                }
+                            }
+                        }
+                    }
+                    if (iface_declares) {
+                        // Probe with port sugar SUPPRESSED: the E5 port rewrites
+                        // generate cast-shaped ASTs whose inner is a port member
+                        // access — probing that with the bare-read sugar on would
+                        // desugar into another cast and recurse forever.
+                        let saved: bool = this.model.some.suppress_report_errors;
+                        this.model.some.suppress_report_errors = true;
+                        let inner_bound: Option<BoundExpression> = this.bind_expr_no_port_sugar(rce.inner.some, scope);
+                        this.model.some.suppress_report_errors = saved;
+                        if (inner_bound.is_some()) {
+                            let ibt: BoundType = inner_bound.some.get_bound_type();
+                            if (ibt.kind is TypeKind.PrimitiveKind) {
+                                let rew: mut MemberAccessExpression = new MemberAccessExpression();
+                                rew.base_expr = rce.inner;
+                                rew.member_name = expr.member_name;
+                                return this.bind_member_access(rew, scope);
+                            }
+                        }
+                    }
+                }
+            }
             // E5 receiver-raw rule: when the base of this member access is
             // itself a member access onto a declared port field, the access
             // operates on the port's CHANNEL OBJECT (a method call like
@@ -6104,6 +6211,23 @@ class BindExpressionsPass {
 
         if (inner.is_some() && !expr.is_unsafe) {
             let inner_type: BoundType = inner.some.get_bound_type();
+            // Primitive-to-interface cast position guard (primitive
+            // interfaces round): the ONLY legal form is the immediate-call
+            // receiver `cast<I>(p).m()`, handled by bind_member_access's
+            // rewrite — which drops the cast node before it ever binds.
+            // Reaching here means the cast stands alone (assignment,
+            // argument, return, let-init, ...): reject it. `let b : I = p`
+            // (no cast) is rejected by the assignment/implicit-cast checks,
+            // as before.
+            if (target_type.kind is TypeKind.InterfaceKind) {
+                if (inner_type.kind is TypeKind.PrimitiveKind) {
+                    this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                        "cannot cast primitive '" + inner_type.display_name() + "' to interface '" + target_type.display_name()
+                        + "': interface cast of a primitive is only allowed as the receiver of an immediate method call (cast<I>(p).m()); for true polymorphism use Box<T>",
+                        expr.location);
+                    return new Option<BoundExpression>.none();
+                }
+            }
             // Boxing: value type (class or enum) → interface. SKIPPED for
             // unsafe_cast — a raw reinterpret (e.g. i64 object_ref → interface
             // via inttoptr, penguin_meta_get_object) must not box.
