@@ -136,13 +136,8 @@ fun _mark_ast_exported(def: Definition) {
                 return this.parse_ifExpression();
             } else if (token.token_type is TokenType.While) {
                 return this.parse_whileExpression();
-            } else if (token.token_type is TokenType.Cast || token.token_type is TokenType.UnsafeCast) {
-                let is_unsafe: bool = token.token_type is TokenType.UnsafeCast;
-                if (is_unsafe) {
-                    this.stream.expect(new TokenType.UnsafeCast());
-                } else {
-                    this.stream.expect(new TokenType.Cast());
-                }
+            } else if (token.token_type is TokenType.Cast) {
+                this.stream.expect(new TokenType.Cast());
                 this.stream.expect(new TokenType.Less());
                 // Parse a full type specifier so generic args and qualified names work:
                 //   cast<IFoo<u8>>(x), cast<mut Self>(this), cast<ns.Foo>(x)
@@ -165,7 +160,6 @@ fun _mark_ast_exported(def: Definition) {
                 cast_node.target_type = new Option<TypeSpecifier>.some(target_type);
                 cast_node.location = target_type.location;
                 cast_node.inner = new Option<Expression>.some(cast_inner);
-                cast_node.is_unsafe = is_unsafe;
                 return new Expression.cast_expr(cast_node);
             } else if (token.token_type is TokenType.Let) {
                 return this.parse_tryBindExpression();
@@ -2384,8 +2378,9 @@ fun _mark_ast_exported(def: Definition) {
                 // M6-step2 4c: 'type'/'ast' stay bare keywords; any other kind is a
                 // FULL type specifier so generic reference types parse — (l: List<i64>)
                 // previously left the <i64> unconsumed. Map to the ABI kind: scalars
-                // keep their kind name; reference types -> "object" (the caller-stub
-                // materializes the live pointer via penguin_meta_get_object).
+                // keep their kind name; reference types -> "object" (the handle
+                // flows as i64 and the caller-stub materializes the live
+                // reference via penguin_meta_get_object).
                 let kt: Token = this.stream.peek();
                 if (kt.text == "type" || kt.text == "ast" || kt.text == "unstructured_ast") {
                     this.stream.advance();

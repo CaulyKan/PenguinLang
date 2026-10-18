@@ -36,13 +36,21 @@ fun penguin_meta_get_type(token: i64) -> BoundType {
     return new BoundType();
 }
 
-// M6-step2 object bridge: recover a LIVE object from an object_ref address (a
-// value-template object argument's live address in the compiler's GC heap).
-// Implemented in C (std/c/core_builtin.c: emperor_penguin_meta_get_object,
-// pure inttoptr) so it is callable from JIT'd #fun bodies via the
-// meta_extern_decls extern — a PenguinLang body here would need unsafe_cast,
-// which pass1's parser (BabyPenguin/ANTLR) does not accept. The #fun body
-// casts the returned IReferenceType down to the concrete type before use.
+// Object bridge (handle-based): objects cross the meta boundary as 1-based
+// handles into the engine's object_values registry — never as raw addresses.
+// register_object stores a LIVE reference (so the GC-traced registry keeps it
+// alive; no pin) and returns the handle; get_object resolves a handle back to
+// the IReferenceType, which the #fun body casts down to the concrete type.
+// Both are plain registry accessors over active_meta; the object-return
+// caller-stub and object args call them through the meta_extern_decls externs,
+// and #fun bodies may call them directly.
+fun penguin_meta_get_object(handle: i64) -> __builtin.IReferenceType {
+    return active_meta.get_object_value(handle);
+}
+
+fun penguin_meta_register_object(obj: __builtin.IReferenceType) -> i64 {
+    return active_meta.register_object_value(obj);
+}
 
 // Phase 6 codegen bridge (kept from Round 1, NOT reflection): a #fun builds a
 // code string at meta-runtime and #create_expression / #create_definition parse

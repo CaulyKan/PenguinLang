@@ -150,7 +150,6 @@ fun keyword_list() -> mut std.Vector<string> {
     kws.push("export");
     kws.push("new");
     kws.push("cast");
-    kws.push("unsafe_cast");
     kws.push("this");
     kws.push("Self");
     kws.push("is");

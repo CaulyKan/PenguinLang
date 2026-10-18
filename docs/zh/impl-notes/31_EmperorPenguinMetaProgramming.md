@@ -20,7 +20,7 @@ JIT 是小 C API 背后的 LLVM ORC：`std/c/penguin_jit.h`（`_emperor_penguin_
 3. 用嵌套 `EmperorPenguinCompiler` 编译单元 B（`top_level_in_global = true`、`is_unit_b = true`，534–542 行），源集为 `base_meta_sources()`（172 行）：`core_builtin.penguin`、`utils.penguin`、`meta_runtime.penguin`、整个 bound 层（BoundType/BoundDefinition/BoundSymbol/BoundScope/……）、AST 层、`ErrorCode.penguin`——自包含（约 4271 行）。JIT 中的弱符号去重使重新输出的定义解析到宿主的强导出（`emperor_BoundType_fields`……）——这正是反射成为真实指针复用的原因。用户 `--meta-src` 文件逐字追加（500–514 行）。
 4. `IRGenerator` + `LLVMEmitter` → LLVM IR 文本（556–568 行；verbose ≥ 2 时转储 `/tmp/unit_b.ll`），然后 `penguin_jit_add_module` + `penguin_jit_lookup`（571–585 行）。
 
-调用经 `call_meta_function_stub`（732 行）：惰性编译的**无参调用桩** `__stub_<sanitized>_<idx>`，其 LLVM IR 把实参烘焙为常量——`type` 实参经 `declare ptr @emperor_penguin_meta_get_type(i64)` 物化、string/double 经其令牌 getter、引用实参经 `get_object`（加 `gc_pin_object`）、bool 为 i8、其余为 i64（788–860 行）。返回编组（861–920 行）：i64 直返；bool zext；double/type/string 存入模块全局 `@emperor_active_double_result` / `@emperor_penguin_active_type_result` / `@emperor_active_string_result` 并 `ret i64 0`；引用返回 ptrtoint。
+调用经 `call_meta_function_stub`（763 行）：惰性编译的**无参调用桩** `__stub_<sanitized>_<idx>`，其 LLVM IR 把实参烘焙为常量——`type` 实参经 `declare ptr @emperor_penguin_meta_get_type(i64)` 物化、string/double 经其令牌 getter、object 实参以 1 起始的**句柄**表示、经 `penguin_meta_get_object`（MetaHost 里的注册表查询——不经过裸地址）还原为活引用，bool 为 i8、其余为 i64（803–875 行）。返回编组（876–945 行）：i64 直返；bool zext；double/type/string 存入模块全局 `@emperor_active_double_result` / `@emperor_penguin_active_type_result` / `@emperor_active_string_result` 并 `ret i64 0`；object 返回在**桩内**就登记进句柄注册表（`call i64 @emperor_penguin_meta_register_object(ptr %r)`）——引用在宿主侧从不变成整数，由 GC 追踪的注册表（`List<IReferenceType>`）保活，无需 pin。
 
 ## MetaHost——宿主应答器
 

@@ -1,6 +1,6 @@
 # MetaFunObjectBridge
 ## Description
-`penguin_meta_get_object(ref)` — the M6-step2 object bridge that recovers a LIVE object from an object_ref address (pure inttoptr via unsafe_cast; the binder gates boxing on !is_unsafe so the raw i64 becomes a reference). This tests the full compile-time object-recovery pipeline inside a #fun: allocate a StringBuilder in the meta JIT's GC heap → `unsafe_cast<i64>` takes its address (object_ref) → `emperor.penguin_meta_get_object` recovers it as an IReferenceType → checked `cast<StringBuilder>` down → mutate + read the SAME object ("bridge" + "!" = "bridge!"). This is the machinery the object value-template-arg flow (later bricks) uses to introspect compile-time objects. Verified on native Pass2/Pass3 (JIT-only feature).
+`penguin_meta_register_object(obj)` / `penguin_meta_get_object(handle)` — the object bridge over HANDLE tokens (replaces the old raw-address bridge that needed unsafe_cast): register_object stores the live reference into the MetaEngine's handle registry (a GC-traced List<IReferenceType>, so the object stays alive precisely — no pin) and returns a 1-based handle; get_object resolves the handle back to the SAME object. This tests the full compile-time object pipeline inside a #fun: allocate a StringBuilder in the meta JIT's GC heap → `emperor.penguin_meta_register_object(sb)` takes a handle → `emperor.penguin_meta_get_object` recovers it as an IReferenceType → checked `cast<mut StringBuilder>` down → mutate + read the SAME object ("bridge" + "!" = "bridge!"). Verified on native Pass2/Pass3 (JIT-only feature).
 
 ## Apply To
 * EmperorPenguin Pass2
@@ -11,8 +11,8 @@
 #fun obj_bridge() -> string {
     let mut sb = new StringBuilder();
     sb.append("bridge");
-    let p: i64 = unsafe_cast<i64>(sb);
-    let r = emperor.penguin_meta_get_object(p);
+    let h: i64 = emperor.penguin_meta_register_object(sb);
+    let r = emperor.penguin_meta_get_object(h);
     let mut sb2 = cast<mut StringBuilder>(r);
     sb2.append("!");
     return sb2.to_string();

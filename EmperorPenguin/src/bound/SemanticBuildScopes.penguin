@@ -500,8 +500,8 @@ class BuildScopesPass {
             || constraint == "u8" || constraint == "u16" || constraint == "u32" || constraint == "u64"
             || constraint == "char") { return "i64"; }
         // M6-step2 4c: a reference-typed constraint (List<i64>, user classes, ...)
-        // is an OBJECT value param — the address flows as i64 and the caller-stub
-        // materializes the live pointer via penguin_meta_get_object.
+        // is an OBJECT value param — the registry HANDLE flows as i64 and the
+        // caller-stub materializes the live reference via penguin_meta_get_object.
         return "object";
     }
 

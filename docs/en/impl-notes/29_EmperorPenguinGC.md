@@ -13,7 +13,7 @@ Code map:
 | File | Contents |
 | --- | --- |
 | `EmperorPenguin/std/c/gc_span.c` | The span heap: size classes, superchunk supply, per-thread arenas, allocation, O(1) address→span, gray/black bitmap marking, sweep |
-| `EmperorPenguin/std/c/gc.c` | Root discovery (frame chains, globals, regions, meta pins, quarantine), the precise ref-map walk, the malloc large-object heap with its sorted interior-pointer index, the collection driver, the unified heap goal, the hard-cap valve, the safepoint poll |
+| `EmperorPenguin/std/c/gc.c` | Root discovery (frame chains, globals, regions, quarantine), the precise ref-map walk, the malloc large-object heap with its sorted interior-pointer index, the collection driver, the unified heap goal, the hard-cap valve, the safepoint poll |
 | `EmperorPenguin/std/include/gc_internal.h` | Internal interface shared by the two units (GCHeader, layout constants, `gt_*` API) |
 | `EmperorPenguin/std/include/emperor_gc.h` | Public runtime API (`_emperor_gc_init`, roots, buffers, polls, introspection) |
 
@@ -196,7 +196,6 @@ forever in the gap between the two.
 | Globals | `_emperor_gc_add_root(void**)` registry (swap-remove on unregister); value-class/enum globals additionally register their whole struct as a scan region. |
 | Native arrays `array<T>` | First-class GC objects — no registration needed. Layout `{ ptr metadata, i64 length, elements... }`; the per-element-type metadata's refmap is a REFARR node (kind 3: `elem_stride`, `elem_sub`), and the walker reads the live count at object+8 and walks each element with `elem_sub` (primitive elements are a precise no-op, not a conservative scan). Containers (List/Vector/HashMap) are backed by `array<T>` slots now, so container graphs trace precisely through ordinary object marking. |
 | Coroutine stacks | Registered as regions by the scheduler, narrowed to `[parked_sp, top)` via `_emperor_gc_scan_set_live` so dead frames below a parked sp — stale garbage a conservative scan would pin forever — are excluded; the RUNNING coroutine's region is capped at the collect-time sp. |
-| Meta pins | `_emperor_gc_pin_object`: compile-time object values baked into meta stubs as raw i64 addresses are pinned for the process lifetime (integers are invisible to the marker). |
 | Quarantine ring | A bounded ring (512 entries) of each arena's most recent allocations — covers freshly allocated objects that are reachable only from unhomed SSA temporaries (the `this.f = new Outer(new Inner(...))` shape: the Inner result has no slot and no heap home until the statement completes, yet polls sit between the two allocations). Explicit `gc_collect()` cycles DROP the rings (collect-now semantics — young garbage must die; the conservative cover below holds the in-flight temps); automatic cycles consume them. |
 | Conservative stack cover | Word-scan of the main stack(s) — always on. Safe in a non-moving collector: a hit is merely an extra mark, so no pinning machinery exists. Each registered thread contributes `[base, boundary watermark)`; the collecting thread's own stack is scanned from the sp (spilled registers included via a `setjmp` flush) up to its watermark. |
 
@@ -302,7 +301,7 @@ gc_collect_greentea():
     guards: disabled / no stack / already collecting
     setjmp register flush; capture sp
     gc_refresh_sorted()                     # incremental index merge
-    mark: global roots → meta pins → frame chains (running + parked)
+    mark: global roots → frame chains (running + parked)
           → regions (conservative word-scan)
     gc_mark_drain()
     quarantine: explicit cycle drops the rings, auto cycle consumes them

@@ -35,7 +35,7 @@ enum TypeKind {
 }
 
 // D5: the sub-kind of a value (non-type) template argument. Scalars carry their
-// value directly; ObjectArg carries a live address (object_ref, M3b) + canonical
+// value directly; ObjectArg carries a registry handle (object_handle) + canonical
 // unique_name for stable mangling/dedup of arbitrary data-structure args.
 enum ValueArgSubKind {
     IntArg;
@@ -55,8 +55,9 @@ class BoundTypeArgType {
 // in Foo<...>). value_type is the value's STATIC type (self-describing —
 // distinguishes Foo<Option.some(5)> from Foo<my_box>). unique_name is the stable
 // canonical name for non-scalar args (IUniqueMangleName), used for mangling/dedup;
-// "" for scalar args (mangled by value). object_ref is the live address for
-// ObjectArg (M3b). Replaces the former is_template_value_arg hack fields.
+// "" for scalar args (mangled by value). object_handle is the object_values
+// registry handle for ObjectArg (the live reference itself never leaves the
+// registry). Replaces the former is_template_value_arg hack fields.
 class BoundTypeArgValue {
     value_type: BoundType = new BoundType();
     unique_name: mut string = "";
@@ -67,7 +68,7 @@ class BoundTypeArgValue {
     // double does not round-trip, so the canonical mangle text is kept here).
     string_val: mut string = "";
     double_val: mut double = 0.0;
-    object_ref: mut i64 = 0;
+    object_handle: mut i64 = 0;
 
     // The (value, text, kind) triple consumed by make_value_literal when
     // substituting a value param -> its constant inside a specialized body.
@@ -76,10 +77,11 @@ class BoundTypeArgValue {
             if (this.bool_val) { return 1; }
             return 0;
         }
-        // M6-step2 4b: an object arg's i64 projection is the LIVE ADDRESS — value
-        // substitution into template bodies (and stub tokens) uses it.
+        // An object arg's i64 projection is its registry HANDLE — value
+        // substitution into template bodies (and stub tokens) uses it; the
+        // caller-stub resolves it back through penguin_meta_get_object.
         if (this.value_arg_kind is ValueArgSubKind.ObjectArg) {
-            return this.object_ref;
+            return this.object_handle;
         }
         return this.int_val;
     }
@@ -174,12 +176,12 @@ fun make_double_value_arg(val: double, text: string) -> BoundTypeArg {
     return new BoundTypeArg.value_arg(v);
 }
 
-fun make_object_value_arg(vt: mut BoundType, unique_name: string, object_ref: i64) -> BoundTypeArg {
+fun make_object_value_arg(vt: mut BoundType, unique_name: string, object_handle: i64) -> BoundTypeArg {
     let v: mut BoundTypeArgValue = new BoundTypeArgValue();
     v.value_type = vt;
     v.value_arg_kind = new ValueArgSubKind.ObjectArg();
     v.unique_name = unique_name;
-    v.object_ref = object_ref;
+    v.object_handle = object_handle;
     return new BoundTypeArg.value_arg(v);
 }
 

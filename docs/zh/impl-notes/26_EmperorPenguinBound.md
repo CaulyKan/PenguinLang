@@ -49,7 +49,7 @@ BoundType
 └── is_async_function: bool     # 是否异步函数类型
 ```
 
-`BoundTypeArg` 是统一的模板参数表示（enum）：`type_arg: BoundTypeArgType`（类型参数，内含 `bound_type`）或 `value_arg: BoundTypeArgValue`（值参数：`value_arg_kind: ValueArgSubKind`（Int/Bool/String/Double/Object）、标量值字段、`unique_name`、`object_ref`）。
+`BoundTypeArg` 是统一的模板参数表示（enum）：`type_arg: BoundTypeArgType`（类型参数，内含 `bound_type`）或 `value_arg: BoundTypeArgValue`（值参数：`value_arg_kind: ValueArgSubKind`（Int/Bool/String/Double/Object）、标量值字段、`unique_name`、`object_handle`）。
 
 | 方法 | 说明 |
 |------|------|

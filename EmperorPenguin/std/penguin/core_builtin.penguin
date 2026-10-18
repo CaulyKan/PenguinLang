@@ -17,10 +17,6 @@ namespace __builtin {
     // representative fast-path scans (cumulative), 7 completed cycles,
     // 8 superchunks.
     extern fun gc_gt_stats(which : i64) -> i64;
-    // Pin a compile-time object value (a raw i64 address baked into a meta
-    // stub / template-arg environment) for the process lifetime — the GC
-    // retains it as a root because integers are invisible to the marker.
-    extern fun gc_pin_object(addr: u64);
 
     // Byte-level helpers for generic HashMap<K,V>: hash and equality over the raw
     // bytes of a value-type key (address + #sizeof). Routed to @_emperor_hash_bytes

@@ -6209,7 +6209,7 @@ class BindExpressionsPass {
         let inner: Option<BoundExpression> = this.bind_cast_inner(expr, target_type, scope);
         let result: mut BoundCastExpression = new BoundCastExpression(target_type, target_type, inner, false);
 
-        if (inner.is_some() && !expr.is_unsafe) {
+        if (inner.is_some()) {
             let inner_type: BoundType = inner.some.get_bound_type();
             // Primitive-to-interface cast position guard (primitive
             // interfaces round): the ONLY legal form is the immediate-call
@@ -6228,9 +6228,7 @@ class BindExpressionsPass {
                     return new Option<BoundExpression>.none();
                 }
             }
-            // Boxing: value type (class or enum) → interface. SKIPPED for
-            // unsafe_cast — a raw reinterpret (e.g. i64 object_ref → interface
-            // via inttoptr, penguin_meta_get_object) must not box.
+            // Boxing: value type (class or enum) → interface.
             if (target_type.kind is TypeKind.InterfaceKind) {
                 if (inner_type.is_value_type()) {
                     result.needs_boxing = true;

@@ -60,6 +60,16 @@ class MetaEngine {
     // double literal passed as a #fun arg is stored here; the caller-stub calls
     // penguin_meta_get_double_value(token) to materialize the live double.
     double_token_values: mut _utils.List<f64> = new _utils.List<f64>();
+    // Object-handle registry (the handle bridge): objects crossing the meta
+    // boundary are registered here as LIVE references under a 1-based handle —
+    // never as raw addresses. The list is a GC-traced root (List<IReferenceType>
+    // over a native array with a REFARR refmap), so registered objects stay
+    // alive precisely, with no pin needed. penguin_meta_register_object /
+    // penguin_meta_get_object (MetaHost responders) are the two ends: the
+    // object-return caller-stub calls register_object(ptr) INSIDE the JIT so the
+    // reference never becomes an integer on the host side, and object args /
+    // #fun bodies resolve handles back through get_object.
+    object_values: mut _utils.List<__builtin.IReferenceType> = new _utils.List<__builtin.IReferenceType>();
     // Phase 5c: AST registry. #create_expression / #create_definition parse a
     // literal code fragment into a structured AST node and store it here under a
     // 1-based token (shared counter, so tokens are globally unique). A #fun
@@ -147,10 +157,15 @@ class MetaEngine {
             // BoundType. Declared here so the bodies compile in unit B; the host
             // responder is wired in M3.
             + "    extern fun penguin_meta_specialize(name: string) -> BoundType;\n"
-            // M6-step2 object bridge: recover a live object from an object_ref
-            // address (host: pure inttoptr via unsafe_cast). The #fun body casts
-            // the returned IReferenceType down to the concrete type.
-            + "    extern fun penguin_meta_get_object(ref: i64) -> __builtin.IReferenceType;\n"
+            // Object bridge (handle-based): objects cross the meta boundary as
+            // 1-based handles into the engine's object_values registry (a
+            // GC-traced list of live references — no raw addresses, no pin).
+            // register_object stores a reference and returns its handle;
+            // get_object resolves a handle back to the IReferenceType, which
+            // the #fun body casts down to the concrete type. Implemented in
+            // MetaHost.penguin (plain registry lookup).
+            + "    extern fun penguin_meta_register_object(obj: __builtin.IReferenceType) -> i64;\n"
+            + "    extern fun penguin_meta_get_object(handle: i64) -> __builtin.IReferenceType;\n"
             + "}\n";
     }
 
@@ -782,11 +797,10 @@ class MetaEngine {
         let si: mut i64 = 0;
         while (si < cast<i64>(this.stub_keys.size())) {
             if (this.stub_keys.at(cast<u64>(si)).some == key) {
-                let cached_r: i64 = __builtin.penguin_jit_call_i64_0(this.stub_ptrs.at(cast<u64>(si)).some);
-                // The result may be a reference (object-kind return): pin it —
-                // its only holder on this side is the returned integer.
-                __builtin.gc_pin_object(cast<u64>(cached_r));
-                return cached_r;
+                // The result of an object-kind return is a HANDLE into the
+                // object_values registry — the registry itself holds the live
+                // reference, so no pin is needed here.
+                return __builtin.penguin_jit_call_i64_0(this.stub_ptrs.at(cast<u64>(si)).some);
             }
             si = si + 1;
         }
@@ -844,12 +858,11 @@ class MetaEngine {
                 sig_params = sig_params + "double";
                 call_args = call_args + "double " + d_reg;
             } else if (param_kind == "object") {
-                // M6-step2 4c: a reference-typed param — the baked i64 is the live
-                // address; materialize the object pointer via the C bridge (the
-                // #fun's real param is the reference type = ptr in LLVM). The
-                // address is PINNED as a GC root: it lives on only as an integer
-                // here and in the stub text, invisible to precise marking.
-                __builtin.gc_pin_object(cast<u64>(args.at(cast<u64>(ai2)).some));
+                // Object-kind param: the baked i64 is a HANDLE into the
+                // object_values registry; the stub materializes the live
+                // reference through the MetaHost responder (the #fun's real
+                // param is the reference type = ptr in LLVM). The registry
+                // holds the reference as a GC root, so nothing to pin.
                 needs_get_object = true;
                 let o_reg: string = "%obj" + cast<string>(ai2);
                 prelude = prelude + "  " + o_reg + " = call ptr @emperor_penguin_meta_get_object(i64 " + arg_val + ") \n";
@@ -907,19 +920,24 @@ class MetaEngine {
             && ret_kind != "i8" && ret_kind != "i16" && ret_kind != "i32" && ret_kind != "i64"
             && ret_kind != "u8" && ret_kind != "u16" && ret_kind != "u32" && ret_kind != "u64"
             && ret_kind != "char" && ret_kind != "void") {
-            // M6-step2 4c: a REFERENCE-typed return (e.g. -> List<i64>) — the callee
-            // returns ptr; convert to the address (i64) for the arity-0 trampoline.
-            // The host receives the address and (for template args) wraps it as a
-            // value arg. Runtime-constant splicing of references stays unsupported.
+            // An OBJECT-typed return (e.g. -> List<i64>) — the callee returns a
+            // real reference (ptr). The stub hands it STRAIGHT to the
+            // register_object responder, so the reference is stored into the
+            // GC-tracked object_values registry before it ever becomes an
+            // integer: the arity-0 trampoline returns the HANDLE (i64), and the
+            // host wraps it as a value arg. Runtime-constant splicing of
+            // object returns stays unsupported (a compile-time object is
+            // meaningless in the generated program).
             foo_ret = "ptr";
             object_ret = true;
+            get_type_decl = get_type_decl + "declare i64 @emperor_penguin_meta_register_object(ptr) \n";
         }
         let global_decl: mut string = "";
         let ret_line: mut string = "  ret i64 %r \n";
         if (bool_ret) {
             ret_line = "  %r64 = zext i8 %r to i64 \n  ret i64 %r64 \n";
         } else if (object_ret) {
-            ret_line = "  %r64 = ptrtoint ptr %r to i64 \n  ret i64 %r64 \n";
+            ret_line = "  %h = call i64 @emperor_penguin_meta_register_object(ptr %r) \n  ret i64 %h \n";
         } else if (double_ret) {
             global_decl = result_global + " = external global double \n";
             ret_line = "  store double %r, ptr " + result_global + " \n  ret i64 0 \n";
@@ -946,11 +964,9 @@ class MetaEngine {
         }
         this.stub_keys.push(key);
         this.stub_ptrs.push(stub_ptr);
-        let fresh_r: i64 = __builtin.penguin_jit_call_i64_0(stub_ptr);
-        // Same pin as the cached path above: an object-kind return's only
-        // holder here is the returned integer address.
-        __builtin.gc_pin_object(cast<u64>(fresh_r));
-        return fresh_r;
+        // An object-kind return is a HANDLE here (the stub registered the
+        // reference before returning it) — the registry holds the object alive.
+        return __builtin.penguin_jit_call_i64_0(stub_ptr);
     }
 
     // Sanitize a name for use as an LLVM IR symbol, mirroring
@@ -1284,6 +1300,28 @@ class MetaEngine {
             }
         }
         return new Option<f64>.none();
+    }
+
+    // Object-handle registry accessors (the handle bridge). register_object_value
+    // stores the LIVE reference and returns its 1-based handle; the reference is
+    // kept alive by the list itself (GC-traced), so no pin is involved.
+    // get_object_value throws on an out-of-range handle — handles are only ever
+    // produced here, so an invalid one is a compiler bug or a forged value.
+    fun register_object_value(mut this, obj: __builtin.IReferenceType) -> i64 {
+        this.object_values.push(obj);
+        return cast<i64>(this.object_values.size());
+    }
+
+    fun get_object_value(this, handle: i64) -> __builtin.IReferenceType {
+        if (handle >= 1) {
+            if (handle <= cast<i64>(this.object_values.size())) {
+                return this.object_values.at(cast<u64>(handle - 1)).some;
+            }
+        }
+        // Unreachable in practice (the throw is an sjlj jump); the trailing
+        // return only satisfies the return-path check.
+        __builtin.__throw_runtime_error("MetaEngine: invalid object handle " + cast<string>(handle), 1);
+        return this.object_values.at(cast<u64>(0)).some;
     }
 
     // -----------------------------------------------------------------

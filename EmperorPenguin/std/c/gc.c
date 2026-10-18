@@ -8,7 +8,7 @@
  *
  * Roots: per-function frame descriptors (emitted by LLVMEmitter; bare-ref
  * and ref-map struct slots), global roots (incl. value-class/enum globals
- * as conservative scan regions), meta-pinned objects, the fresh-object
+ * as conservative scan regions), the fresh-object
  * quarantine ring, and an always-on conservative main-stack cover (safe in
  * a non-moving collector: a hit is just an extra mark).
  *
@@ -758,32 +758,6 @@ static void _gc_st_report(void) {
 
 
 
-/* ---- Meta pinned objects ----
- * Compile-time value-template OBJECT arguments (MetaEngine "object" kind,
- * M6-step2 4c) cross the meta boundary as raw i64 addresses: baked into the
- * generated stub .ll text and stored in List<i64> template-arg
- * environments. Integers are invisible to the precise marker (and to any
- * ref-map walk), so the object they point at would be swept while still
- * semantically live. The engine pins such addresses for the process
- * lifetime — a compile is a short-lived process and the pin count is
- * bounded by distinct meta-evaluated object values. Pinning a non-pointer
- * i64 is a harmless no-op (resolve finds no block at that address). */
-static void** _emperor_gc_pinned = NULL;
-static size_t _emperor_gc_pinned_count = 0;
-static size_t _emperor_gc_pinned_capacity = 0;
-
-void _emperor_gc_pin_object(long long ref) {
-    if (!ref) return;
-    if (_emperor_gc_pinned_count == _emperor_gc_pinned_capacity) {
-        size_t new_capacity = _emperor_gc_pinned_capacity ? _emperor_gc_pinned_capacity * 2 : 64;
-        void** grown = (void**)realloc(_emperor_gc_pinned, new_capacity * sizeof(void*));
-        if (!grown) return; /* pin lost — over-retention risk only under OOM */
-        _emperor_gc_pinned = grown;
-        _emperor_gc_pinned_capacity = new_capacity;
-    }
-    _emperor_gc_pinned[_emperor_gc_pinned_count++] = (void*)(intptr_t)ref;
-}
-
 /* ---- Phase-3 diagnostics (env-gated, zero cost when unset) ----
  * EMPEROR_GC_STRESS_EVERY=N: every Nth poll collects regardless of the want
  * flag — makes rare precise-root misses (wrong frees) reproduce in one run.
@@ -1220,7 +1194,7 @@ static void gc_scan_regions_mark(void* raw_co_sp) {
 
 /* ---- Collection driver (green tea) ----
  * Single-generation, non-moving, stop-the-world full collection. Root
- * inventory: globals, meta pins, frame chains incl. parked coroutines,
+ * inventory: globals, frame chains incl. parked coroutines,
  * conservative regions (scheduler stacks), quarantine, conservative
  * main-stack cover. Heap side: small objects live in spans (gc_span.c),
  * large objects on the malloc list.
@@ -1268,12 +1242,6 @@ static void gc_collect_greentea(void) {
         void* obj = gc_resolve_any(*(void**)_emperor_gc_global_roots[i]);
         if (obj) {
             _emperor_gc_mark_object(obj);
-        }
-    }
-    for (size_t i = 0; i < _emperor_gc_pinned_count; i++) {
-        void* owner = gc_resolve_any(_emperor_gc_pinned[i]);
-        if (owner) {
-            _emperor_gc_mark_object(owner);
         }
     }
     gc_mark_frame_chain(_emperor_gc_frame_head);
@@ -1447,7 +1415,6 @@ void _emperor_gc_init(void* stack_bottom) {
     _emperor_gc_pending_count = 0;
     _emperor_gc_sorted_stale = 0;
     gt_each_arena(gc_quarantine_drop, NULL); /* arena-side rings */
-    _emperor_gc_pinned_count = 0;
     _emperor_gc_global_root_count = 0;
     _emperor_gc_scan_region_count = 0;
     _emperor_gc_region_map_capacity = 0;

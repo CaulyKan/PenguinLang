@@ -7758,10 +7758,11 @@ class LLVMEmitter {
         // Float precision
         if (from == "float" && to == "double") { return "fpext"; }
         if (from == "double" && to == "float") { return "fptrunc"; }
-        // M6-step2: unsafe_cast raw pointer<->integer (object_ref etc.) and
-        // pointer<->pointer reinterpret. References lower to LLVM ptr, so these
-        // fire for unsafe_cast<i64>(ref) / unsafe_cast<Ref>(i64) / unsafe_cast
-        // between reference types.
+        // Raw pointer<->integer and pointer<->pointer reinterpret, dispatched
+        // purely on IR types. References lower to LLVM ptr; these conversions
+        // are only reachable through compiler-internal channels now (the
+        // unsafe_cast keyword is gone) — e.g. checked casts the binder proves
+        // to be pointer-shaped.
         if (from == "ptr" && (to == "i64" || to == "i32" || to == "i16" || to == "i8")) { return "ptrtoint"; }
         if ((from == "i64" || from == "i32" || from == "i16" || from == "i8") && to == "ptr") { return "inttoptr"; }
         return "bitcast";

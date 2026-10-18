@@ -12,7 +12,7 @@ EmperorPenguin 运行时垃圾回收器是一个**单分代、不移动、stop-t
 | 文件 | 内容 |
 | --- | --- |
 | `EmperorPenguin/std/c/gc_span.c` | span 堆：size class、superchunk 供给、每线程 arena、分配、O(1) 地址→span、灰/黑位图标记、清扫 |
-| `EmperorPenguin/std/c/gc.c` | 根发现（帧链、全局、区域、meta 固定、隔离环）、精确 ref-map 遍历、带排序内部指针索引的 malloc 大对象堆、收集驱动、统一堆目标、硬上限阀、安全点轮询 |
+| `EmperorPenguin/std/c/gc.c` | 根发现（帧链、全局、区域、隔离环）、精确 ref-map 遍历、带排序内部指针索引的 malloc 大对象堆、收集驱动、统一堆目标、硬上限阀、安全点轮询 |
 | `EmperorPenguin/std/include/gc_internal.h` | 两个编译单元共享的内部接口（GCHeader、布局常量、`gt_*` API） |
 | `EmperorPenguin/std/include/emperor_gc.h` | 公开运行时 API（`_emperor_gc_init`、根、缓冲区、轮询、自省） |
 
@@ -174,7 +174,6 @@ stale，下一次刷新整体重建——丢失条目会让标记释放活对象
 | 全局 | `_emperor_gc_add_root(void**)` 注册表（注销时交换删除）；值类/枚举全局额外把整个 struct 注册为扫描区域。 |
 | 原生数组 `array<T>` | 一等 GC 对象——无需注册。布局 `{ ptr metadata, i64 length, elements... }`；元素类型的 metadata refmap 是 REFARR 节点（kind 3：`elem_stride`、`elem_sub`），walker 从对象+8 读存活数、用 `elem_sub` 逐元素走（primitive 元素是精确 no-op，不是保守扫描）。容器（List/Vector/HashMap）现在由 `array<T>` 槽位承载，容器图经由普通对象标记精确追踪。 |
 | 协程栈 | 由调度器注册为区域，经 `_emperor_gc_scan_set_live` 收窄到 `[parked_sp, top)`——停驻 sp 之下的死帧是保守扫描会永久钉住的陈旧垃圾，被排除；**运行中**协程的区域在收集时被 sp 封顶。 |
-| meta 固定 | `_emperor_gc_pin_object`：以裸 i64 地址烘焙进 meta stub 的编译期对象值被固定为进程生命周期的根（整数对标记器不可见）。 |
 | 隔离环 | 每个 arena 最近分配的有界环（512 项）——覆盖只被无家可归 SSA 临时值引用的新对象（`this.f = new Outer(new Inner(...))` 形态：Inner 结果在语句完成前没有 slot 也没有堆上的家，而两次分配之间就有轮询）。显式 `gc_collect()` 丢弃环（collect-now 语义——年轻垃圾必须死；在途临时值由下面的保守覆盖兜底）；自动周期消耗环。 |
 | 保守栈覆盖 | 主栈的按字扫描——永远开启。在不移动收集器中安全：命中只是多一个标记，因此不存在固定机制。每个注册线程贡献 `[base, boundary watermark)`；收集线程自己的栈从 sp（含 setjmp 溢出的寄存器）扫到它的 watermark。 |
 
@@ -263,7 +262,7 @@ gc_collect_greentea():
     守卫: disabled / no stack / already collecting
     setjmp 寄存器冲刷; 捕获 sp
     gc_refresh_sorted()                     # 增量索引合并
-    标记: 全局根 → meta 固定 → 帧链(运行中 + 停驻)
+    标记: 全局根 → 帧链(运行中 + 停驻)
           → 区域(保守按字扫描)
     gc_mark_drain()
     隔离环: 显式周期丢弃环, 自动周期消耗环

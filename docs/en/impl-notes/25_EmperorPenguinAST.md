@@ -92,7 +92,7 @@ All AST nodes provide a `build_text()` method; expression, statement, and defini
 | `if_expr` | IfExpression | `condition`, `then_block`, `else_block` (all `Option<Expression>`) | if expression |
 | `while_expr` | WhileExpression | `condition`, `body` (all `Option<Expression>`) | while expression |
 | `code_block` | CodeBlockExpression | `statements: List<Statement>`, `trailing_expr: Option<Expression>` | code block |
-| `cast_expr` | CastExpression | `type_name: string`, `target_type: Option<TypeSpecifier>`, `inner: Option<Expression>`, `is_unsafe: bool` | type cast (`is_unsafe` is `unsafe_cast`) |
+| `cast_expr` | CastExpression | `type_name: string`, `target_type: Option<TypeSpecifier>`, `inner: Option<Expression>` | type cast (the former `unsafe_cast` variant and its `is_unsafe` flag are retired — objects cross the meta boundary as handles now) |
 | `new_expr` | NewExpression | `type_name: string`, `generic_args: List<TypeSpecifier>`, `arguments: List<Expression>` | new expression |
 | `lambda_expr` | LambdaFunctionExpression | `parameters`, `return_type`, `body`, `is_async` | lambda function |
 | `spawn_async` | SpawnAsyncExpression | `expression: Option<Expression>` | async spawn |

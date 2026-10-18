@@ -31,9 +31,6 @@ namespace __builtin {
     extern fun penguin_jit_call_i64_i64_i64_i64(fn: u64, a: i64, b: i64, c: i64) -> i64;
     extern fun penguin_jit_call_ptr_ptr(fn: u64, a: u64) -> u64;
     extern fun penguin_jit_call_ptr_ptr_ptr(fn: u64, a: u64, b: u64) -> u64;
-    // GC object pinning for compile-time meta values (MetaEngine). Native-only
-    // (EmperorPenguin C runtime); type-checks here, never called in VM tests.
-    extern fun gc_pin_object(addr: u64);
 
     fun hello_world() {
         println("hello world!");
@@ -102,7 +99,13 @@ namespace __builtin {
 
     interface IValueType {}
 
-    interface IReferenceType {}
+    // Self-marker so the interface itself is reference-sized (callable as a
+    // return type and usable as a container element, e.g. the meta object
+    // bridge's handle table); mirrors core_builtin.penguin and IIterator's
+    // `impl IReferenceType`.
+    interface IReferenceType {
+        impl IReferenceType;
+    }
         
     impl __builtin.ICopy<i64> for i64;
     impl __builtin.ICopy<u64> for u64;

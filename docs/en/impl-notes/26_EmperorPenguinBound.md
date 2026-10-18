@@ -49,7 +49,7 @@ BoundType
 └── is_async_function: bool     # whether this is an async function type
 ```
 
-`BoundTypeArg` is the unified representation of template parameters (an enum): `type_arg: BoundTypeArgType` (a type argument, containing a `bound_type`) or `value_arg: BoundTypeArgValue` (a value argument: `value_arg_kind: ValueArgSubKind` (Int/Bool/String/Double/Object), scalar value fields, `unique_name`, `object_ref`).
+`BoundTypeArg` is the unified representation of template parameters (an enum): `type_arg: BoundTypeArgType` (a type argument, containing a `bound_type`) or `value_arg: BoundTypeArgValue` (a value argument: `value_arg_kind: ValueArgSubKind` (Int/Bool/String/Double/Object), scalar value fields, `unique_name`, `object_handle`).
 
 | Method | Description |
 |------|------|

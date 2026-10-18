@@ -65,19 +65,6 @@ void _emperor_boost_stack(void) {
 #define EMPEROR_ASSERT(cond, msg) do { } while (0)
 #endif
 
-/* M6-step2 object bridge: recover a live object from an object_ref address (a
- * compile-time value-template object argument's address in this process's GC
- * heap). Pure inttoptr. Called from JIT'd #fun bodies via the meta_extern_decls
- * extern `penguin_meta_get_object` in namespace emperor (mapped LITERAL to this
- * emperor_-prefixed symbol, matching the MetaHost responder convention — NOT
- * the _emperor_ builtin prefix). Implemented in C (not MetaHost.penguin)
- * because a PenguinLang body would need unsafe_cast, which pass1's
- * BabyPenguin/ANTLR parser does not accept. The #fun body casts the returned
- * reference down to the concrete type before use. */
-void* emperor_penguin_meta_get_object(long long ref) {
-    return (void *)(intptr_t)ref;
-}
-
 /* --- String core (emperor_string.h) --- */
 
 /* The string class metadata (see emperor_string.h). interface_count == 0, no

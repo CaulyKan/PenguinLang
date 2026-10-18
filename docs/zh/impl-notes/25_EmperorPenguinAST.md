@@ -92,7 +92,7 @@ TokenStream
 | `if_expr` | IfExpression | `condition`, `then_block`, `else_block` (all `Option<Expression>`) | if 表达式 |
 | `while_expr` | WhileExpression | `condition`, `body` (all `Option<Expression>`) | while 表达式 |
 | `code_block` | CodeBlockExpression | `statements: List<Statement>`, `trailing_expr: Option<Expression>` | 代码块 |
-| `cast_expr` | CastExpression | `type_name: string`, `target_type: Option<TypeSpecifier>`, `inner: Option<Expression>`, `is_unsafe: bool` | 类型转换（`is_unsafe` 为 `unsafe_cast`） |
+| `cast_expr` | CastExpression | `type_name: string`, `target_type: Option<TypeSpecifier>`, `inner: Option<Expression>` | 类型转换（昔日的 `unsafe_cast` 变体与 `is_unsafe` 标志已退役——对象如今以句柄跨元边界） |
 | `new_expr` | NewExpression | `type_name: string`, `generic_args: List<TypeSpecifier>`, `arguments: List<Expression>` | new 表达式 |
 | `lambda_expr` | LambdaFunctionExpression | `parameters`, `return_type`, `body`, `is_async` | lambda 函数 |
 | `spawn_async` | SpawnAsyncExpression | `expression: Option<Expression>` | async 启动 |

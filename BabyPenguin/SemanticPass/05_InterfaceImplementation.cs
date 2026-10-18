@@ -187,6 +187,24 @@ namespace BabyPenguin.SemanticPass
 
                     foreach (var implSyntax in interfaceImplementations)
                     {
+                        // A self-marker impl (`interface IReferenceType { impl IReferenceType; }`)
+                        // exists so the interface itself is reference-SIZED —
+                        // InterfaceIsReference reads it back through ImplementedInterfaces,
+                        // so the vtable edge MUST exist. But resolving the interface name
+                        // through the VTable constructor would Specialize → CatchUp →
+                        // re-enter this pass on the SAME interface before its PassIndex is
+                        // set (infinite recursion). Build the self-vtable directly instead.
+                        // (Matched by trailing name segment; a same-named interface from
+                        // another namespace inside an interface body is not a real shape.)
+                        if (container is IInterfaceNode selfInterface
+                            && implSyntax.InterfaceType!.Text.Split('.').Last() == selfInterface.Name)
+                        {
+                            if (!container.VTables.Any(v => ReferenceEquals(v.Interface, selfInterface)))
+                            {
+                                container.VTables.Add(new VTable(Model, container, selfInterface));
+                            }
+                            continue;
+                        }
                         // Pre-resolve the interface type with the correct namespace scope.
                         // For namespace-level impl blocks (e.g. `impl IFoo for Bar`), resolve
                         // from the containing namespace; for inline impls (inside class body),
@@ -704,7 +722,12 @@ namespace BabyPenguin.SemanticPass
                     if (vtable.IsMerged)
                         continue;
 
-                    MergeVTables(vtable.Interface);
+                    // A self-marker vtable (an interface implementing ITSELF for
+                    // sizing) points back at this container: recursing before the
+                    // IsMerged flag is set would loop forever. EmperorPenguin's
+                    // merge is a name-deduped worklist, which is immune to this.
+                    if (!ReferenceEquals(vtable.Interface, container))
+                        MergeVTables(vtable.Interface);
 
                     foreach (var interfaceVtable in vtable.Interface.VTables)
                     {

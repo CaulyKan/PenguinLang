@@ -21,7 +21,7 @@ Before writing ANY `.penguin` code, identify which target you are writing for. T
 | **Namespaces** | flat only (`emperor`, `_utils`) | flat + nested, `using`, `export` |
 | **Concurrency** | ❌ none | ✅ `Event<T>`, channels, ports, `wait`, `async` |
 
-**Why the restriction exists**: the compiler bootstraps — pass1 compiles the compiler source set (`EmperorPenguinPass1.penguins`) with BabyPenguin, whose ANTLR grammar (`BabyPenguin/Parser/PenguinLang.g4`) only understands `#template` as a `#`-directive, has no `using`/`export`/`unsafe_cast`/`#fun`/`#if`, and cannot resolve nested-namespace member access. Every later pass can only digest what the previous pass compiles. Full details in the [EmperorPenguin Compiler Subset](#emperorpenguin-compiler-subset-restricted) section below.
+**Why the restriction exists**: the compiler bootstraps — pass1 compiles the compiler source set (`EmperorPenguinPass1.penguins`) with BabyPenguin, whose ANTLR grammar (`BabyPenguin/Parser/PenguinLang.g4`) only understands `#template` as a `#`-directive, has no `using`/`export`/`#fun`/`#if`, and cannot resolve nested-namespace member access. Every later pass can only digest what the previous pass compiles. Full details in the [EmperorPenguin Compiler Subset](#emperorpenguin-compiler-subset-restricted) section below.
 
 When a compiler source needs a feature outside the subset, the established pattern is a **stub** (see `MetaConfigStub.penguin` / `DynlibStub.penguin`): keep the public API identical, hide the feature behind it, and swap in the real implementation at a later pass.
 
@@ -33,7 +33,7 @@ When uncertain about syntax or language features, consult these authoritative so
 2. `EmperorPenguin/std/penguin/core_builtin.penguin` — canonical, current real-world penguin code (stdlib)
 3. `docs/` — `specifications/01_Overview` … `06_Interface`, `09_NamespaceAndProject`, `specifications/10_MetaProgramming` (most recent), `specifications/11_PortsChannelsEvents` (current concurrency model)
 4. `BabyPenguin/Parser/PenguinLang.g4` — ANTLR grammar (BabyPenguin front-end; a SUBSET of the EmperorPenguin front-end)
-5. `EmperorPenguin/src/ast/Lexer.penguin` + `Parser.penguin` — the leading-edge front-end (has `using`, `export`, `unsafe_cast`, `#`-meta)
+5. `EmperorPenguin/src/ast/Lexer.penguin` + `Parser.penguin` — the leading-edge front-end (has `using`, `export`, `#`-meta)
 
 **IMPORTANT**: Some `docs/**/*.md` snippets are STALE (they show `match/case`, printf-style `println("{}", x)`, `const` fields, `on` routines — none of these exist). When docs and `Tests/` disagree, trust `Tests/` and the grammar. If unsure about any syntax, READ the sources before writing code. Do not guess syntax.
 
@@ -364,10 +364,10 @@ let d: i32 = cast<i32>(b);           // explicit narrowing
 // mut/type-qualified casts:
 let self: mut RangeIterator = cast<mut RangeIterator>(this);
 let da: IDescribe = cast<IDescribe>(p);   // boxing a value type into an interface
-
-// unsafe bit-reinterpretation (EmperorPenguin front-end ONLY - not in compiler sources):
-let r: i64 = unsafe_cast<i64>(bits);
 ```
+
+There is NO bit-reinterpretation cast — `unsafe_cast` was retired (the meta
+object bridge uses opaque handles now); `cast<T>()` is the only cast.
 
 Implicit widening (`i32 -> i64`) is allowed; everything else needs `cast`.
 
@@ -612,7 +612,7 @@ When writing or modifying files under `EmperorPenguin/src/**`, `EmperorPenguin/m
 | `#fun`, `#if`/`#elif`/`#else`, `#for`, `#while`, `#define`/`#defined`/`#option`, `#typeof`, `#error`, `#specializing`, `#class` | ANTLR grammar has only `#template` | generate code as source STRINGS (see `MetaEngine.penguin`), or plain runtime code |
 | `#sizeof` / `#__load` / `#__store` intrinsics | same — EXCEPT `src/utils.penguin`, which is compiled by EmperorPenguin's own parser (not in the pass1 project; BabyPenguin supplies `_utils` via `BabyPenguin/Utils.penguin` extern classes) | put pointer code in `utils.penguin` only |
 | Nested namespaces + member access through them (`std.io.x()`) | BabyPenguin can't resolve nested-ns member access | flat namespaces, fully-qualified names |
-| `using`, `export`, `unsafe_cast` | EP front-end only | fully-qualified names; `cast<T>()` |
+| `using`, `export` | EP front-end only | fully-qualified names |
 | `wait`, `async`, `yield`, `Event<T>`, channels, `input`/`output`/`connect`/`construct` | compiler is wait-free; coroutine emission is `--enable-coroutine`-gated (pass3+) | plain sequential code |
 | `try`/`catch`/`panic` | not used in bootstrap sources | error enums / `Result`-style returns |
 | Lambdas / function values | NEWLY LIFTED (fun-values branch): EP pass2+ compiles lambdas, `fun<...>`/`async_fun<...>` types, method refs — but compiler sources still avoid them (conservative; the whole bootstrap chain must stay in the safe subset) | plain `fun`s (namespace-level) |
@@ -655,7 +655,7 @@ When adding a new source file to the compiler:
 12. **Generics are `#template(T: type)` before the def**, never `class Foo<T>`
 13. **`some`/`none` are Option methods**: `opt.is_some()`, `opt.is_none()`, `opt.some`, `opt.value_or(d)`
 14. **Cast interface this to concrete type**: `let self: mut X = cast<mut X>(this);`
-15. **Compiler sources: ANTLR-safe only** — no meta, no nested namespaces, no `using`/`export`/`unsafe_cast`, no concurrency, no try/catch, no lambdas
+15. **Compiler sources: ANTLR-safe only** — no meta, no nested namespaces, no `using`/`export`, no concurrency, no try/catch, no lambdas
 16. **`std.io` and the pass3 stdlib modules are NOT on BabyPenguin**: io tests are Pass2/Pass3-only; `std.Array/Vector/HashMap/json` need Compile.Args and pass3
 
 ## Keyword Collision Avoidance (CRITICAL)
@@ -663,7 +663,7 @@ When adding a new source file to the compiler:
 PenguinLang has many reserved keywords. When naming enum variants, you MUST avoid these words — the parser rejects any identifier that matches a keyword.
 
 **Complete keyword list** (from the EmperorPenguin lexer; integer type names `i8`…`u64` are also reserved type names):
-`async`, `async_fun`, `auto`, `bool`, `break`, `cast`, `catch`, `char`, `class`, `connect`, `construct`, `continue`, `double`, `elif`, `else`, `enum`, `export`, `extern`, `false`, `float`, `for`, `fun`, `if`, `impl`, `in`, `initial`, `input`, `interface`, `is`, `let`, `mut`, `namespace`, `new`, `output`, `pure`, `return`, `string`, `template` (after `#`), `this`, `tick`, `true`, `try`, `type`, `unsafe_cast`, `using`, `void`, `wait`, `while`, `yield`, `Self`
+`async`, `async_fun`, `auto`, `bool`, `break`, `cast`, `catch`, `char`, `class`, `connect`, `construct`, `continue`, `double`, `elif`, `else`, `enum`, `export`, `extern`, `false`, `float`, `for`, `fun`, `if`, `impl`, `in`, `initial`, `input`, `interface`, `is`, `let`, `mut`, `namespace`, `new`, `output`, `pure`, `return`, `string`, `template` (after `#`), `this`, `tick`, `true`, `try`, `type`, `using`, `void`, `wait`, `while`, `yield`, `Self`
 
 **Strategy**: add a suffix to disambiguate:
 
