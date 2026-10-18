@@ -276,6 +276,13 @@ namespace BabyPenguin.VirtualMachine
                 var val = stack.Pop();
                 switch (val)
                 {
+                    case ArrayRuntimeValue arrVal:
+                        // Array elements are inline slots: reference-typed
+                        // elements must stay reachable through the array.
+                        foreach (var ev in arrVal.Elements)
+                            if (ev != null)
+                                stack.Push(ev);
+                        break;
                     case ReferenceRuntimeValue refVal:
                         if (marked.Add(refVal.RefId))
                         {

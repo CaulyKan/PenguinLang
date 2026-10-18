@@ -115,7 +115,7 @@ storageClassSpecifier: 'extern';
 typeMutabilitySpecifier: 'mut' | '!mut' | 'auto';
 
 typeSpecifier:
-	typeMutabilitySpecifier? typeSpecifierWithoutIterable iterableType?;
+	typeMutabilitySpecifier? typeSpecifierWithoutIterable;
 
 typeSpecifierWithoutIterable:
 	'void'
@@ -140,7 +140,6 @@ typeSpecifierWithoutIterable:
 		)*
 	);
 
-iterableType: '[]';
 
 identifierWithDots: identifier ('.' identifier)*;
 

@@ -202,7 +202,7 @@ initial {
 模板参数分两类：
 
 * **类型参数**（`T: type`）——代表类型；可变性随之流动（`Box<mut i32>` 使存储的值可变）。
-* **值参数**（`N: i32`）——编译期常量，由元编程引擎求值，因此只在原生 EmperorPenguin 编译器（Pass2/Pass3）上可用；pass3 专属的定长数组 `std.Array<T, N>` 就建立在其上。形如：
+* **值参数**（`N: i32`）——编译期常量，由元编程引擎求值，因此只在原生 EmperorPenguin 编译器（Pass2/Pass3）上可用。形如：
 
 ```penguin
 #template(N: i32)

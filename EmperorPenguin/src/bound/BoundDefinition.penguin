@@ -27,6 +27,11 @@ export class BoundFunctionDefinition {
     pass_index: mut i64 = 0;
     name: string = "";
     full_name: string = "";
+    // Native-array intrinsic ("" = not one): one of new/get/set/len/fill/
+    // copy_range for the compiler-known `__builtin.__array_*` functions. Set
+    // by BuildScopes when binding those names; the body is declaration-only
+    // and IRGenerator lowers it to the array instructions / extern call.
+    array_intrinsic: mut string = "";
     symbol: Option<BoundFunctionSymbol> = new Option<BoundFunctionSymbol>.none();
     parameters: mut _utils.List<BoundFunctionParameter> = new _utils.List<BoundFunctionParameter>();
     return_type: BoundType = new BoundType();

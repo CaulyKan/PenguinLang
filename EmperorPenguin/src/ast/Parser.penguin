@@ -1164,10 +1164,6 @@ fun _mark_ast_exported(def: Definition) {
                     this.parse_genericTypeArgs(node.generic_args);
                 }
             }
-            if (this.stream.peek_type() is TokenType.ArrayBracket) {
-                this.stream.advance();
-                node.is_iterable = true;
-            }
             return node;
         }
         fun parse_genericTypeArgs(this, list: mut _utils.List<TypeSpecifier>) {

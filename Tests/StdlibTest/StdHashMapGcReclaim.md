@@ -1,6 +1,6 @@
-# StdHashMapAutoDispose
+# StdHashMapGcReclaim
 ## Description
-GC auto-finalization over a dead container graph: a `std.HashMap<i64,i64>` becomes unreachable with its three inner `std.Vector`s (occupied/keys/values). Sweep runs in two phases — all dead objects are unlinked first, then finalizers run, then frees — so HashMap.dispose_mem() may safely touch its (still-allocated) inner Vectors, disposing them before their own finalizers run. The inner Vectors' dispose_mem must therefore be idempotent (buf!=0 guard + zeroing); a double free would corrupt the heap and crash. After collection, a fresh HashMap must keep working. Pass3-only (hashmap.penguin is bootstrap-deferred stdlib passed via Compile.Args).
+Reclamation of a dead container graph: a `std.HashMap<i64,i64>` becomes unreachable with its three inner `std.Vector`s (occupied/keys/values) and their native `array<T>` element arrays. Since the native-arrays round the containers hold no raw memory — the element arrays are ordinary GC objects traced precisely via their REFARR ref-maps — an unreachable HashMap graph is reclaimed wholesale by an ordinary `gc_collect()` with no finalizer running at all. The test asserts `gc_info()` DROPS across the collect (the map plus its vectors and arrays die) and that a fresh HashMap keeps working afterwards. Pass3-only (hashmap.penguin is bootstrap-deferred stdlib passed via Compile.Args).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -20,13 +20,18 @@ namespace __c1 {
 
     initial {
         make_map_garbage();
+        let before: i64 = gc_info();
         gc_collect();
-        println("collected");
+        let after: i64 = gc_info();
+        if (after < before) {
+            println("collected");
+        } else {
+            println("no_collect");
+        }
         let mut m2 = new std.HashMap<i64, i64>();
         m2.put(1, 10);
         m2.put(2, 20);
         println("m2_get=" + cast<string>(m2.get(1).some));
-        m2.dispose_mem();
         println("done");
     }
 }

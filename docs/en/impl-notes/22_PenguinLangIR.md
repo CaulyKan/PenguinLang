@@ -8,7 +8,7 @@ What is shared is the **format**, not the code: each compiler re-implements the 
 
 | | BabyPenguin | EmperorPenguin |
 |---|---|---|
-| IR definition | `BabyPenguin/VirtualMachine/IRInstruction.cs` (597 lines) | `EmperorPenguin/src/ir/IRInstruction.penguin` (786 lines) |
+| IR definition | `BabyPenguin/VirtualMachine/IRInstruction.cs` (597 lines) | `EmperorPenguin/src/ir/IRInstruction.penguin` (831 lines) |
 | Producer | `BabyPenguin/VirtualMachine/IRGenerator.cs` — lowers the symbol-level BabyPenguinIR of each `ICodeContainer` (its docstring: "Translates BabyPenguin's existing compiled IR into the new EmperorPenguin-compatible IR format") | `EmperorPenguin/src/ir/IRGenerator.penguin` — lowers the Bound Tree |
 | Consumers | the VM interpreter (`RuntimeFrame`) and the C# backend | `LLVMEmitter.lower()` → LLVM IR text |
 | Debug dump | `IRModule.Display()`, `BP_DUMP_IR=/tmp/bp_ir.txt` | `IRPrinter.print_module()` |
@@ -16,7 +16,8 @@ What is shared is the **format**, not the code: each compiler re-implements the 
 Known deltas between the two implementations:
 
 * Indirect calls: BabyPenguin splits them into `IRCallFuncPtrInst` / `IRCallFuncPtrVoidInst`; EmperorPenguin has a single `IRCallIndirect`.
-* Raw pointers: EmperorPenguin adds `ADDRESS_OF` / `LOAD_PTR` / `STORE_PTR` (meta intrinsics `#__address_of`/`#__load`/`#__store`) with no BabyPenguin counterpart.
+* GC safepoint polling: EmperorPenguin emits a `GC_POLL` instruction (lowered to a call to `_emperor_gc_poll`) before every call and on every loop back-edge — the STW escalation and the allocation hard-cap valve of the native GC hinge on every runnable coroutine eventually parking. BabyPenguin runs on the .NET tracing GC and needs no polls, so it has no counterpart instruction.
+* Native arrays are shared: both sides carry the same four `ARRAY_NEW_ZEROED` / `ARRAY_GET` / `ARRAY_SET` / `ARRAY_LEN` instructions with byte-identical `display()` text (value-class elements have whole-struct copy semantics on both).
 * Coroutine status: BabyPenguin's `IRRetInst` / `IRRetVoidInst` carry a `ReturnStatus` int (Blocked/YieldNotFinished/Finished/YieldFinished) for VM coroutine suspension; EmperorPenguin's `RET` has no status field.
 * `CALL_VIRT` / `BOX` / `UNBOX` exist on both sides but are not implemented in the BabyPenguin VM interpreter (interface dispatch goes through funptr `RDMBR` + `CALL_FUNC_PTR` instead).
 
@@ -27,7 +28,7 @@ The rest of this page documents the IR itself, using the EmperorPenguin implemen
 **Core files**:
 - `IRSourceLocation.penguin` — source location tracking (alias shell for `ast.SourceLocation`)
 - `IRValue.penguin` — IR value types (registers, constants, labels)
-- `IRInstruction.penguin` — the 29 core instructions
+- `IRInstruction.penguin` — the 31 core instructions
 - `IRFunction.penguin` — IR functions and parameters
 - `IRBuilder.penguin` — instruction emitter (Builder pattern)
 - `IRGenerator.penguin` — Bound Tree → IR converter
@@ -86,9 +87,9 @@ Operands and results of IR instructions are uniformly represented as the `IRValu
 
 ---
 
-## Instruction Set (29 Core Instructions)
+## Instruction Set (31 Core Instructions)
 
-The `IRInstruction` enum contains 29 variants, divided into 6 functional categories:
+The `IRInstruction` enum contains 31 variants, divided into 6 functional categories:
 
 ### 1. Constants and Assignment (4)
 
@@ -175,7 +176,7 @@ The `IRInstruction` enum contains 29 variants, divided into 6 functional categor
 | `ir_type: string` | Result type |
 | `location: SourceLocation` | Source location |
 
-### 3. Memory Access (7)
+### 3. Memory Access (8)
 
 #### RDMBR — Read Member (replaces GEP + LOAD)
 
@@ -229,45 +230,65 @@ GLOBAL_STORE @global_name, %value
 | `value: IRValue` | Value to write |
 | `location: SourceLocation` | Source location |
 
-#### ADDRESS_OF — Address Of
+#### ARRAY_NEW_ZEROED — Allocate a Zeroed Native Array
 
 ```
-%result:u64 = ADDRESS_OF %operand
+%result:array<T> = ARRAY_NEW_ZEROED <T> %len
 ```
+
+Allocates a native array of the element type `T` with `%len` slots, zero-filled at allocation time (stale-data protection for recycled slots). EmperorPenguin lowers this to a call to `_emperor_array_create(meta, count, stride)`; BabyPenguin allocates an `ArrayRuntimeValue`.
 
 | Field | Description |
 |------|------|
-| `result: IRValue` | Result register (u64 raw address) |
-| `operand: IRValue` | Operand |
+| `result: IRValue` | Result register (the array reference) |
+| `elem_type: string` | Element type |
+| `length: IRValue` | Length (u64) |
 | `location: SourceLocation` | Source location |
 
-#### LOAD_PTR — Load from a Raw Address
+#### ARRAY_GET — Read an Array Element
 
 ```
-%result:ty = LOAD_PTR %addr
+%result:T = ARRAY_GET %arr, %idx
 ```
+
+Unchecked element read (bounds checks live in the penguin-level `at(i)` wrapper, not in the instruction). Value-class elements have whole-struct copy semantics.
 
 | Field | Description |
 |------|------|
 | `result: IRValue` | Result register |
-| `addr: IRValue` | u64 raw address |
-| `load_type: string` | Load type |
+| `array: IRValue` | Array reference |
+| `index: IRValue` | Index (u64) |
+| `ir_type: string` | Element type |
 | `location: SourceLocation` | Source location |
 
-#### STORE_PTR — Store to a Raw Address
+#### ARRAY_SET — Write an Array Element
 
 ```
-STORE_PTR %addr, %value:store_type
+ARRAY_SET %arr, %idx, %value
 ```
 
 | Field | Description |
 |------|------|
-| `addr: IRValue` | u64 raw address |
+| `array: IRValue` | Array reference |
+| `index: IRValue` | Index (u64) |
 | `value: IRValue` | Value to write |
-| `store_type: string` | Store type |
 | `location: SourceLocation` | Source location |
 
-### 4. Control Flow (4)
+#### ARRAY_LEN — Array Length
+
+```
+%result:u64 = ARRAY_LEN %arr
+```
+
+| Field | Description |
+|------|------|
+| `result: IRValue` | Result register (u64) |
+| `array: IRValue` | Array reference |
+| `location: SourceLocation` | Source location |
+
+The array instructions are reached through the six compiler-known `__builtin.__array_*` intrinsics (`__array_new`/`__array_get`/`__array_set`/`__array_len` lower to the four instructions above; `__array_fill`/`__array_copy_range` lower to plain C extern calls). The user-facing surface — `a.at(i)` / `a.set(i, v)` / `a.size()` / `a.iter()` / `create_array(len, fill)` / `create_array_with(len, f)` — is a single mirrored penguin source (`core_builtin.penguin` ↔ `BabyPenguin/Builtin.penguin`) built on those intrinsics, so semantics are written once and both compilers agree.
+
+### 4. Control Flow and Safepoints (5)
 
 #### BR — Unconditional Branch
 
@@ -280,6 +301,14 @@ BR target_label
 ```
 BR_COND %cond, true_label, false_label
 ```
+
+#### GC_POLL — GC Safepoint Poll (EmperorPenguin only)
+
+```
+GC_POLL
+```
+
+Emitted before every `CALL`/`CALL_INDIRECT` and on every loop back-edge; lowers to a call to the runtime's `_emperor_gc_poll()`. The native GC's stop-the-world escalation and the allocation hard-cap valve depend on every runnable coroutine eventually reaching a poll — a tight no-call loop must still park. BabyPenguin (running on the .NET tracing GC) has no counterpart.
 
 #### RET — Return with a Value
 
@@ -537,9 +566,11 @@ The instruction emitter, encapsulating the instruction-building operations of an
 | `emit_label` | `(label)` | LABEL |
 | `emit_global_load` | `(global_name, ir_type, loc) -> IRValue` | GLOBAL_LOAD |
 | `emit_global_store` | `(global_name, value, loc)` | GLOBAL_STORE |
-| `emit_address_of` | `(operand, loc) -> IRValue` | ADDRESS_OF |
-| `emit_load_ptr` | `(addr, load_type, loc) -> IRValue` | LOAD_PTR |
-| `emit_store_ptr` | `(addr, value, store_type, loc)` | STORE_PTR |
+| `emit_array_new_zeroed` | `(elem_type, length, ir_type, loc) -> IRValue` | ARRAY_NEW_ZEROED |
+| `emit_array_get` | `(array, index, ir_type, loc) -> IRValue` | ARRAY_GET |
+| `emit_array_set` | `(array, index, value, loc)` | ARRAY_SET |
+| `emit_array_len` | `(array, loc) -> IRValue` | ARRAY_LEN |
+| `emit_gc_poll` | `(loc)` | GC_POLL |
 
 ### Helper Methods
 
@@ -595,6 +626,7 @@ LoopLabels
 | `lower_definition(def, module)` | Dispatches definitions (function/namespace/class/interface/enum/initial_routine/global_var/impl_for — 8 kinds) |
 | `lower_namespace(def, module)` | Handles a namespace (recursively processes sub-definitions) |
 | `lower_function_def(def, module)` | Handles a function definition (creates the IRFunction, emits parameters, processes the function body) |
+| `lower_array_intrinsic_body(def)` | Handles the six compiler-known `__builtin.__array_*` intrinsic declarations — `new`/`get`/`set`/`len` synthesize `ARRAY_*` instructions directly, `fill`/`copy_range` synthesize calls to the `_emperor_array_*` C externs |
 | `lower_class_def(def, module)` | Handles a class definition (walks methods, constructors, impl blocks) |
 | `lower_enum_def(def, module)` | Handles an enum definition (walks methods, impl blocks) |
 | `lower_interface_def(def, module)` | Handles an interface definition (walks default methods, impl blocks) |
@@ -612,7 +644,7 @@ LoopLabels
 | `lower_binary(expr) -> IRValue` | `binary` | Binary operation → BINOP (supports chained operations; `is` → ISENUM/ISINSTANCE) |
 | `lower_binary_chain(expr, ir_type, idx, accum) -> IRValue` | — | Recursive handling of chained binary operations |
 | `lower_short_circuit(expr, is_and) -> IRValue` | — | `&&`/`\|\|` short-circuit evaluation (BR_COND + labels) |
-| `lower_unary(expr) -> IRValue` | `unary` | Unary operation → UNARYOP (`#__address_of`/`#__load`/`#__store` meta builtins → ADDRESS_OF/LOAD_PTR/STORE_PTR) |
+| `lower_unary(expr) -> IRValue` | `unary` | Unary operation → UNARYOP (NEG/NOT/BITNOT) |
 | `lower_function_call(expr) -> IRValue` | `function_call` | Function call → CALL/CALL_VOID/CALL_VIRT/CALL_INDIRECT |
 | `lower_code_block(expr) -> IRValue` | `code_block` | Code block → emits statements and the trailing expression in order |
 | `lower_cast(expr) -> IRValue` | `cast_expr` | Type conversion → CAST (value type ↔ interface → BOX/UNBOX) |

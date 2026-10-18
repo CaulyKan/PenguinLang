@@ -30,6 +30,7 @@ enum TypeKind {
     InterfaceKind;
     FunctionKind;
     TypeReferenceKind;
+    ArrayKind;
     ErrorKind;
 }
 
@@ -342,6 +343,14 @@ fun bound_type_qualified_name(bt: BoundType) -> string {
     if (bt.kind is TypeKind.PrimitiveKind) {
         return primitive_type_to_string(bt.primitive);
     }
+    // Array `array<T>`: the reserved wrapper spelling around the serialized
+    // element (injective with the plain-generic path).
+    if (bt.kind is TypeKind.ArrayKind) {
+        if (cast<i64>(bt.generic_args.size()) > 0) {
+            return "array<" + serialize_bound_type_arg(bt.generic_args.at(cast<u64>(0)).some) + ">";
+        }
+        return "array<?>";
+    }
     if (bt.type_definition.is_some()) {
         let td: BoundDefinition = bt.type_definition.some;
         if (td is BoundDefinition.class_def) { return td.class_def.full_name; }
@@ -466,6 +475,14 @@ class BoundType {
         }
         if (this.kind is TypeKind.ErrorKind) {
             return "<error>";
+        }
+        // Native array `array<T>`: the reserved wrapper spelling around the
+        // element display (from generic arg 0).
+        if (this.kind is TypeKind.ArrayKind) {
+            if (cast<i64>(this.generic_args.size()) > 0) {
+                return "array<" + arg_display_name(this.generic_args.at(cast<u64>(0)).some) + ">";
+            }
+            return "array<?>";
         }
         if (this.kind is TypeKind.FunctionKind) {
             let prefix: mut string = "fun<";
@@ -636,6 +653,7 @@ class BoundType {
         if (this.kind is TypeKind.PrimitiveKind) {
             return true; // All primitives (including string) are value types
         }
+        if (this.kind is TypeKind.ArrayKind) { return false; } // reference (GC object)
         if (this.kind is TypeKind.EnumKind) { return true; }
         if (this.kind is TypeKind.ClassKind) {
             if (let def := this.type_definition.some) {
@@ -655,6 +673,7 @@ class BoundType {
         if (this.kind is TypeKind.PrimitiveKind) {
             return false; // All primitives (including string) are value types
         }
+        if (this.kind is TypeKind.ArrayKind) { return true; }
         if (this.kind is TypeKind.EnumKind) { return false; }
         if (this.kind is TypeKind.ClassKind) {
             if (let def := this.type_definition.some) {
@@ -800,6 +819,7 @@ class BoundType {
             return 8;
         }
         if (this.kind is TypeKind.InterfaceKind) { return 8; }
+        if (this.kind is TypeKind.ArrayKind) { return 8; } // reference (pointer)
         if (this.kind is TypeKind.ClassKind) {
             // Storage size is MUTABILITY-INDEPENDENT (mut is a compile-time
             // permission only): a mut value-class binding occupies the same

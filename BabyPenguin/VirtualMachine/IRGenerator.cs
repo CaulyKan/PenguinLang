@@ -280,6 +280,65 @@ namespace BabyPenguin.VirtualMachine
                         }
                         break;
 
+                    case ArrayNewZeroedInstruction cmd:
+                        {
+                            var length = ResolveReg(cmd.LengthSymbol);
+                            var result = ResolveReg(cmd.Target);
+                            var elemType = cmd.ArrayType.TypeNode is ArrayTypeNode an
+                                ? an.ElementNode.FullName()
+                                : cmd.ArrayType.TypeNode!.FullName().TrimEnd('[', ']');
+                            builder.EmitArrayNewZeroed(result, elemType, length, loc);
+                            SyncGlobalIfNeeded(cmd.Target.FullName(), result, loc);
+                        }
+                        break;
+
+                    case ArrayGetInstruction cmd:
+                        {
+                            var array = ResolveReg(cmd.ArraySymbol);
+                            var index = ResolveReg(cmd.IndexSymbol);
+                            var result = ResolveReg(cmd.Target);
+                            var irType = IRTypeClassifier.ToIrType(cmd.Target.TypeInfo);
+                            builder.EmitArrayGet(result, array, index, irType, loc);
+                            SyncGlobalIfNeeded(cmd.Target.FullName(), result, loc);
+                        }
+                        break;
+
+                    case ArraySetInstruction cmd:
+                        {
+                            var array = ResolveReg(cmd.ArraySymbol);
+                            var index = ResolveReg(cmd.IndexSymbol);
+                            var value = ResolveReg(cmd.ValueSymbol);
+                            builder.EmitArraySet(array, index, value, loc);
+                        }
+                        break;
+
+                    case ArrayLenInstruction cmd:
+                        {
+                            var array = ResolveReg(cmd.ArraySymbol);
+                            var result = ResolveReg(cmd.Target);
+                            builder.EmitArrayLen(result, array, loc);
+                            SyncGlobalIfNeeded(cmd.Target.FullName(), result, loc);
+                        }
+                        break;
+
+                    case ArrayFillInstruction cmd:
+                        {
+                            // Ordinary extern call — not an IR instruction
+                            var array = ResolveReg(cmd.ArraySymbol);
+                            var value = ResolveReg(cmd.ValueSymbol);
+                            builder.EmitCallVoid("_emperor_array_fill", [array, value], loc);
+                        }
+                        break;
+
+                    case ArrayCopyRangeInstruction cmd:
+                        {
+                            var dest = ResolveReg(cmd.DestSymbol);
+                            var src = ResolveReg(cmd.SrcSymbol);
+                            var count = ResolveReg(cmd.CountSymbol);
+                            builder.EmitCallVoid("_emperor_array_copy_range", [dest, src, count], loc);
+                        }
+                        break;
+
                     case GotoInstruction cmd:
                         {
                             if (cmd.Condition != null)

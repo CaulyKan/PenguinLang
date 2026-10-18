@@ -8,7 +8,7 @@
 
 | | BabyPenguin | EmperorPenguin |
 |---|---|---|
-| IR 定义 | `BabyPenguin/VirtualMachine/IRInstruction.cs`（597 行） | `EmperorPenguin/src/ir/IRInstruction.penguin`（786 行） |
+| IR 定义 | `BabyPenguin/VirtualMachine/IRInstruction.cs`（597 行） | `EmperorPenguin/src/ir/IRInstruction.penguin`（831 行） |
 | 生产者 | `BabyPenguin/VirtualMachine/IRGenerator.cs`——下降每个 `ICodeContainer` 的符号级 BabyPenguinIR（其文档字符串："Translates BabyPenguin's existing compiled IR into the new EmperorPenguin-compatible IR format"） | `EmperorPenguin/src/ir/IRGenerator.penguin`——下降 Bound 树 |
 | 消费者 | VM 解释器（`RuntimeFrame`）与 C# 后端 | `LLVMEmitter.lower()` → LLVM IR 文本 |
 | 调试转储 | `IRModule.Display()`、`BP_DUMP_IR=/tmp/bp_ir.txt` | `IRPrinter.print_module()` |
@@ -16,7 +16,8 @@
 两个实现之间的已知差异：
 
 * 间接调用：BabyPenguin 拆为 `IRCallFuncPtrInst` / `IRCallFuncPtrVoidInst`；EmperorPenguin 只有一个 `IRCallIndirect`。
-* 裸指针：EmperorPenguin 增加了 `ADDRESS_OF` / `LOAD_PTR` / `STORE_PTR`（元内建 `#__address_of`/`#__load`/`#__store`），BabyPenguin 没有对应物。
+* GC 安全点轮询：EmperorPenguin 发射 `GC_POLL` 指令（下降为对 `_emperor_gc_poll` 的调用），出现在每次调用之前与每个循环回边上——原生 GC 的 STW 升级与分配硬帽阀都依赖"每个可运行协程最终停靠到轮询点"。BabyPenguin 跑在 .NET 追踪式 GC 上无需轮询，没有对应指令。
+* 原生数组两侧共享：双方都携带相同的四条 `ARRAY_NEW_ZEROED` / `ARRAY_GET` / `ARRAY_SET` / `ARRAY_LEN` 指令，`display()` 文本逐字节一致（值类元素在两侧都是整结构拷贝语义）。
 * 协程状态：BabyPenguin 的 `IRRetInst` / `IRRetVoidInst` 携带 `ReturnStatus` 整数（Blocked/YieldNotFinished/Finished/YieldFinished）用于 VM 协程挂起；EmperorPenguin 的 `RET` 无状态字段。
 * `CALL_VIRT` / `BOX` / `UNBOX` 两侧都有，但 BabyPenguin VM 解释器未实现（接口分派改走函数指针 `RDMBR` + `CALL_FUNC_PTR`）。
 
@@ -27,7 +28,7 @@
 **核心文件**：
 - `IRSourceLocation.penguin` — source location tracking (alias shell for `ast.SourceLocation`)
 - `IRValue.penguin` — IR value types (registers, constants, labels)
-- `IRInstruction.penguin` — the 29 core instructions
+- `IRInstruction.penguin` — 31 条核心指令
 - `IRFunction.penguin` — IR functions and parameters
 - `IRBuilder.penguin` — instruction emitter (Builder pattern)
 - `IRGenerator.penguin` — Bound Tree → IR converter
@@ -86,9 +87,9 @@ IR 指令的操作数与结果统一表示为 `IRValue` 枚举：
 
 ---
 
-## 指令集（29 条核心指令）
+## 指令集（31 条核心指令）
 
-`IRInstruction` 枚举含 29 个变体，分 6 个功能类别：
+`IRInstruction` 枚举含 31 个变体，分 6 个功能类别：
 
 ### 1. 常量与赋值（4）
 
@@ -175,7 +176,7 @@ IR 指令的操作数与结果统一表示为 `IRValue` 枚举：
 | `ir_type: string` | Result type |
 | `location: SourceLocation` | Source location |
 
-### 3. 内存访问（7）
+### 3. 内存访问（8）
 
 #### RDMBR — Read Member (replaces GEP + LOAD)
 
@@ -229,45 +230,65 @@ GLOBAL_STORE @global_name, %value
 | `value: IRValue` | Value to write |
 | `location: SourceLocation` | Source location |
 
-#### ADDRESS_OF — Address Of
+#### ARRAY_NEW_ZEROED — 分配清零原生数组
 
 ```
-%result:u64 = ADDRESS_OF %operand
+%result:array<T> = ARRAY_NEW_ZEROED <T> %len
 ```
+
+分配元素类型为 `T`、共 `%len` 个槽位的原生数组，分配瞬间即刻清零（回收槽陈旧数据防护）。EmperorPenguin 下降为对 `_emperor_array_create(meta, count, stride)` 的调用；BabyPenguin 分配 `ArrayRuntimeValue`。
 
 | 字段 | 描述 |
 |------|------|
-| `result: IRValue` | Result register (u64 raw address) |
-| `operand: IRValue` | Operand |
+| `result: IRValue` | Result register（数组引用） |
+| `elem_type: string` | 元素类型 |
+| `length: IRValue` | 长度（u64） |
 | `location: SourceLocation` | Source location |
 
-#### LOAD_PTR — Load from a Raw Address
+#### ARRAY_GET — 读数组元素
 
 ```
-%result:ty = LOAD_PTR %addr
+%result:T = ARRAY_GET %arr, %idx
 ```
+
+无边界检查的元素读（边界检查在 penguin 层的 `at(i)` 包装里，不在指令内）。值类元素是整结构拷贝语义。
 
 | 字段 | 描述 |
 |------|------|
 | `result: IRValue` | Result register |
-| `addr: IRValue` | u64 raw address |
-| `load_type: string` | Load type |
+| `array: IRValue` | 数组引用 |
+| `index: IRValue` | 下标（u64） |
+| `ir_type: string` | 元素类型 |
 | `location: SourceLocation` | Source location |
 
-#### STORE_PTR — Store to a Raw Address
+#### ARRAY_SET — 写数组元素
 
 ```
-STORE_PTR %addr, %value:store_type
+ARRAY_SET %arr, %idx, %value
 ```
 
 | 字段 | 描述 |
 |------|------|
-| `addr: IRValue` | u64 raw address |
-| `value: IRValue` | Value to write |
-| `store_type: string` | Store type |
+| `array: IRValue` | 数组引用 |
+| `index: IRValue` | 下标（u64） |
+| `value: IRValue` | 写入值 |
 | `location: SourceLocation` | Source location |
 
-### 4. 控制流（4）
+#### ARRAY_LEN — 数组长度
+
+```
+%result:u64 = ARRAY_LEN %arr
+```
+
+| 字段 | 描述 |
+|------|------|
+| `result: IRValue` | Result register（u64） |
+| `array: IRValue` | 数组引用 |
+| `location: SourceLocation` | Source location |
+
+数组指令通过六个编译器已知的 `__builtin.__array_*` 内在函数触达（`__array_new`/`__array_get`/`__array_set`/`__array_len` 下降为上面四条指令；`__array_fill`/`__array_copy_range` 下降为普通 C extern 调用）。用户面——`a.at(i)` / `a.set(i, v)` / `a.size()` / `a.iter()` / `create_array(len, fill)` / `create_array_with(len, f)`——是建立在内在函数之上的一份镜像 penguin 源（`core_builtin.penguin` ↔ `BabyPenguin/Builtin.penguin`），语义只写一遍，两个编译器天然一致。
+
+### 4. 控制流与安全点（5）
 
 #### BR — Unconditional Branch
 
@@ -280,6 +301,14 @@ BR target_label
 ```
 BR_COND %cond, true_label, false_label
 ```
+
+#### GC_POLL — GC 安全点轮询（仅 EmperorPenguin）
+
+```
+GC_POLL
+```
+
+发射于每次 `CALL`/`CALL_INDIRECT` 之前与每个循环回边上；下降为对运行时 `_emperor_gc_poll()` 的调用。原生 GC 的 STW 升级与分配硬帽阀依赖"每个可运行协程最终停靠到轮询点"——不含调用的紧循环也必须能停靠。BabyPenguin（跑在 .NET 追踪式 GC 上）没有对应物。
 
 #### RET — Return with a Value
 
@@ -537,9 +566,11 @@ IRParameter
 | `emit_label` | `(label)` | LABEL |
 | `emit_global_load` | `(global_name, ir_type, loc) -> IRValue` | GLOBAL_LOAD |
 | `emit_global_store` | `(global_name, value, loc)` | GLOBAL_STORE |
-| `emit_address_of` | `(operand, loc) -> IRValue` | ADDRESS_OF |
-| `emit_load_ptr` | `(addr, load_type, loc) -> IRValue` | LOAD_PTR |
-| `emit_store_ptr` | `(addr, value, store_type, loc)` | STORE_PTR |
+| `emit_array_new_zeroed` | `(elem_type, length, ir_type, loc) -> IRValue` | ARRAY_NEW_ZEROED |
+| `emit_array_get` | `(array, index, ir_type, loc) -> IRValue` | ARRAY_GET |
+| `emit_array_set` | `(array, index, value, loc)` | ARRAY_SET |
+| `emit_array_len` | `(array, loc) -> IRValue` | ARRAY_LEN |
+| `emit_gc_poll` | `(loc)` | GC_POLL |
 
 ### 辅助方法
 
@@ -595,6 +626,7 @@ LoopLabels
 | `lower_definition(def, module)` | Dispatches definitions (function/namespace/class/interface/enum/initial_routine/global_var/impl_for — 8 kinds) |
 | `lower_namespace(def, module)` | Handles a namespace (recursively processes sub-definitions) |
 | `lower_function_def(def, module)` | Handles a function definition (creates the IRFunction, emits parameters, processes the function body) |
+| `lower_array_intrinsic_body(def)` | 处理六个编译器已知的 `__builtin.__array_*` 内在函数声明——`new`/`get`/`set`/`len` 直接合成 `ARRAY_*` 指令，`fill`/`copy_range` 合成对 `_emperor_array_*` C extern 的调用 |
 | `lower_class_def(def, module)` | Handles a class definition (walks methods, constructors, impl blocks) |
 | `lower_enum_def(def, module)` | Handles an enum definition (walks methods, impl blocks) |
 | `lower_interface_def(def, module)` | Handles an interface definition (walks default methods, impl blocks) |
@@ -612,7 +644,7 @@ LoopLabels
 | `lower_binary(expr) -> IRValue` | `binary` | Binary operation → BINOP (supports chained operations; `is` → ISENUM/ISINSTANCE) |
 | `lower_binary_chain(expr, ir_type, idx, accum) -> IRValue` | — | Recursive handling of chained binary operations |
 | `lower_short_circuit(expr, is_and) -> IRValue` | — | `&&`/`\|\|` short-circuit evaluation (BR_COND + labels) |
-| `lower_unary(expr) -> IRValue` | `unary` | Unary operation → UNARYOP (`#__address_of`/`#__load`/`#__store` meta builtins → ADDRESS_OF/LOAD_PTR/STORE_PTR) |
+| `lower_unary(expr) -> IRValue` | `unary` | 一元运算 → UNARYOP（NEG/NOT/BITNOT） |
 | `lower_function_call(expr) -> IRValue` | `function_call` | Function call → CALL/CALL_VOID/CALL_VIRT/CALL_INDIRECT |
 | `lower_code_block(expr) -> IRValue` | `code_block` | Code block → emits statements and the trailing expression in order |
 | `lower_cast(expr) -> IRValue` | `cast_expr` | Type conversion → CAST (value type ↔ interface → BOX/UNBOX) |

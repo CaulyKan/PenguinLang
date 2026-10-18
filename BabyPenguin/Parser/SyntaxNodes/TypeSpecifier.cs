@@ -34,7 +34,6 @@ namespace BabyPenguin.Parser.SyntaxNodes
                     "!mut" => Mutability.Immutable,
                     _ => throw new Exception("Invalid mutability specifier")
                 };
-                IsIterable = context.iterableType() != null;
 
                 if (IsMutable == Mutability.Mutable)
                     TypeName = "mut " + TypeName;
@@ -79,10 +78,11 @@ namespace BabyPenguin.Parser.SyntaxNodes
         [SexpValue]
         public string TypeName { get; set; } = "";
 
-        public string Name => IsIterable ? $"mut __builtin.IIterator<{TypeName}>" : TypeName;
-
-        [SexpValue]
-        public bool IsIterable { get; set; } = false;
+        // Native arrays are the reserved generic type constructor `array<T>`
+        // (intercepted at resolution like a primitive; the `mut` prefix folds
+        // here exactly as for any other type). The old `T[]` postfix spelling
+        // is retired.
+        public string Name => TypeName;
 
         public override string ToShortString() => Name;
 

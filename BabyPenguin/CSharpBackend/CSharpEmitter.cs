@@ -35,6 +35,10 @@ namespace BabyPenguin.CSharpBackend
             if (PrimitiveCs.TryGetValue(irType, out var prim)) return prim;
             if (irType == "ref<string>" || irType == "string") return "string";
             if (irType == "funptr") return "System.Delegate";
+            // Native arrays are VM/EmperorPenguin-only for now: the C# backend
+            // (bootstrap pass1) does not compile sources using them.
+            if (irType.StartsWith("array<") && irType.EndsWith(">"))
+                throw new BabyPenguinException($"Native array type '{irType}' is not supported by the C# backend (VM backend only)", code: ErrorCode.E_INTERNAL);
             foreach (var prefix in new[] { "ref<", "struct<", "enum<" })
                 if (irType.StartsWith(prefix) && irType.EndsWith(">"))
                 {

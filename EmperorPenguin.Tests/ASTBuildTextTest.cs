@@ -933,12 +933,14 @@ initial {
     [Fact]
     [BatchTest(@"
 initial {
+    let elem = new emperor.TypeSpecifier();
+    elem.name = ""i64"";
     let ts = new emperor.TypeSpecifier();
-    ts.name = ""i64"";
-    ts.is_iterable = true;
+    ts.name = ""array"";
+    ts.generic_args.push(elem);
     println(ts.build_text());
 }
-", "i64[]")]
+", "array<i64>")]
     public void AST_TypeSpecifier_Iterable_BuildText() => Batch.Assert();
 
     [Fact]
@@ -948,12 +950,14 @@ initial {
     arg.name = ""i64"";
     let ts = new emperor.TypeSpecifier();
     ts.name = ""List"";
-    ts.is_mutable = true;
     ts.generic_args.push(arg);
-    ts.is_iterable = true;
-    println(ts.build_text());
+    let ts2 = new emperor.TypeSpecifier();
+    ts2.name = ""array"";
+    ts2.is_mutable = true;
+    ts2.generic_args.push(ts);
+    println(ts2.build_text());
 }
-", "mut List<i64>[]")]
+", "mut array<List<i64>>")]
     public void AST_TypeSpecifier_MutableGenericIterable_BuildText() => Batch.Assert();
 
     [Fact]

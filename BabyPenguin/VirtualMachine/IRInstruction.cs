@@ -594,4 +594,80 @@ namespace BabyPenguin.VirtualMachine
 
         public override string Display() => $"GLOBAL_STORE @{GlobalName}, {Value.Display()}";
     }
+
+    // 26. ARRAY_NEW_ZEROED - allocate a zeroed native array of the element type
+    public sealed class IRArrayNewZeroedInst : IRInstruction
+    {
+        public IRValue Result { get; }
+        public string ElemType { get; }
+        public IRValue Length { get; }
+        public IRSourceLocation Location { get; }
+
+        public IRArrayNewZeroedInst(IRValue result, string elemType, IRValue length, IRSourceLocation location)
+        {
+            Result = result;
+            ElemType = elemType;
+            Length = length;
+            Location = location;
+        }
+
+        public override string Display() => $"{Result.Display()}:{Result.GetIrType()} = ARRAY_NEW_ZEROED <{ElemType}> {Length.Display()}";
+    }
+
+    // 27. ARRAY_GET - read element (whole-structure copy for value-class elements)
+    public sealed class IRArrayGetInst : IRInstruction
+    {
+        public IRValue Result { get; }
+        public IRValue Array { get; }
+        public IRValue Index { get; }
+        public string IrType { get; }
+        public IRSourceLocation Location { get; }
+
+        public IRArrayGetInst(IRValue result, IRValue array, IRValue index, string irType, IRSourceLocation location)
+        {
+            Result = result;
+            Array = array;
+            Index = index;
+            IrType = irType;
+            Location = location;
+        }
+
+        public override string Display() => $"{Result.Display()}:{IrType} = ARRAY_GET {Array.Display()}, {Index.Display()}";
+    }
+
+    // 28. ARRAY_SET - write element (whole-structure copy for value-class elements)
+    public sealed class IRArraySetInst : IRInstruction
+    {
+        public IRValue Array { get; }
+        public IRValue Index { get; }
+        public IRValue Value { get; }
+        public IRSourceLocation Location { get; }
+
+        public IRArraySetInst(IRValue array, IRValue index, IRValue value, IRSourceLocation location)
+        {
+            Array = array;
+            Index = index;
+            Value = value;
+            Location = location;
+        }
+
+        public override string Display() => $"ARRAY_SET {Array.Display()}, {Index.Display()}, {Value.Display()}";
+    }
+
+    // 29. ARRAY_LEN - element count
+    public sealed class IRArrayLenInst : IRInstruction
+    {
+        public IRValue Result { get; }
+        public IRValue Array { get; }
+        public IRSourceLocation Location { get; }
+
+        public IRArrayLenInst(IRValue result, IRValue array, IRSourceLocation location)
+        {
+            Result = result;
+            Array = array;
+            Location = location;
+        }
+
+        public override string Display() => $"{Result.Display()}:u64 = ARRAY_LEN {Array.Display()}";
+    }
 }

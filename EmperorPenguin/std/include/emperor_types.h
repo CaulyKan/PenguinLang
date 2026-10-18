@@ -34,9 +34,10 @@ typedef struct EmperorInterfaceMapEntry {
  *       sub[tag] selects the node describing the payload of variant `tag`
  *       (stored as the i64 at base+8); the payload is INLINE at base+16.
  *       sub = 0: this variant's payload holds no pointers.
- *   REFARR (3): 3, elem_stride, ptr_off
- *       a repeated element layout (container buffer regions); the live
- *       element count comes from the region registration, not the map.
+ *   REFARR (3): 3, elem_stride, elem_sub
+ *       a native array `T[]` object: the live element count is the i64 at
+ *       object+8, elements sit inline at object+16 (stride-aligned), and
+ *       elem_sub describes ONE element (0 = pointer-free = precise no-op).
  *
  * refmap == NULL on an object means "no program available" (foreign/C-side
  * metadata) — the collector falls back to conservative body scanning for that
@@ -52,7 +53,6 @@ typedef struct EmperorClassMetadata {
     void** virtual_method_table;
     int interface_count;
     EmperorInterfaceMapEntry* interface_map;
-    void (*destructor)(void*);
     const int32_t* refmap;
 } EmperorClassMetadata;
 

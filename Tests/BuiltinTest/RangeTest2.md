@@ -1,6 +1,6 @@
 # RangeTest2
 ## Description
-Range as array type: i64[] = range(0, 5).
+Range as explicit iterator type: mut IIterator<i64> = range(0, 5).
 
 ## Apply To
 * BabyPenguin
@@ -12,7 +12,7 @@ Range as array type: i64[] = range(0, 5).
 ## Test Code
 ```
     initial {
-        let rg : i64[] = range(0, 5);
+        let rg : mut IIterator<i64> = range(0, 5);
         while(true) {
             let n : Option<i64> = rg.next();
             if (n.is_none())

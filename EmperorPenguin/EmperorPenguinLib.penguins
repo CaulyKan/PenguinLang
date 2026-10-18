@@ -1,7 +1,7 @@
 [Project]
 # The compiler as a SHARED LIBRARY (.penguin-lib): the EmperorPenguinFull
 # source set minus main.penguin (the exe driver) minus most std modules
-# (utils/metaconfig/json/vector/hashmap/array/argparse) — those now live in
+# (utils/metaconfig/json/vector/hashmap/argparse) — those now live in
 # libemperorpenguin-std.penguin-lib (EmperorPenguinStd.penguins) and are
 # consumed via --lib, so this lib's libmeta records deps=[libemperorpenguin-
 # std]. dynlib.penguin STAYS here: its libmeta builder/injector operates on

@@ -101,12 +101,11 @@ namespace io {
     // A File wraps a C FILE* (stored as u64; 0 = closed or failed open).
     // IReferenceType forces reference semantics — closing through one binding
     // closes the same stream for every alias (no struct-copy surprises).
-    // IMemoryDispose hooks the GC finalizer, so a File that becomes
-    // unreachable is closed on sweep; explicit close() is still the
-    // recommended pattern.
+    // Files are closed EXPLICITLY (close()); an unreachable open handle leaks
+    // to process exit — the IMemoryDispose/finalizer hook is retired with the
+    // GC simplification (native-arrays round 1).
     class File {
         impl __builtin.IReferenceType;
-        impl __builtin.IMemoryDispose;
         handle: mut u64 = 0;
 
         fun new(mut this) {}
@@ -174,10 +173,6 @@ namespace io {
                 std.io.file_close(this.handle);
                 this.handle = 0;
             }
-        }
-
-        fun dispose_mem(mut this) {
-            this.close();
         }
     }
 

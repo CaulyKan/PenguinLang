@@ -9,7 +9,7 @@ Yield implementation using _DefaultRoutine with __yield_not_finished_return, bef
 ```
     namespace ns{
         initial {
-            let v: i32[] = test1();
+            let v: mut IIterator<i32> = test1();
             for (let i : i32 in v) {
                 print(cast<string>(i));
             }
@@ -20,9 +20,9 @@ Yield implementation using _DefaultRoutine with __yield_not_finished_return, bef
                 __yield_not_finished_return 2;
             }
         }
-        fun test1() -> i32[] {
+        fun test1() -> mut IIterator<i32> {
             let owner: _lambda = new _lambda();
-            return cast<i32[]>(new _DefaultRoutine<i32>(owner.call, true));
+            return cast<mut IIterator<i32>>(new _DefaultRoutine<i32>(owner.call, true));
         }
     }
 ```

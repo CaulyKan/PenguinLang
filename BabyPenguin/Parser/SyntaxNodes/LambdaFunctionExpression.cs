@@ -27,8 +27,7 @@ namespace BabyPenguin.Parser.SyntaxNodes
                 {
                     ReturnType = new TypeSpecifier
                     {
-                        TypeName = "void",
-                        IsIterable = false
+                        TypeName = "void"
                     };
                 }
                 else

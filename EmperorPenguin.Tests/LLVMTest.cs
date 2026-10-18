@@ -409,7 +409,7 @@ initial {
 ", @"%enum.Option = type { ptr, i64 }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_refmap = private constant [4 x i32] [i32 4, i32 2, i32 1, i32 0]
-@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {
+@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
   i32 0,
   i32 0,
@@ -418,7 +418,6 @@ initial {
   ptr null,
   i32 0,
   ptr @Option_interface_map,
-  ptr null,
   ptr @Option_refmap
 }
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
@@ -472,7 +471,7 @@ initial {
 ", @"%enum.Option = type { ptr, i64, [8 x i8] }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_refmap = private constant [5 x i32] [i32 5, i32 2, i32 2, i32 0, i32 0]
-@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {
+@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
   i32 0,
   i32 0,
@@ -481,7 +480,6 @@ initial {
   ptr null,
   i32 0,
   ptr @Option_interface_map,
-  ptr null,
   ptr @Option_refmap
 }
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
@@ -538,7 +536,7 @@ initial {
 ", @"%enum.Option = type { ptr, i64, [8 x i8] }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_refmap = private constant [5 x i32] [i32 5, i32 2, i32 2, i32 0, i32 0]
-@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {
+@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
   i32 0,
   i32 0,
@@ -547,7 +545,6 @@ initial {
   ptr null,
   i32 0,
   ptr @Option_interface_map,
-  ptr null,
   ptr @Option_refmap
 }
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
@@ -603,7 +600,7 @@ initial {
 ", @"%enum.Option = type { ptr, i64, [8 x i8] }
 @Option_interface_map = private constant [0 x { ptr, ptr }] []
 @Option_refmap = private constant [5 x i32] [i32 5, i32 2, i32 2, i32 0, i32 0]
-@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {
+@Option_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Option_name,
   i32 0,
   i32 0,
@@ -612,7 +609,6 @@ initial {
   ptr null,
   i32 0,
   ptr @Option_interface_map,
-  ptr null,
   ptr @Option_refmap
 }
 @.Option_name = private unnamed_addr constant [7 x i8] c""Option\00""
@@ -1269,7 +1265,7 @@ initial {
 @Foo_field_offsets = private constant [1 x i32] [i32 8]
 @Foo_field_is_ptr = private constant [1 x i32] [i32 0]
 @Foo_refmap = private constant [3 x i32] [i32 3, i32 1, i32 0]
-@Foo_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {
+@Foo_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {
   ptr @.Foo_name,
   i32 16,
   i32 1,
@@ -1277,7 +1273,6 @@ initial {
   ptr @Foo_field_is_ptr,
   ptr null,
   i32 0,
-  ptr null,
   ptr null,
   ptr @Foo_refmap
 }

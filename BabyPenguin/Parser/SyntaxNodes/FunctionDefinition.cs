@@ -37,7 +37,7 @@ namespace BabyPenguin.Parser.SyntaxNodes
                             ScopeId = ScopeId,
                             SourceLocation = sourceLocation,
                             SourceText = text,
-                            TypeSpecifier = new TypeSpecifier { IsIterable = false, IsMutable = isMutable ? Mutability.Mutable : Mutability.Immutable, ScopeId = ScopeId, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
+                            TypeSpecifier = new TypeSpecifier { IsMutable = isMutable ? Mutability.Mutable : Mutability.Immutable, ScopeId = ScopeId, SourceLocation = sourceLocation, SourceText = text, TypeName = isMutable ? "mut Self" : "Self" }
                         });
                     }
                     Parameters.AddRange(context.parameterList().children.OfType<DeclarationContext>()
@@ -48,8 +48,7 @@ namespace BabyPenguin.Parser.SyntaxNodes
                 {
                     ReturnType = new TypeSpecifier
                     {
-                        TypeName = "void",
-                        IsIterable = false
+                        TypeName = "void"
                     };
                 }
                 else

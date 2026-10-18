@@ -240,9 +240,11 @@ fun replay_find_ast_def(model: SemanticModel, template_name: string, ast_source:
 fun bound_type_is_template_param(bt: BoundType) -> bool {
     // Error/unresolved types (`?`): ErrorKind, or a non-primitive non-function
     // type with no type definition. Function types carry no def and are fine —
-    // their ARGS are checked by the recursion below.
+    // their ARGS are checked by the recursion below. Native array types
+    // (ArrayKind) also carry no type_definition by construction — their
+    // element types live in generic_args and are checked by the recursion.
     if (bt.kind is TypeKind.ErrorKind) { return true; }
-    if (!(bt.kind is TypeKind.PrimitiveKind) && !(bt.kind is TypeKind.FunctionKind) && bt.type_definition.is_none()) { return true; }
+    if (!(bt.kind is TypeKind.PrimitiveKind) && !(bt.kind is TypeKind.FunctionKind) && !(bt.kind is TypeKind.ArrayKind) && bt.type_definition.is_none()) { return true; }
     if (bt.type_definition.is_some()) {
         let td: BoundDefinition = bt.type_definition.some;
         if (td is BoundDefinition.class_def) {

@@ -32,6 +32,26 @@ class InterfaceVTable {
     }
 }
 
+// Native-array metadata entry: one per element IR type used by an
+// ARRAY_NEW_ZEROED. The array object layout is { ptr metadata, i64 length,
+// elements... } (elements at +16, stride-aligned); instance_size is 0 =
+// variable-length. The refmap program is a single REFARR node (kind 3):
+//   [total_len, 3, elem_stride, elem_sub, ...elem_sub's node ints...]
+// where elem_sub describes ONE element (0 = no pointers — the precise no-op
+// for primitive elements). The walker reads length from object+8.
+class ArrayMetaEntry {
+    elem_ir: string = "";
+    meta_name: string = "";
+    elem_llvm: string = "";
+    stride: i64 = 0;
+    // Value-class element: slots hold the struct INLINE (whole-struct copies
+    // in/out, ICopy value semantics) and get/set operate through memcpy.
+    is_value_elem: mut bool = false;
+    refmap_name: string = "";
+    // Serialized refmap program (without the leading total-length slot).
+    refmap_ints: mut _utils.List<i64> = new _utils.List<i64>();
+}
+
 class ClassLayout {
     type_name: string = "";
     is_value_type: bool = true;
@@ -284,6 +304,10 @@ class LLVMEmitter {
     cond_counter: mut i64 = 0;
     current_ret_type: mut string = "void";
     class_layouts: mut _utils.List<ClassLayout> = new _utils.List<ClassLayout>();
+    // Native-array metadata globals, one per element type (see ArrayMetaEntry).
+    array_meta_entries: mut _utils.List<ArrayMetaEntry> = new _utils.List<ArrayMetaEntry>();
+    needs_array_create: mut bool = false;
+    needs_array_ops: mut bool = false;
     enum_layouts: mut _utils.List<EnumLayout> = new _utils.List<EnumLayout>();
     // Completion order of layout building (leaves finish first). LLVM textual
     // IR requires a named struct to be DEFINED before it is referenced by
@@ -315,9 +339,6 @@ class LLVMEmitter {
     has_boxing: mut bool = false;
     has_main: mut bool = false;
     needs_memset: mut bool = false;
-    // Typed buffer tracking (container element storage).
-    needs_gc_track: mut bool = false;
-    needs_gc_track_bare: mut bool = false;
     // GC v2 3c: PIN-mirror slots (scalar ref/string params + ref receivers)
     // reference the runtime's pin-marker pseudo ref-map — gates its external
     // global declaration.
@@ -829,12 +850,13 @@ class LLVMEmitter {
         this.string_lits = new _utils.List<StringLitEntry>();
         this.next_str_id = 0;
         this.class_layouts = new _utils.List<ClassLayout>();
+        this.array_meta_entries = new _utils.List<ArrayMetaEntry>();
+        this.needs_array_create = false;
+        this.needs_array_ops = false;
         this.enum_layouts = new _utils.List<EnumLayout>();
         this.tmp_counter = 0;
         this.has_iref_class = false;
         this.needs_int_to_string = false;
-        this.needs_gc_track = false;
-        this.needs_gc_track_bare = false;
         this.needs_gc_pin_refmap = false;
         this.gcscan_dbg = _utils.getenv("EMPEROR_GC_SCAN_DEBUG") != "";
         this.needs_string_concat = false;
@@ -952,6 +974,7 @@ class LLVMEmitter {
         // Now build the full output: types + globals + declarations + functions
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Emitting type definitions..."); }
         this.emit_type_definitions();
+        this.emit_array_metadata();
         // Flush any interface ID constants that were lazily emitted during
         // function emission (vtable calls may reference interfaces whose
         // implementing classes haven't had their metadata emitted yet).
@@ -1166,6 +1189,43 @@ class LLVMEmitter {
         }
     }
 
+    // Emit one metadata + refmap global per registered array element type.
+    fun emit_array_metadata(mut this) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.array_meta_entries.size())) {
+            let entry: ArrayMetaEntry = this.array_meta_entries.at(cast<u64>(i)).some;
+            // refmap program: the payload already carries [total, ...] at
+            // index 0 (same layout as the class/enum ref-map emitters).
+            let total: i64 = cast<i64>(entry.refmap_ints.size());
+            this.sb.append("@" + entry.refmap_name + " = private constant [" + cast<string>(total) + " x i32] [");
+            let j: mut i64 = 0;
+            while (j < cast<i64>(entry.refmap_ints.size())) {
+                if (j > 0) { this.sb.append(", "); }
+                this.sb.append("i32 " + cast<string>(entry.refmap_ints.at(cast<u64>(j)).some));
+                j = j + 1;
+            }
+            this.sb.append("]\n");
+            // name string ("array<T>")
+            let disp: string = "array<" + entry.elem_ir + ">";
+            this.sb.append("@.__array_name_" + cast<string>(i) + "_s = private unnamed_addr constant [" + cast<string>(string_length(disp) + 1) + " x i8] c\"" + disp + "\\00\"\n");
+            // metadata: { ptr name, i32 instance_size(0=variable), i32 field_count,
+            //            ptr offsets, ptr field_is_ptr, ptr vtable, i32 iface_count,
+            //            ptr iface_map, ptr refmap }
+            this.sb.append("@" + entry.meta_name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+            this.sb.append("  ptr @.__array_name_" + cast<string>(i) + "_s,\n");
+            this.sb.append("  i32 0,\n");
+            this.sb.append("  i32 0,\n");
+            this.sb.append("  ptr null,\n");
+            this.sb.append("  ptr null,\n");
+            this.sb.append("  ptr null,\n");
+            this.sb.append("  i32 0,\n");
+            this.sb.append("  ptr null,\n");
+            this.sb.append("  ptr @" + entry.refmap_name + "\n");
+            this.sb.append("}\n");
+            i = i + 1;
+        }
+    }
+
     fun emit_extern_declarations_runtime_to(mut this, target: mut StringBuilder) {
         _utils.trace_enter("Enter emit_extern_declarations_runtime_to");
         let has_layouts: bool = cast<i64>(this.class_layouts.size()) > 0 || cast<i64>(this.enum_layouts.size()) > 0;
@@ -1264,11 +1324,12 @@ class LLVMEmitter {
         if (this.needs_memset) {
             target.append("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n");
         }
-        if (this.needs_gc_track) {
-            target.append("declare void @_emperor_gc_track_buffer(ptr, i64, i64, ptr)\n");
+        if (this.needs_array_create) {
+            target.append("declare ptr @_emperor_array_create(ptr, i64, i64)\n");
         }
-        if (this.needs_gc_track_bare) {
-            target.append("@_emperor_gc_bare_refmap = external global [5 x i32]\n");
+        if (this.needs_array_ops) {
+            target.append("declare void @_emperor_array_fill(ptr, ptr)\n");
+            target.append("declare void @_emperor_array_copy_range(ptr, ptr, i64)\n");
         }
         if (this.needs_gc_pin_refmap) {
             target.append("@_emperor_gc_pin_refmap = external global [1 x i32]\n");
@@ -2617,7 +2678,7 @@ class LLVMEmitter {
                 let field_count: i64 = cast<i64>(layout.fields.size());
                 this.emit_field_arrays(name, layout.fields);
                 let refmap: string = this.emit_class_refmap(name, layout);
-                this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+                this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
                 this.sb.append("  ptr @." + name + "_name,\n");
                 this.sb.append("  i32 " + cast<string>(layout.sizeof_object) + ",\n");
                 this.sb.append("  i32 " + cast<string>(field_count) + ",\n");
@@ -2625,7 +2686,6 @@ class LLVMEmitter {
                 this.sb.append("  ptr @" + name + "_field_is_ptr,\n");
                 this.sb.append("  ptr null,\n");
                 this.sb.append("  i32 0,\n");
-                this.sb.append("  ptr null,\n");
                 this.sb.append("  ptr null,\n");
                 this.sb.append("  " + refmap + "\n");
                 this.sb.append("}\n");
@@ -2704,29 +2764,9 @@ class LLVMEmitter {
         // Precise-GC layout program (NULL slot = conservative fallback)
         let refmap: string = this.emit_class_refmap(name, layout);
 
-        // GC finalizer: a non-value class implementing IMemoryDispose points
-        // the destructor slot at its dispose_mem implementation — the method
-        // has exactly the slot's signature void(ptr) — so the collector's
-        // sweep phase can release raw malloc'd buffers (Array<T,N>.buf, ...)
-        // when a dead instance is reclaimed. Value types (ICopy) stay null: a
-        // boxed copy would free buffers still owned by the live stack
-        // original. IMemoryDispose has the single method dispose_mem, so
-        // method_ptrs slot 0 of its vtable is the implementation.
-        let finalizer: mut string = "ptr null";
-        if (!layout.is_value_type) {
-            let fi: mut i64 = 0;
-            while (fi < cast<i64>(layout.interface_vtables.size())) {
-                let fvt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(fi)).some;
-                if (fvt.interface_name == "IMemoryDispose" && cast<i64>(fvt.method_ptrs.size()) > 0) {
-                    finalizer = "ptr " + fvt.method_ptrs.at(cast<u64>(0)).some;
-                }
-                fi = fi + 1;
-            }
-        }
-
         // Emit full ClassMetadata
-        // struct: { ptr name, i32 instance_size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr destructor, ptr refmap }
-        this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+        // struct: { ptr name, i32 instance_size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr refmap }
+        this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
         this.sb.append("  ptr @." + name + "_name,\n");
         this.sb.append("  i32 " + cast<string>(layout.sizeof_object) + ",\n");
         this.sb.append("  i32 " + cast<string>(layout.fields.size()) + ",\n");
@@ -2735,7 +2775,6 @@ class LLVMEmitter {
         this.sb.append("  ptr null,\n");
         this.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
         this.sb.append("  ptr @" + name + "_interface_map,\n");
-        this.sb.append("  " + finalizer + ",\n");
         this.sb.append("  " + refmap + "\n");
         this.sb.append("}\n");
 
@@ -2987,9 +3026,9 @@ class LLVMEmitter {
         this.sb.append("]\n");
 
         // Emit full metadata matching EmperorClassMetadata layout:
-        // { ptr name, i32 size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr destructor, ptr refmap }
+        // { ptr name, i32 size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr refmap }
         let refmap: string = this.emit_enum_refmap(name, layout);
-        this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+        this.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
         this.sb.append("  ptr @." + name + "_name,\n");
         this.sb.append("  i32 0,\n");
         this.sb.append("  i32 0,\n");
@@ -2998,7 +3037,6 @@ class LLVMEmitter {
         this.sb.append("  ptr null,\n");
         this.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
         this.sb.append("  ptr @" + name + "_interface_map,\n");
-        this.sb.append("  ptr null,\n");
         this.sb.append("  " + refmap + "\n");
         this.sb.append("}\n");
 
@@ -3443,9 +3481,7 @@ class LLVMEmitter {
         if (inst is IRInstruction.unbox) { return inst.unbox.location; }
         if (inst is IRInstruction.global_load) { return inst.global_load.location; }
         if (inst is IRInstruction.global_store) { return inst.global_store.location; }
-        if (inst is IRInstruction.address_of) { return inst.address_of.location; }
-        if (inst is IRInstruction.load_ptr) { return inst.load_ptr.location; }
-        if (inst is IRInstruction.store_ptr) { return inst.store_ptr.location; }
+        if (inst is IRInstruction.array_new_zeroed) { return inst.array_new_zeroed.location; }
         return new SourceLocation("", 0, 0);
     }
 
@@ -3575,9 +3611,10 @@ class LLVMEmitter {
         if (inst is IRInstruction.unbox) { this.emit_unbox(inst.unbox); return; }
         if (inst is IRInstruction.global_load) { this.emit_global_load(inst.global_load); return; }
         if (inst is IRInstruction.global_store) { this.emit_global_store(inst.global_store); return; }
-        if (inst is IRInstruction.address_of) { this.emit_address_of(inst.address_of); return; }
-        if (inst is IRInstruction.load_ptr) { this.emit_load_ptr(inst.load_ptr); return; }
-        if (inst is IRInstruction.store_ptr) { this.emit_store_ptr(inst.store_ptr); return; }
+        if (inst is IRInstruction.array_new_zeroed) { this.emit_array_new_zeroed(inst.array_new_zeroed); return; }
+        if (inst is IRInstruction.array_get) { this.emit_array_get(inst.array_get); return; }
+        if (inst is IRInstruction.array_set) { this.emit_array_set(inst.array_set); return; }
+        if (inst is IRInstruction.array_len) { this.emit_array_len(inst.array_len); return; }
     }
 
     fun emit_const(mut this, inst: IRConst) {
@@ -4455,75 +4492,6 @@ class LLVMEmitter {
         this.emit_line("  store " + llvm_type + " " + coerced_value + ", ptr " + obj_resolved);
     }
 
-    // ADDRESS_OF: yield the storage address of a value-backed operand (u64).
-    fun emit_address_of(mut this, inst: IRAddressOf) {
-        _utils.trace_enter("Enter emit_address_of");
-        let result_name: string = inst.result.display();
-        let operand_name: string = inst.operand.display();
-        let base: mut string = "";
-        if (this.is_mutable_reg(operand_name)) {
-            base = this.get_alloca_name(operand_name);
-        } else {
-            let llvm_ty: string = this.ir_type_to_llvm(inst.operand.get_ir_type());
-            base = this.next_tmp();
-            this.emit_line("  " + base + " = alloca " + llvm_ty + ", align 8");
-            this.emit_line("  store " + llvm_ty + " " + this.resolve_value(inst.operand) + ", ptr " + base);
-        }
-        this.emit_line("  " + result_name + " = ptrtoint ptr " + base + " to i64");
-        this.register_llvm_type(result_name, "i64");
-    }
-
-    // LOAD_PTR: inttoptr i64 addr to ptr ; load T, ptr.
-    fun emit_load_ptr(mut this, inst: IRLoadPtr) {
-        _utils.trace_enter("Enter emit_load_ptr");
-        let result_name: string = inst.result.display();
-        // Normalize the harmless "mut " permission prefix: element slots are
-        // laid out mutability-independently (List<mut T> stride == List<T>).
-        let load_type: string = this.strip_mut_ir_prefix(inst.load_type);
-        let llvm_ty: mut string = this.ir_type_to_llvm(load_type);
-        let ptr_tmp: string = this.next_tmp();
-        this.emit_line("  " + ptr_tmp + " = inttoptr i64 " + this.resolve_value(inst.addr) + " to ptr");
-        if (this.string_starts_with(load_type, "ref<")) {
-            // A VALUE-CLASS slot holds the struct inline, but the compiler's
-            // value model represents value-class values as pointers to their
-            // struct storage — so the load is a COPY: fresh storage + memcpy
-            // out of the element slot (element access is by value; write back
-            // with set()/__store).
-            let layout: Option<ClassLayout> = this.find_class_layout(this.extract_type_name(load_type));
-            if (layout.is_some() && layout.some.is_value_type) {
-                this.emit_line("  " + result_name + " = alloca " + layout.some.llvm_struct_type + ", align 8");
-                this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + result_name + ", ptr " + ptr_tmp + ", i32 " + cast<string>(layout.some.sizeof_object) + ", i1 false)");
-                this.needs_memcpy = true;
-                this.register_llvm_type(result_name, "ptr");
-                return;
-            }
-        }
-        this.emit_line("  " + result_name + " = load " + llvm_ty + ", ptr " + ptr_tmp);
-        this.register_llvm_type(result_name, llvm_ty);
-    }
-
-    // STORE_PTR: inttoptr i64 addr to ptr ; store T value, ptr.
-    fun emit_store_ptr(mut this, inst: IRStorePtr) {
-        _utils.trace_enter("Enter emit_store_ptr");
-        // Normalize the harmless "mut " permission prefix (slot layout is
-        // mutability-independent).
-        let store_type_norm: string = this.strip_mut_ir_prefix(inst.store_type);
-        let llvm_ty: mut string = this.ir_type_to_llvm(store_type_norm);
-        // A VALUE-class store must copy the WHOLE struct into the slot (the
-        // value resolves to a pointer to its storage — storing the pointer
-        // would leak a stack address into the buffer).
-        if (this.string_starts_with(store_type_norm, "ref<")) {
-            let layout: Option<ClassLayout> = this.find_class_layout(this.extract_type_name(store_type_norm));
-            if (layout.is_some() && layout.some.is_value_type) {
-                llvm_ty = layout.some.llvm_struct_type;
-            }
-        }
-        let coerced: string = this.coerce_operand(this.resolve_value(inst.value), llvm_ty);
-        let ptr_tmp: string = this.next_tmp();
-        this.emit_line("  " + ptr_tmp + " = inttoptr i64 " + this.resolve_value(inst.addr) + " to ptr");
-        this.emit_line("  store " + llvm_ty + " " + coerced + ", ptr " + ptr_tmp);
-    }
-
     fun emit_br(mut this, inst: IRBr) {
         _utils.trace_enter("Enter emit_br");
         this.emit_line("  br label %" + inst.target_name);
@@ -4770,97 +4738,44 @@ class LLVMEmitter {
         }
     }
 
-    // Element-map operand for #__track_buffer: "bare" (elements are single
-    // references — the shared C-side map), "ptr @X_refmap" (a class/enum
-    // layout's module constant), "none" (primitive elements — nothing to
-    // track, no registration at all), or "" (mapless value type — the
-    // conservative byte-region fallback keeps the buffer covered).
-    fun gc_track_map_operand(mut this, elem_ir: string) -> string {
-        let t: string = this.strip_mut_ir_prefix(elem_ir);
-        if (this.is_string_type(t) || this.string_starts_with(t, "ref<")) {
-            // A ref<X> element is either a REFERENCE class / string (one
-            // pointer per slot — bare) or a VALUE class stored INLINE
-            // (stride = sizeof(X), its reference fields at X's own offsets —
-            // needs X's ref-map). Bare for an inline value class hid the
-            // element fields from the collector: the walk visited only
-            // offset 0 while the real references sat deeper (a
-            // Vector<SourceInput> keeps its strings at +8/+16), so a major
-            // swept them, freed the blocks, and the reused memory corrupted
-            // live data (3b precise-mode repro). Ensure the layout exists
-            // before asking — layouts are built lazily.
-            let type_name: string = this.extract_type_name(t);
-            this.ensure_gc_layout(type_name, true);
-            if (this.is_value_class_ref(t)) {
-                let op: string = this.gc_struct_refmap_operand(this.value_class_struct_type(t));
-                if (op != "") { return op; }
-                return "none"; // inline value class, no embedded references
-            }
-            this.needs_gc_track_bare = true;
-            return "bare";
-        }
-        if (!this.string_starts_with(t, "%")) {
-            // Enum elements spell "enum<X>" (bound_type_to_ir_type), NOT
-            // "%enum.X" — without this branch every List<enum> container fell
-            // through to the conservative byte-region fallback: 45K+
-            // conservative regions on the compiler workload, each scanned
-            // word-by-word at every minor and every one of their young
-            // payload refs PINNED (chunk demotion spiral, the precise-mode
-            // perf collapse). Map to the layout spelling and reuse the
-            // per-tag payload ref-map machinery.
-            if (this.string_starts_with(t, "enum<")) {
-                let ename: string = this.extract_type_name(t);
-                let espelled: string = "%enum." + ename;
-                this.ensure_gc_layout(ename, false);
-                let eop: string = this.gc_struct_refmap_operand(espelled);
-                if (eop != "") { return eop; }
-                return "none"; // pointer-free enum payloads
-            }
-            return "none"; // primitive element: no references inside
-        }
-        // Make sure the layout (and its ref-map constant) exists before
-        // asking for the operand — layouts are otherwise built lazily.
-        let is_enum: bool = this.string_starts_with(t, "%enum.");
-        let lname: string = this.refmap_type_name(t, if (is_enum) { "%enum." } else { "%class." });
-        this.ensure_gc_layout(lname, !is_enum);
-        let op: string = this.gc_struct_refmap_operand(t);
-        if (op == "") { return "none"; } // no embedded references inside
-        return op;
-    }
-
     fun emit_call_void(mut this, inst: IRCallVoid) {
         if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_call_void(inst=" + inst.display() + ")");
  }
-        // #__track_buffer(T, buf, count, stride): typed container registration.
-        // The element IR spelling rides after "::" in the callee token.
-        if (this.string_starts_with(inst.func_name, "<intrinsic>.track_buffer::")) {
-            let elem: string = string_substring(inst.func_name, 26, string_length(inst.func_name) - 26);
-            let mapop: mut string = this.gc_track_map_operand(elem);
-            // "none" (primitive elements) and "" (mapless value type) BOTH
-            // fall back to the conservative byte region: an i64 element may
-            // hold a raw GC address (#address_of'd handles in the scheduler
-            // queues!) that no precise map can see — the legacy _gc_scan_add
-            // registration is the safety net for both.
-            if (mapop == "none") { mapop = ""; }
-            let addr: string = this.resolve_value(inst.args.at(cast<u64>(0)).some);
-            let count: string = this.resolve_value(inst.args.at(cast<u64>(1)).some);
-            let stride: string = this.resolve_value(inst.args.at(cast<u64>(2)).some);
-            this.emit_gc_poll();
-            // inttoptr is INSTRUCTION-only for register operands (a constant
-            // expression cannot mention a local name) — materialize first.
-            let addr_ptr: string = this.next_tmp();
-            this.emit_line("  " + addr_ptr + " = inttoptr i64 " + addr + " to ptr");
-            if (mapop == "bare") {
-                this.needs_gc_track = true;
-                this.emit_line("  call void @_emperor_gc_track_buffer(ptr " + addr_ptr + ", i64 " + count + ", i64 " + stride + ", ptr @_emperor_gc_bare_refmap)");
-            } else if (mapop == "") {
-                // mapless element type: conservative whole-byte region
-                let bytes: string = this.next_tmp();
-                this.emit_line("  " + bytes + " = mul i64 " + count + ", " + stride);
-                this.emit_line("  call void @_emperor_gc_scan_add(i64 " + addr + ", i64 " + bytes + ")");
+        // Native-array extern helpers (lowered from the __array_fill /
+        // __array_copy_range intrinsics). Fixed C ABI: the element VALUE is
+        // passed by address (any element type), so materialize a slot for it.
+        if (inst.func_name == "_emperor_array_fill") {
+            this.needs_array_ops = true;
+            let arr: string = this.resolve_value(inst.args.at(cast<u64>(0)).some);
+            let val_ir: string = inst.args.at(cast<u64>(1)).some.get_ir_type();
+            let val_resolved: string = this.resolve_value(inst.args.at(cast<u64>(1)).some);
+            let val_slot: mut string = "";
+            if (this.value_class_struct_type(val_ir) != "") {
+                // Value-class element: the C helper memcpy's map-stride bytes
+                // out of the value slot — it needs the pointer to the struct
+                // DATA. A mutable reg's alloca holds that pointer (load it);
+                // an SSA value-class value already IS the pointer.
+                if (this.is_mutable_reg(inst.args.at(cast<u64>(1)).some.display())) {
+                    val_slot = this.next_tmp();
+                    this.emit_line("  " + val_slot + " = load ptr, ptr " + this.get_alloca_name(inst.args.at(cast<u64>(1)).some.display()));
+                } else {
+                    val_slot = this.coerce_operand(val_resolved, "ptr");
+                }
             } else {
-                this.needs_gc_track = true;
-                this.emit_line("  call void @_emperor_gc_track_buffer(ptr " + addr_ptr + ", i64 " + count + ", i64 " + stride + ", " + mapop + ")");
+                let val_llvm: string = this.ir_type_to_llvm(val_ir);
+                let val_coerced: string = this.coerce_operand(val_resolved, val_llvm);
+                val_slot = this.materialize_value_slot(inst.args.at(cast<u64>(1)).some, val_coerced, val_llvm);
             }
+            this.emit_line("  call void @_emperor_array_fill(ptr " + arr + ", ptr " + val_slot + ")");
+            return;
+        }
+        if (inst.func_name == "_emperor_array_copy_range") {
+            this.needs_array_ops = true;
+            let dst: string = this.resolve_value(inst.args.at(cast<u64>(0)).some);
+            let src: string = this.resolve_value(inst.args.at(cast<u64>(1)).some);
+            let n: string = this.resolve_value(inst.args.at(cast<u64>(2)).some);
+            let n_i64: string = this.coerce_operand(n, "i64");
+            this.emit_line("  call void @_emperor_array_copy_range(ptr " + dst + ", ptr " + src + ", i64 " + n_i64 + ")");
             return;
         }
         this.emit_gc_poll();
@@ -4964,7 +4879,7 @@ class LLVMEmitter {
         b.append("@__funval_" + key + "_vtable = private constant [1 x ptr] [ptr " + thunk + "]\n");
         b.append("@__funval_" + key + "_iface_map = private constant [1 x { ptr, ptr }] [{ ptr, ptr } { ptr @.__FunVal_interface_id, ptr @__funval_" + key + "_vtable }]\n");
         b.append("@.__funval_" + key + "_name = private unnamed_addr constant [" + cast<string>(string_length(key) + 1) + " x i8] c\"" + key + "\\00\"\n");
-        b.append("@__funval_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+        b.append("@__funval_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
         b.append("  ptr @.__funval_" + key + "_name,\n");
         b.append("  i32 8,\n");
         b.append("  i32 0,\n");
@@ -4973,7 +4888,6 @@ class LLVMEmitter {
         b.append("  ptr null,\n");
         b.append("  i32 1,\n");
         b.append("  ptr @__funval_" + key + "_iface_map,\n");
-        b.append("  ptr null,\n");
         b.append("  ptr null\n");
         b.append("}\n");
         b.append(obj_name + " = private constant { ptr } { ptr @__funval_" + key + "_metadata }\n");
@@ -5080,7 +4994,7 @@ class LLVMEmitter {
         b.append("@.__funval_bound_" + key + "_name = private unnamed_addr constant [" + cast<string>(string_length(key) + 1) + " x i8] c\"" + key + "\\00\"\n");
         b.append("@__funval_bound_" + key + "_field_offsets = private constant [1 x i32] [i32 8]\n");
         b.append("@__funval_bound_" + key + "_field_is_ptr = private constant [1 x i32] [i32 1]\n");
-        b.append("@__funval_bound_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr, ptr } {\n");
+        b.append("@__funval_bound_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
         b.append("  ptr @.__funval_bound_" + key + "_name,\n");
         b.append("  i32 16,\n");
         b.append("  i32 1,\n");
@@ -5089,7 +5003,6 @@ class LLVMEmitter {
         b.append("  ptr null,\n");
         b.append("  i32 1,\n");
         b.append("  ptr @__funval_bound_" + key + "_iface_map,\n");
-        b.append("  ptr null,\n");
         b.append("  ptr null\n");
         b.append("}\n");
         this.pending_funvals.append(b.to_string());
@@ -5270,6 +5183,244 @@ class LLVMEmitter {
         // Register as ptr so coerce_operand can load the struct when a by-value use needs it.
         this.register_llvm_type(result_name, "ptr");
         return obj;
+    }
+
+    // ---- Native arrays ----
+
+    // Find (or lazily register) the metadata entry for an element IR type.
+    fun find_array_meta(mut this, elem_ir: string) -> Option<ArrayMetaEntry> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.array_meta_entries.size())) {
+            if (this.array_meta_entries.at(cast<u64>(i)).some.elem_ir == elem_ir) {
+                return new Option<ArrayMetaEntry>.some(this.array_meta_entries.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<ArrayMetaEntry>.none();
+    }
+
+    fun sanitize_meta_key(mut this, key: string) -> string {
+        // array element keys can contain <>, ., :: — sanitize to identifier-safe
+        let sb: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < string_length(key)) {
+            let c: string = string_char_at(key, i);
+            let code: i64 = string_char_code(c);
+            let ok: bool = (code >= 97 && code <= 122) || (code >= 65 && code <= 90)
+                || (code >= 48 && code <= 57) || c == "_";
+            if (ok) {
+                sb.append(c);
+            } else {
+                sb.append("_");
+            }
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    fun ensure_array_meta(mut this, elem_ir: string) -> ArrayMetaEntry {
+        let found: Option<ArrayMetaEntry> = this.find_array_meta(elem_ir);
+        if (found.is_some()) { return found.some; }
+
+        // Build the element's class/enum layout BEFORE asking ir_type_to_llvm:
+        // layouts are lazy, and an enum without one degrades to i64 (8 bytes)
+        // — a stride far smaller than the real element size, so __array_set
+        // would memcpy one element over the next slots (heap corruption, the
+        // Parser's List<emperor.Definition> SIGSEGV). Nested array elements
+        // need no layout (their metadata is emitter-generated below).
+        let elem_norm: string = this.strip_mut_ir_prefix(elem_ir);
+        if (this.string_starts_with(elem_norm, "enum<")) {
+            this.ensure_gc_layout(this.extract_type_name(elem_norm), false);
+        } else if (this.string_starts_with(elem_norm, "ref<") || this.string_starts_with(elem_norm, "struct<")) {
+            let inner: string = this.extract_type_name(elem_norm);
+            if (!this.string_starts_with(inner, "array<")) {
+                this.ensure_gc_layout(inner, true);
+            }
+        } else if (this.string_starts_with(elem_norm, "%enum.")) {
+            this.ensure_gc_layout(this.refmap_type_name(elem_norm, "%enum."), false);
+        } else if (this.string_starts_with(elem_norm, "%class.")) {
+            this.ensure_gc_layout(this.refmap_type_name(elem_norm, "%class."), true);
+        }
+
+        let elem_llvm: mut string = this.ir_type_to_llvm(elem_ir);
+        // Value-class elements live INLINE in the slots: the slot type is the
+        // struct itself and the stride its size. ir_type_to_llvm spells a
+        // value class as a bare ptr (the value model), which would store
+        // POINTERS to the pushed value's stack storage — dangling after the
+        // frame returns, and no value-copy semantics at all.
+        let vstruct: string = this.value_class_struct_type(elem_ir);
+        let is_value_elem: mut bool = false;
+        if (vstruct != "") {
+            elem_llvm = vstruct;
+            is_value_elem = true;
+        }
+        let size: i64 = this.llvm_type_size(elem_llvm);
+        let align: i64 = this.llvm_type_align(elem_llvm);
+        let stride: mut i64 = this.align_up(size, align);
+        if (stride < 1) { stride = 1; }
+
+        // REFARR program, indexed like every emitter ref-map (index 0 is the
+        // total-length placeholder, the root node sits at 1):
+        //   [total, 3, stride, elem_sub, ...elem node ints]
+        // elem_sub is the node of ONE element value (0 = pointer-free).
+        let ints: mut _utils.List<i64> = new _utils.List<i64>();
+        ints.push(0);
+        ints.push(3);
+        ints.push(stride);
+        // reserve the elem_sub slot; fill after the node is appended
+        let sub_slot: i64 = cast<i64>(ints.size());
+        ints.push(0);
+        let elem_node: i64 = this.refmap_node_of_payload(elem_llvm, ints);
+        ints.set(cast<u64>(sub_slot), elem_node);
+        ints.set(cast<u64>(0), cast<i64>(ints.size()));
+
+        let key: string = this.sanitize_meta_key(elem_ir);
+        let entry: mut ArrayMetaEntry = new ArrayMetaEntry();
+        entry.elem_ir = elem_ir;
+        entry.meta_name = "__array_" + key;
+        entry.elem_llvm = elem_llvm;
+        entry.stride = stride;
+        entry.is_value_elem = is_value_elem;
+        entry.refmap_name = "__array_" + key + "_refmap";
+        entry.refmap_ints = ints;
+        this.array_meta_entries.push(entry);
+        return entry;
+    }
+
+    // %res = ARRAY_NEW_ZEROED <T> %len
+    fun emit_array_new_zeroed(mut this, inst: IRArrayNewZeroed) {
+        let entry: ArrayMetaEntry = this.ensure_array_meta(inst.elem_type);
+        let result_name: string = inst.result.display();
+        let len_resolved: string = this.resolve_value(inst.length);
+        let len_i64: string = this.coerce_operand(len_resolved, "i64");
+        this.emit_gc_poll();
+        this.needs_array_create = true;
+        let raw: mut string = result_name;
+        if (this.is_mutable_reg(result_name)) {
+            raw = this.next_tmp();
+        }
+        this.emit_line("  " + raw + " = call ptr @_emperor_array_create(ptr @" + entry.meta_name + "_metadata, i64 " + len_i64 + ", i64 " + cast<string>(entry.stride) + ")");
+        if (this.is_mutable_reg(result_name)) {
+            this.emit_line("  store ptr " + raw + ", ptr " + this.get_alloca_name(result_name));
+        }
+        this.register_llvm_type(result_name, "ptr");
+    }
+
+    // Byte offset of element i: 16 + i*stride (materialized as SSA).
+    fun array_elem_ptr(mut this, arr_resolved: string, idx_resolved: string, meta_entry: ArrayMetaEntry) -> string {
+        let idx_i64: string = this.coerce_operand(idx_resolved, "i64");
+        let off_mul: string = this.next_tmp();
+        this.emit_line("  " + off_mul + " = mul i64 " + idx_i64 + ", " + cast<string>(meta_entry.stride));
+        let off: string = this.next_tmp();
+        this.emit_line("  " + off + " = add i64 16, " + off_mul);
+        let ep: string = this.next_tmp();
+        this.emit_line("  " + ep + " = getelementptr i8, ptr " + arr_resolved + ", i64 " + off);
+        let casted: string = this.next_tmp();
+        this.emit_line("  " + casted + " = bitcast ptr " + ep + " to ptr");
+        return casted;
+    }
+
+    // %res:T = ARRAY_GET %arr, %idx
+    fun emit_array_get(mut this, inst: IRArrayGet) {
+        // The array's element ir type: strip "[]" from the array operand's IR
+        // type (e.g. the array operand spells "array<i32>").
+        let arr_ir: string = inst.array.get_ir_type();
+        let elem_ir: string = inst.ir_type;
+        let entry: ArrayMetaEntry = this.ensure_array_meta(elem_ir);
+        let arr_resolved: string = this.resolve_value(inst.array);
+        let idx_resolved: string = this.resolve_value(inst.index);
+        let elem_ptr: string = this.array_elem_ptr(arr_resolved, idx_resolved, entry);
+        let result_name: string = inst.result.display();
+        if (entry.is_value_elem) {
+            // Value-class element: the result is a POINTER to fresh storage
+            // holding a whole-struct COPY of the slot (the value model). A
+            // bare `load ptr` here would hand out the slot's first word as a
+            // pointer — the pushed value's own storage aliased instead of a
+            // copy (e0=<huge pointer number> in ListValueElements).
+            // The SSA alloca MUST be named after the result register
+            // itself: later uses (sret tails, field loads) resolve %tN as
+            // the pointer — a differently-named temp would dangle.
+            let dst: mut string = "";
+            if (this.is_mutable_reg(result_name)) {
+                dst = this.get_alloca_name(result_name);
+            } else {
+                dst = result_name;
+                this.emit_line("  " + dst + " = alloca " + entry.elem_llvm + ", align 8");
+            }
+            this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + dst + ", ptr " + elem_ptr + ", i32 " + cast<string>(entry.stride) + ", i1 false)");
+            this.needs_memcpy = true;
+            this.register_llvm_type(result_name, "ptr");
+            return;
+        }
+        if (this.is_mutable_reg(result_name)) {
+            let loaded: string = this.next_tmp();
+            this.emit_line("  " + loaded + " = load " + entry.elem_llvm + ", ptr " + elem_ptr);
+            this.emit_line("  store " + entry.elem_llvm + " " + loaded + ", ptr " + this.get_alloca_name(result_name));
+        } else {
+            this.emit_line("  " + result_name + " = load " + entry.elem_llvm + ", ptr " + elem_ptr);
+        }
+        this.register_llvm_type(result_name, entry.elem_llvm);
+    }
+
+    fun zero_literal_for(mut this, llvm_type: string) -> string {
+        if (llvm_type == "float" || llvm_type == "double") { return "0.0"; }
+        if (this.string_starts_with(llvm_type, "%class.") || this.string_starts_with(llvm_type, "%enum.")) {
+            return "zeroinitializer";
+        }
+        return "0";
+    }
+
+    // ARRAY_SET %arr, %idx, %v
+    fun emit_array_set(mut this, inst: IRArraySet) {
+        let elem_ir: string = inst.value.get_ir_type();
+        let entry: ArrayMetaEntry = this.ensure_array_meta(elem_ir);
+        let arr_resolved: string = this.resolve_value(inst.array);
+        let idx_resolved: string = this.resolve_value(inst.index);
+        let val_resolved: string = this.resolve_value(inst.value);
+        let elem_ptr: string = this.array_elem_ptr(arr_resolved, idx_resolved, entry);
+        if (entry.is_value_elem) {
+            // Value-class element: copy the WHOLE struct into the slot. The
+            // value resolves to a pointer to its storage — storing the
+            // pointer would leak a stack address into the array and alias
+            // the source instead of copying it.
+            let coerced: string = this.coerce_operand(val_resolved, entry.elem_llvm);
+            this.emit_line("  store " + entry.elem_llvm + " " + coerced + ", ptr " + elem_ptr);
+            return;
+        }
+        let val_coerced: string = this.coerce_operand(val_resolved, entry.elem_llvm);
+        this.emit_line("  store " + entry.elem_llvm + " " + val_coerced + ", ptr " + elem_ptr);
+    }
+
+    // %n:u64 = ARRAY_LEN %arr
+    fun emit_array_len(mut this, inst: IRArrayLen) {
+        let arr_resolved: string = this.resolve_value(inst.array);
+        let lenp: string = this.next_tmp();
+        this.emit_line("  " + lenp + " = getelementptr i8, ptr " + arr_resolved + ", i64 8");
+        let castp: string = this.next_tmp();
+        this.emit_line("  " + castp + " = bitcast ptr " + lenp + " to ptr");
+        let result_name: string = inst.result.display();
+        if (this.is_mutable_reg(result_name)) {
+            let loaded: string = this.next_tmp();
+            this.emit_line("  " + loaded + " = load i64, ptr " + castp);
+            this.emit_line("  store i64 " + loaded + ", ptr " + this.get_alloca_name(result_name));
+        } else {
+            this.emit_line("  " + result_name + " = load i64, ptr " + castp);
+        }
+        this.register_llvm_type(result_name, "i64");
+    }
+
+    // A stable slot address holding `coerced` (used by the fixed-ABI array
+    // externs that take element values by reference). Mutable regs already
+    // live in an alloca; other values get a fresh entry alloca + store.
+    fun materialize_value_slot(mut this, val: IRValue, coerced: string, llvm_type: string) -> string {
+        let name: string = val.display();
+        if (this.is_mutable_reg(name)) {
+            return this.get_alloca_name(name);
+        }
+        let slot: string = this.next_tmp();
+        this.emit_entry_alloca(slot, llvm_type);
+        this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + slot);
+        return slot;
     }
 
     fun emit_new(mut this, inst: IRNew) {
@@ -6640,6 +6791,7 @@ class LLVMEmitter {
     // cannot hold references.
     fun gc_param_slot_for_ir_type(mut this, it: string) -> string {
         let t: string = this.strip_mut_ir_prefix(it);
+        if (this.string_starts_with(t, "array<")) { return "ptr null"; }
         if (this.string_starts_with(t, "enum<")) {
             let ename: string = this.extract_type_name(t);
             this.ensure_gc_layout(ename, false);
@@ -6684,9 +6836,8 @@ class LLVMEmitter {
         // object): the parameter still holds ONE pointer — mirror it as a bare
         // PIN slot, exactly like gc_slot_for_ir_type's register-side fallback.
         // Returning "" here left generic-typed reference parameters (the
-        // List<T>.at/slot_addr/grow family — the hottest functions in the
-        // compiler) with NO slot at all: precise roots missed them and a
-        // cover-off minor finalized their receivers mid-call.
+        // List<T>.at/get/set/grow family — the hottest functions in the
+        // compiler) with NO slot at all: precise roots missed them.
         if (found.is_none()) { return "ptr null"; }
         if (found.some.is_value_type) {
             return "ptr @" + found.some.type_name + "_refmap";
@@ -6702,6 +6853,11 @@ class LLVMEmitter {
     // phase keeps. Phase 3 revisits them with the GC_VERIFY differential in
     // hand. "" = not promotable.
     fun gc_slot_for_ir_type(mut this, it: string) -> string {
+        // Native arrays are single references (GC objects walked via their
+        // own metadata REFARR) — a bare slot roots them precisely. Leaving
+        // them "" made every array-typed register unslotted (GCSCAN
+        // skip=no-slot), relying on the conservative cover alone.
+        if (this.string_starts_with(this.strip_mut_ir_prefix(it), "array<")) { return "ptr null"; }
         if (this.is_string_type(it)) { return "ptr null"; }
         let t: string = this.strip_mut_ir_prefix(it);
         if (!this.is_ref_type(it)) {
@@ -7159,6 +7315,7 @@ class LLVMEmitter {
     // resolves and skips non-nursery values).
     fun gc_chain_pin_worthy(this, it: string) -> bool {
         if (it == "" || it == "void") { return false; }
+        if (this.string_starts_with(this.strip_mut_ir_prefix(it), "array<")) { return true; }
         if (this.is_string_type(it)) { return true; }
         if (this.is_any_ref_ir_type(it)) { return true; }
         if (it == "ptr") { return true; }
@@ -7442,13 +7599,6 @@ class LLVMEmitter {
             out.push(inst.unbox.operand);
         } else if (inst is IRInstruction.global_store) {
             out.push(inst.global_store.value);
-        } else if (inst is IRInstruction.address_of) {
-            out.push(inst.address_of.operand);
-        } else if (inst is IRInstruction.load_ptr) {
-            out.push(inst.load_ptr.addr);
-        } else if (inst is IRInstruction.store_ptr) {
-            out.push(inst.store_ptr.addr);
-            out.push(inst.store_ptr.value);
         }
         return out;
     }
@@ -7553,6 +7703,13 @@ class LLVMEmitter {
         if (ir_type == "void") { return "void"; }
         if (ir_type == "ptr") { return "ptr"; }
         if (ir_type == "funptr") { return "ptr"; }
+        // Native arrays `array<X>` are reference objects — a bare ptr in LLVM,
+        // whatever the element spelling is. MUST precede the enum branch: an
+        // Arrays spell "array<X>" and are references → ptr. The check must
+        // precede the enum/ref/struct prefix branches: an "array<enum<X>>"
+        // spelling would otherwise hijack into a (never-found) layout lookup
+        // and silently degrade the type to i64.
+        if (this.string_starts_with(ir_type, "array<")) { return "ptr"; }
         // ref<...> / mut ref<...> → ptr
         if (this.is_any_ref_ir_type(ir_type)) { return "ptr"; }
         // enum<...> → struct type if layout available, else i64
@@ -8005,6 +8162,18 @@ class LLVMEmitter {
         let i: mut i64 = 0;
         while (i < fl) {
             if (string_char_code_at(s, sl - fl + i) != string_char_code_at(suffix, i)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fun string_ends_with(this, s: string, suffix: string) -> bool {
+        let suffix_len: i64 = string_length(suffix);
+        let s_len: i64 = string_length(s);
+        if (s_len < suffix_len) { return false; }
+        let i: mut i64 = 0;
+        while (i < suffix_len) {
+            if (string_char_code_at(s, s_len - suffix_len + i) != string_char_code_at(suffix, i)) { return false; }
             i = i + 1;
         }
         return true;

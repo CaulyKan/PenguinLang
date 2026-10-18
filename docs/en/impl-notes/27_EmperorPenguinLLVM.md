@@ -187,7 +187,7 @@ A `string` value is a `ptr` pointing to a **header-prefixed block** (C-side defi
 ; offset 0:  ptr metadata   → @_emperor_string_metadata (EmperorClassMetadata,
 ;                                interface_count=0 — `x is IFace` cleanly returns false for string)
 ; offset 8:  i64 length     (length in bytes, excluding the trailing NUL; string_length reads it in O(1))
-; offset 16: i8  data[]     (length bytes + data[length] = '\0', a C interop convenience)
+; offset 16: i8  array<data>     (length bytes + data[length] = '\0', a C interop convenience)
 ```
 
 - **Heap strings**: runtime strings are allocated by `_emperor_string_alloc(len)` via `_emperor_gc_alloc(16+len+1, is_string=1)` (the GC neither scans nor finalizes is_string blocks; the metaptr in the header is completely invisible to the collector).
@@ -282,17 +282,17 @@ Interface method dispatch is resolved through the `obj→metadata→interface_ma
     ptr,    ; name → @.X_name (type-name string constant)
     i32,    ; instance_size (total instance size, including header)
     i32,    ; field_count
-    ptr,    ; field_offsets → i32[] (field offset table, used by GC traversal)
-    ptr,    ; field_is_ptr → i32[] (0=non-pointer field, 1=pointer field)
+    ptr,    ; field_offsets → array<i32> (field offset table, used by GC traversal)
+    ptr,    ; field_is_ptr → array<i32> (0=non-pointer field, 1=pointer field)
     ptr,    ; virtual_method_table (currently emitted as null; virtual dispatch always goes through the interface_map)
     i32,    ; interface_count
-    ptr,    ; interface_map → InterfaceMapEntry[] (emitted as an inline { ptr, ptr } array)
-    ptr     ; destructor (GC finalizer: reference types implementing IMemoryDispose point at their dispose_mem implementation, invoked before sweep reclamation; otherwise null)
+    ptr,    ; interface_map → array<InterfaceMapEntry> (emitted as an inline { ptr, ptr } array)
+    ptr     ; refmap → array<i32> (REFARR-node GC reference map: how the walker traverses this object's pointer slots; terminated by -1)
 }
 
 %InterfaceMapEntry = type {
     ptr,    ; interface_id → @.<Iface>_interface_id (unique global string constant)
-    ptr     ; interface_method_table → @<Type>_<Iface>_vtable (ptr[], the method implementation table for that interface)
+    ptr     ; interface_method_table → @<Type>_<Iface>_vtable (array<ptr>, the method implementation table for that interface)
 }
 ```
 
@@ -419,7 +419,7 @@ The following C structs (`std/include/emperor_types.h`, `std/include/emperor_int
 // corresponds to the LLVM interface_map entry (inline { ptr, ptr })
 typedef struct EmperorInterfaceMapEntry {
     const char* interface_id;    // unique interface identifier (string constant)
-    void** method_table;         // array of method pointers ptr[]
+    void** method_table;         // array of method pointers array<ptr>
 } EmperorInterfaceMapEntry;
 
 // corresponds to LLVM @X_metadata ({ ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr })
@@ -427,12 +427,12 @@ typedef struct EmperorClassMetadata {
     const char* name;            // type name
     int instance_size;           // total instance size (including header)
     int field_count;             // number of fields
-    int* field_offsets;          // field offset table i32[]
-    int* field_is_ptr;           // whether each field contains a pointer i32[] (for GC traversal)
-    void** virtual_method_table; // virtual method table ptr[] (currently NULL; dispatch goes through interface_map)
+    int* field_offsets;          // field offset table array<i32>
+    int* field_is_ptr;           // whether each field contains a pointer array<i32> (for GC traversal)
+    void** virtual_method_table; // virtual method table array<ptr> (currently NULL; dispatch goes through interface_map)
     int interface_count;         // number of implemented interfaces
     EmperorInterfaceMapEntry* interface_map; // interface map table
-    void (*destructor)(void*);   // GC finalizer: reference types implementing IMemoryDispose point at dispose_mem (the signatures happen to match), invoked before sweep reclamation
+    const int32_t* refmap;       // GC reference map (REFARR node chain: how the walker traverses pointer slots; -1 terminated)
 } EmperorClassMetadata;
 ```
 
@@ -809,53 +809,50 @@ store <ty> %value, ptr @global_name
 
 Value-type class global variables store the entire struct: the value side first goes through `coerce_operand` to converge ptr→struct (loading the complete struct from the value's storage), then stores the whole thing.
 
-### 3.22 ADDRESS_OF
+### 3.22 ARRAY_NEW_ZEROED
 
-**IR**: `%result:u64 = ADDRESS_OF %operand`
+**IR**: `%result:array<T> = ARRAY_NEW_ZEROED <T> %len`
 
-Takes the raw address of the operand's storage; the result is u64 (i64):
-
-```llvm
-; mutable register → reuse its alloca directly; otherwise materialize into a temporary alloca
-%base = alloca <ty>, align 8
-store <ty> %operand, ptr %base
-
-%result = ptrtoint ptr %base to i64
-```
-
-### 3.23 LOAD_PTR
-
-**IR**: `%result:ty = LOAD_PTR %addr`
-
-Loads from a raw u64 address according to `load_type`:
+Allocates a native array via the C runtime; the helper zeroes the memory immediately after allocation (recycled-slot stale-data protection):
 
 ```llvm
-%ptr = inttoptr i64 %addr to ptr
-%result = load <ty>, ptr %ptr
+%len0 = ...                       ; coerce the length to i64
+%arr = call ptr @_emperor_array_create(ptr @T_arr_metadata, i64 %len0, i64 <stride>)
 ```
 
-Value-type class slots (`ref<...>` with ICopy) store the struct inline, while the value model represents values as pointers — the load is a **copy**: fresh alloca + `llvm.memcpy`:
+The `T_arr_metadata` global is a normal `EmperorClassMetadata` (name `"array<T>"`, `instance_size = 0` = variable-length) whose refmap points at the REFARR node chain for the element type — primitive elements are a precise no-op, reference/value-class elements are walked per-element with the length read from object offset +8.
+
+### 3.23 ARRAY_GET
+
+**IR**: `%result:T = ARRAY_GET %arr, %idx`
+
+Element address = `arr + 16 + idx*stride` (materialized as SSA `mul`/`add`/`getelementptr i8`); the read itself is a plain load — no bounds check (that lives in the penguin-level `at(i)` wrapper):
 
 ```llvm
-%ptr = inttoptr i64 %addr to ptr
-%result = alloca %class.X, align 8
-call void @llvm.memcpy.p0.p0.i32(ptr %result, ptr %ptr, i32 <sizeof>, i1 false)
+%ep = getelementptr i8, ptr %arr, i64 <16 + idx*stride>
+%result = load <elem_ty>, ptr %ep
 ```
 
-### 3.24 STORE_PTR
+Value-class elements (ICopy classes stored inline) are a **whole-struct copy**: the result is a fresh alloca filled by `llvm.memcpy` of the slot (a bare `load ptr` would alias the slot's first word instead of copying it).
 
-**IR**: `STORE_PTR %addr, %value:store_type`
+### 3.24 ARRAY_SET
 
-Stores to a raw u64 address according to `store_type`:
+**IR**: `ARRAY_SET %arr, %idx, %value`
+
+Same element-addressing; a plain store after coercing the value to the element LLVM type. Value-class elements coerce the value (a pointer to its storage) into the whole struct before storing — storing the raw pointer would leak a stack address into the array.
+
+### 3.25 ARRAY_LEN
+
+**IR**: `%result:u64 = ARRAY_LEN %arr`
+
+The length lives at object offset +8:
 
 ```llvm
-%ptr = inttoptr i64 %addr to ptr
-store <ty> %value, ptr %ptr
+%lp = getelementptr i8, ptr %arr, i64 8
+%result = load i64, ptr %lp
 ```
 
-A value-type class store must copy the **entire struct** into the slot (the value resolves to a pointer to its storage; storing the pointer directly would leak a stack address into the buffer): the type is replaced by the class struct type, coerced, and then stored.
-
-### 3.25 CALL_INDIRECT
+### 3.26 CALL_INDIRECT
 
 **IR**: `%result:ret_ty = CALL_INDIRECT %callee(%arg1, ...)`
 
@@ -1150,7 +1147,7 @@ During lowering, the following runtime support functions are `declare`d on deman
 | `_emperor_string_equal` | `i32 (ptr a, ptr b)` | string equality comparison |
 | `_emperor_gc_init` | `void (ptr stack_top)` | GC initialization (uses the stack top as a scanning root) |
 | `_emperor_gc_add_root` | `void (ptr global)` | registers a reference-type global variable as a GC root |
-| `_emperor_gc_scan_add` | `void (i64 addr, i64 size)` | registers a value-type global's whole struct as a conservative scan region |
+| `_emperor_gc_scan_add` | `void (i64 addr, i64 size)` | registers a conservative scan region (the coroutine scheduler's stacks; typed regions were retired with the native-arrays round) |
 | `_emperor_args_init` | `void (i32 argc, ptr argv)` | command-line argument initialization |
 | `_emperor_boost_stack` | `void ()` | raises the main thread's stack limit (deep-recursion protection) |
 | `_emperor_co_spawn_fn0` | `void (ptr fn)` | coroutine scheduling: starts the initial routine as a coroutine |
@@ -1170,7 +1167,7 @@ During lowering, the following runtime support functions are `declare`d on deman
 ; type declarations
 ; metadata is emitted as an inline literal struct type (9 fields):
 ;   { ptr name, i32 size, i32 field_count, ptr field_offsets, ptr field_is_ptr,
-;     ptr vtable, i32 interface_count, ptr interface_map, ptr destructor }
+;     ptr vtable, i32 interface_count, ptr interface_map, ptr refmap }
 %FunctionValue = type { ptr, ptr }
 
 ; reference-type class (IRef) — heap allocated, with a metadata header
@@ -1255,7 +1252,7 @@ class Counter {
     ptr @Counter_field_offsets, ptr @Counter_field_is_ptr,
     ptr null,
     i32 1, ptr @Counter_interface_map,
-    ptr null  ; no destructor (Counter does not impl IMemoryDispose; a class that does would point at its dispose_mem, e.g. ptr @"<global>.Vector__i64.dispose_mem")
+    ptr @Counter_refmap  ; REFARR refmap (Counter has no pointer fields → a terminal -1 node; e.g. `@Counter_refmap = private constant [1 x i32] [i32 -1]`)
 }
 ```
 
@@ -1414,10 +1411,11 @@ Debug metadata changes nothing about codegen: `Tests/DebugInfoTest/DebugInfoSmok
 | Enum matching | ISENUM | load variant + icmp eq | variant tag comparison |
 | Enum field read | RDENUM | getelementptr + load payload | payload extraction (write chains target the enum's own storage) |
 | Global variables | GLOBAL_LOAD/GLOBAL_STORE | load/store @global | value-type structs stored inline |
-| Address intrinsics | ADDRESS_OF/LOAD_PTR/STORE_PTR | ptrtoint / inttoptr + load/store | `#__address_of`/`#__load`/`#__store` |
+| Native array creation | ARRAY_NEW_ZEROED | call `_emperor_array_create(meta, count, stride)` | zero-filled on allocation; layout `{ ptr metadata, i64 length, elements... }` |
+| Native array element access | ARRAY_GET/ARRAY_SET/ARRAY_LEN | getelementptr + load/store / load i64 @+8 | unchecked; value-class elements are whole-struct copies; bounds checks live in the penguin-level `at`/`set` wrappers |
 | Type conversions | CAST | zext/sext/trunc/sitofp etc. | numeric type conversions |
 | try/catch | (setjmp sequence) | `_setjmp` landing pad + jmp_buf table | `try_site_counter` index |
-| Full ClassMetadata | — | `@<Type>_metadata` (9 fields) | all classes and enums; includes interface_map + field_offsets + field_is_ptr + destructor |
+| Full ClassMetadata | — | `@<Type>_metadata` (9 fields) | all classes and enums; includes interface_map + field_offsets + field_is_ptr + refmap (the destructor slot was retired with the native-arrays round) |
 | Interface default method dispatch | CALL | vtable slots point at the specialized default implementations | empty impl inherits the default implementations |
 | Deterministic dispatch | CALL | call @func_name | concrete-type method calls |
 | DWARF debug info | — | `debug_*` metadata (`-g`/`--debug`) | compile unit, per-function DISubprogram + DIFile, line info, local variables |

@@ -371,10 +371,10 @@ static GtSpan* gt_take_span_for(unsigned cls) {
 /* Slow path: retire ARENA's exhausted current span to the shared full
  * list, then take a fresh span (shared partial -> empty pool -> new
  * super -> emergency collect, in that order). List mutations happen
- * under gc_alloc_lock; the emergency collect runs OUTSIDE it — a
- * finalizer may allocate, and gc_alloc_lock is not recursive (the old
- * single-heap path collected under the lock: a latent deadlock, only
- * unobserved because the path needs a failed superchunk malloc).
+ * under gc_alloc_lock; the emergency collect runs OUTSIDE it —
+ * gc_alloc_lock is not recursive (the old single-heap path collected
+ * under the lock: a latent deadlock, only unobserved because the path
+ * needs a failed superchunk malloc).
  * Mid-parallel-delta the collect is skipped entirely (mutators would
  * race the marker): the flag defers to the boundary and the caller
  * falls back to the malloc path. */
@@ -746,26 +746,6 @@ static void gt_foreach_span(void (*fn)(GtSpan*)) {
     }
 }
 
-/* Sweep phase 1: run finalizers on dead slots (alloc & ~black), one
- * word-at-a-time dead-bit iteration. No state change — dead bodies stay
- * intact for the malloc sweep's own finalizer pass, which runs between
- * this and gt_sweep_reclaim (see the driver's sweep-order note). */
-static void gt_finalize_span(GtSpan* s) {
-    for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
-        uint64_t dead = s->alloc_bits[w] & ~s->black_bits[w];
-        while (dead) {
-            unsigned idx = (w << 6) + (unsigned)__builtin_ctzll(dead);
-            if (idx >= s->nslots) return;
-            dead &= dead - 1;
-            _emperor_gc_finalize(gt_slot_header(s, idx));
-        }
-    }
-}
-
-void gt_sweep_finalize(void) {
-    gt_foreach_span(gt_finalize_span);
-}
-
 static void gt_reset_marks_span(GtSpan* s) {
     for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
         s->gray_bits[w] = 0;
@@ -779,9 +759,8 @@ void gt_reset_marks(void) {
 }
 
 /* Sweep one span: black == live at this point. alloc &= black drops the
- * dead wholesale (only the finalizer probe above touched them), colors
- * reset, live recomputed; repool to empty (wholesale recycle) / partial /
- * full. */
+ * dead wholesale, colors reset, live recomputed; repool to empty (wholesale
+ * recycle) / partial / full. */
 static void gt_repool_swept(GtSpan* s) {
     unsigned live = 0;
     for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {

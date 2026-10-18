@@ -655,71 +655,96 @@ class IRGlobalStore {
     }
 }
 
-// 24. ADDRESS_OF - take the address of a value-backed operand, yield a u64.
-class IRAddressOf {
-    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    operand: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    location: !mut SourceLocation = new SourceLocation("", 0, 0);
-
-    fun new(mut this, result: IRValue, operand: IRValue, loc: SourceLocation) {
-        this.result = result;
-        this.operand = operand;
-        this.location = loc;
-    }
-
-    fun display(this) -> string {
-        return this.result.display() + ":u64 = ADDRESS_OF " + this.operand.display();
-    }
-    fun to_string(this) -> string {
-        return this.display();
-    }
-}
-
-// 25. LOAD_PTR - load a value of type `load_type` from a raw u64 address.
-class IRLoadPtr {
-    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    addr: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    load_type: !mut string = "";
-    location: !mut SourceLocation = new SourceLocation("", 0, 0);
-
-    fun new(mut this, result: IRValue, addr: IRValue, load_type: string, loc: SourceLocation) {
-        this.result = result;
-        this.addr = addr;
-        this.load_type = load_type;
-        this.location = loc;
-    }
-
-    fun display(this) -> string {
-        return this.result.display() + ":" + this.load_type + " = LOAD_PTR " + this.addr.display();
-    }
-    fun to_string(this) -> string {
-        return this.display();
-    }
-}
-
-// 26. STORE_PTR - store a value of type `store_type` to a raw u64 address.
-class IRStorePtr {
-    addr: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
-    store_type: !mut string = "";
-    location: !mut SourceLocation = new SourceLocation("", 0, 0);
-
-    fun new(mut this, addr: IRValue, value: IRValue, store_type: string, loc: SourceLocation) {
-        this.addr = addr;
-        this.value = value;
-        this.store_type = store_type;
-        this.location = loc;
-    }
-
-    fun display(this) -> string {
-        return "STORE_PTR " + this.addr.display() + ", " + this.value.display() + ":" + this.store_type;
-    }
-    fun to_string(this) -> string {
-        return this.display();
-    }
-}
-
 // IRInstruction enum
+
+// 24. ARRAY_NEW_ZEROED - allocate a zeroed native array of the element type
+class IRArrayNewZeroed {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    elem_type: !mut string = "";
+    length: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, elem_type: string, length: IRValue, loc: SourceLocation) {
+        this.result = result;
+        this.elem_type = elem_type;
+        this.length = length;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.result.get_ir_type() + " = ARRAY_NEW_ZEROED <" + this.elem_type + "> " + this.length.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
+// 25. ARRAY_GET - read element (whole-structure copy for value-class elements)
+class IRArrayGet {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    array: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    index: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    ir_type: !mut string = "";
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, array: IRValue, index: IRValue, ir_type: string, loc: SourceLocation) {
+        this.result = result;
+        this.array = array;
+        this.index = index;
+        this.ir_type = ir_type;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":" + this.ir_type + " = ARRAY_GET " + this.array.display() + ", " + this.index.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
+// 26. ARRAY_SET - write element (whole-structure copy for value-class elements)
+class IRArraySet {
+    array: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    index: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    value: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, array: IRValue, index: IRValue, value: IRValue, loc: SourceLocation) {
+        this.array = array;
+        this.index = index;
+        this.value = value;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return "ARRAY_SET " + this.array.display() + ", " + this.index.display() + ", " + this.value.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
+// 27. ARRAY_LEN - element count
+class IRArrayLen {
+    result: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    array: !mut IRValue = new IRValue.constant(new IRConstant("", ""));
+    location: !mut SourceLocation = new SourceLocation("", 0, 0);
+
+    fun new(mut this, result: IRValue, array: IRValue, loc: SourceLocation) {
+        this.result = result;
+        this.array = array;
+        this.location = loc;
+    }
+
+    fun display(this) -> string {
+        return this.result.display() + ":u64 = ARRAY_LEN " + this.array.display();
+    }
+    fun to_string(this) -> string {
+        return this.display();
+    }
+}
+
 enum IRInstruction {
     const_inst: IRConst;
     arg: IRArg;
@@ -748,9 +773,10 @@ enum IRInstruction {
     label_inst: IRLabelInst;
     global_load: IRGlobalLoad;
     global_store: IRGlobalStore;
-    address_of: IRAddressOf;
-    load_ptr: IRLoadPtr;
-    store_ptr: IRStorePtr;
+    array_new_zeroed: IRArrayNewZeroed;
+    array_get: IRArrayGet;
+    array_set: IRArraySet;
+    array_len: IRArrayLen;
 
     fun display(this) -> string {
         if (this is IRInstruction.const_inst) { return this.const_inst.display(); }
@@ -780,9 +806,10 @@ enum IRInstruction {
         if (this is IRInstruction.label_inst) { return this.label_inst.display(); }
         if (this is IRInstruction.global_load) { return this.global_load.display(); }
         if (this is IRInstruction.global_store) { return this.global_store.display(); }
-        if (this is IRInstruction.address_of) { return this.address_of.display(); }
-        if (this is IRInstruction.load_ptr) { return this.load_ptr.display(); }
-        if (this is IRInstruction.store_ptr) { return this.store_ptr.display(); }
+        if (this is IRInstruction.array_new_zeroed) { return this.array_new_zeroed.display(); }
+        if (this is IRInstruction.array_get) { return this.array_get.display(); }
+        if (this is IRInstruction.array_set) { return this.array_set.display(); }
+        if (this is IRInstruction.array_len) { return this.array_len.display(); }
         return "unknown_instruction";
     }
 

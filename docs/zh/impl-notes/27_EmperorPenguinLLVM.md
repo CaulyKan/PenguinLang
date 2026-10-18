@@ -187,7 +187,7 @@ field_offset = 8 + field_position_offset   // 8 = sizeof(ptr metadata)
 ; offset 0:  ptr metadata   → @_emperor_string_metadata（EmperorClassMetadata，
 ;                                interface_count=0 —— `x is IFace` 对 string 干净地返回 false）
 ; offset 8:  i64 length     （字节长度，不含结尾 NUL；string_length O(1) 直读）
-; offset 16: i8  data[]     （length 字节 + data[length] = '\0'，C 互操作便利）
+; offset 16: i8  array<data>     （length 字节 + data[length] = '\0'，C 互操作便利）
 ```
 
 - **堆串**：运行期串由 `_emperor_string_alloc(len)` 经 `_emperor_gc_alloc(16+len+1, is_string=1)` 分配（GC 对 is_string 块不扫描、不 finalize，头里的 metaptr 对收集器完全不可见）。
@@ -282,17 +282,17 @@ let iface: IFoo = obj;                // iface 类型: ptr (同一个指针)
     ptr,    ; name → @.X_name (类型名字符串常量)
     i32,    ; instance_size (实例总大小，含 header)
     i32,    ; field_count
-    ptr,    ; field_offsets → i32[] (字段偏移表，GC 遍历用)
-    ptr,    ; field_is_ptr → i32[] (0=非指针字段, 1=指针字段)
+    ptr,    ; field_offsets → array<i32> (字段偏移表，GC 遍历用)
+    ptr,    ; field_is_ptr → array<i32> (0=非指针字段, 1=指针字段)
     ptr,    ; virtual_method_table（当前发射为 null；虚分派一律走 interface_map）
     i32,    ; interface_count
-    ptr,    ; interface_map → InterfaceMapEntry[]（发射为内联 { ptr, ptr } 数组）
-    ptr     ; destructor (GC finalizer：实现 IMemoryDispose 的引用类型指向其 dispose_mem 实现，sweep 回收前调用；其余为 null)
+    ptr,    ; interface_map → array<InterfaceMapEntry>（发射为内联 { ptr, ptr } 数组）
+    ptr     ; refmap → array<i32>（REFARR 节点链的 GC 引用映射：walker 如何遍历该对象的指针槽位；以 -1 终止）
 }
 
 %InterfaceMapEntry = type {
     ptr,    ; interface_id → @.<Iface>_interface_id (唯一全局字符串常量)
-    ptr     ; interface_method_table → @<Type>_<Iface>_vtable (ptr[]，该接口的方法实现表)
+    ptr     ; interface_method_table → @<Type>_<Iface>_vtable (array<ptr>，该接口的方法实现表)
 }
 ```
 
@@ -419,7 +419,7 @@ vtable 生成规则：
 // 对应 LLVM interface_map 条目（内联 { ptr, ptr }）
 typedef struct EmperorInterfaceMapEntry {
     const char* interface_id;    // 接口唯一标识符（字符串常量）
-    void** method_table;         // 方法指针数组 ptr[]
+    void** method_table;         // 方法指针数组 array<ptr>
 } EmperorInterfaceMapEntry;
 
 // 对应 LLVM @X_metadata（{ ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr }）
@@ -427,12 +427,12 @@ typedef struct EmperorClassMetadata {
     const char* name;            // 类型名
     int instance_size;           // 实例总大小（含 header）
     int field_count;             // 字段数量
-    int* field_offsets;          // 字段偏移表 i32[]
-    int* field_is_ptr;           // 字段是否含指针 i32[]（GC 遍历用）
-    void** virtual_method_table; // 虚方法表 ptr[]（当前为 NULL，分派走 interface_map）
+    int* field_offsets;          // 字段偏移表 array<i32>
+    int* field_is_ptr;           // 字段是否含指针 array<i32>（GC 遍历用）
+    void** virtual_method_table; // 虚方法表 array<ptr>（当前为 NULL，分派走 interface_map）
     int interface_count;         // 实现的接口数量
     EmperorInterfaceMapEntry* interface_map; // 接口映射表
-    void (*destructor)(void*);   // GC finalizer：实现 IMemoryDispose 的引用类型指向 dispose_mem（签名恰好一致），sweep 回收前调用
+    const int32_t* refmap;       // GC 引用映射（REFARR 节点链：walker 如何遍历指针槽位；-1 终止）
 } EmperorClassMetadata;
 ```
 
@@ -809,53 +809,50 @@ store <ty> %value, ptr @global_name
 
 值类型 class 全局变量存储整个 struct：value 侧先经 `coerce_operand` 做 ptr→struct 收敛（从值的存储 load 出完整 struct），再整体 store。
 
-### 3.22 ADDRESS_OF
+### 3.22 ARRAY_NEW_ZEROED
 
-**IR**: `%result:u64 = ADDRESS_OF %operand`
+**IR**: `%result:array<T> = ARRAY_NEW_ZEROED <T> %len`
 
-取操作数存储的原始地址，结果为 u64（i64）：
-
-```llvm
-; 可变寄存器 → 直接复用其 alloca；否则物化到临时 alloca
-%base = alloca <ty>, align 8
-store <ty> %operand, ptr %base
-
-%result = ptrtoint ptr %base to i64
-```
-
-### 3.23 LOAD_PTR
-
-**IR**: `%result:ty = LOAD_PTR %addr`
-
-从 u64 原始地址按 `load_type` 加载：
+通过 C 运行时分配原生数组；helper 在分配后即刻清零（回收槽陈旧数据防护）：
 
 ```llvm
-%ptr = inttoptr i64 %addr to ptr
-%result = load <ty>, ptr %ptr
+%len0 = ...                       ; 长度收敛为 i64
+%arr = call ptr @_emperor_array_create(ptr @T_arr_metadata, i64 %len0, i64 <stride>)
 ```
 
-值类型 class 槽位（`ref<...>` 且 ICopy）内联存储 struct，而值模型以指针表示值——load 是**复制**：fresh alloca + `llvm.memcpy`：
+`T_arr_metadata` 全局是普通的 `EmperorClassMetadata`（name 为 `"array<T>"`，`instance_size = 0` 表示变长），其 refmap 指向元素类型的 REFARR 节点链——primitive 元素是精确 no-op，引用/值类元素按元素逐个走（length 从对象偏移 +8 读出）。
+
+### 3.23 ARRAY_GET
+
+**IR**: `%result:T = ARRAY_GET %arr, %idx`
+
+元素地址 = `arr + 16 + idx*stride`（物化为 SSA 的 `mul`/`add`/`getelementptr i8`）；读取是普通 load——无边界检查（检查在 penguin 层 `at(i)` 包装里）：
 
 ```llvm
-%ptr = inttoptr i64 %addr to ptr
-%result = alloca %class.X, align 8
-call void @llvm.memcpy.p0.p0.i32(ptr %result, ptr %ptr, i32 <sizeof>, i1 false)
+%ep = getelementptr i8, ptr %arr, i64 <16 + idx*stride>
+%result = load <elem_ty>, ptr %ep
 ```
 
-### 3.24 STORE_PTR
+值类元素（内联存储的 ICopy 类）是**整结构拷贝**：结果是一个 fresh alloca，由 `llvm.memcpy` 从槽位复制填充（裸 `load ptr` 只会别名槽位首字而不是拷贝）。
 
-**IR**: `STORE_PTR %addr, %value:store_type`
+### 3.24 ARRAY_SET
 
-向 u64 原始地址按 `store_type` 存储：
+**IR**: `ARRAY_SET %arr, %idx, %value`
+
+同样的元素寻址；把值收敛为元素 LLVM 类型后普通 store。值类元素先把值（指向其存储的指针）收敛成整个 struct 再存——直接存指针会把栈地址漏进数组。
+
+### 3.25 ARRAY_LEN
+
+**IR**: `%result:u64 = ARRAY_LEN %arr`
+
+length 存于对象偏移 +8：
 
 ```llvm
-%ptr = inttoptr i64 %addr to ptr
-store <ty> %value, ptr %ptr
+%lp = getelementptr i8, ptr %arr, i64 8
+%result = load i64, ptr %lp
 ```
 
-值类型 class store 必须把**整个 struct** 复制进槽位（value 解析为指向其存储的指针，直接存指针会把栈地址漏进缓冲区）：类型替换为 class struct 类型后经 coerce 再 store。
-
-### 3.25 CALL_INDIRECT
+### 3.26 CALL_INDIRECT
 
 **IR**: `%result:ret_ty = CALL_INDIRECT %callee(%arg1, ...)`
 
@@ -1150,7 +1147,7 @@ Lowering 过程中按需 `declare` 以下运行时支持函数（`emit_extern_de
 | `_emperor_string_equal` | `i32 (ptr a, ptr b)` | 字符串相等比较 |
 | `_emperor_gc_init` | `void (ptr stack_top)` | GC 初始化（以栈顶为扫描根） |
 | `_emperor_gc_add_root` | `void (ptr global)` | 把引用类型的全局变量注册为 GC 根 |
-| `_emperor_gc_scan_add` | `void (i64 addr, i64 size)` | 把值类型全局整个 struct 注册为保守扫描区 |
+| `_emperor_gc_scan_add` | `void (i64 addr, i64 size)` | 注册保守扫描区（协程调度器的栈；typed region 已随原生数组一轮退役） |
 | `_emperor_args_init` | `void (i32 argc, ptr argv)` | 命令行参数初始化 |
 | `_emperor_boost_stack` | `void ()` | 提升主线程栈限额（深递归保护） |
 | `_emperor_co_spawn_fn0` | `void (ptr fn)` | 协程调度：以协程方式启动 initial 例程 |
@@ -1170,7 +1167,7 @@ Lowering 过程中按需 `declare` 以下运行时支持函数（`emit_extern_de
 ; 类型声明
 ; metadata 以内联字面 struct 类型发射（9 字段）:
 ;   { ptr name, i32 size, i32 field_count, ptr field_offsets, ptr field_is_ptr,
-;     ptr vtable, i32 interface_count, ptr interface_map, ptr destructor }
+;     ptr vtable, i32 interface_count, ptr interface_map, ptr refmap }
 %FunctionValue = type { ptr, ptr }
 
 ; 引用类型 class (IRef) — 堆分配，含 metadata header
@@ -1255,7 +1252,7 @@ class Counter {
     ptr @Counter_field_offsets, ptr @Counter_field_is_ptr,
     ptr null,
     i32 1, ptr @Counter_interface_map,
-    ptr null  ; no destructor (Counter does not impl IMemoryDispose; a class that does would point at its dispose_mem, e.g. ptr @"<global>.Vector__i64.dispose_mem")
+    ptr @Counter_refmap  ; REFARR refmap（Counter 无指针字段 → 终止 -1 节点；如 `@Counter_refmap = private constant [1 x i32] [i32 -1]`）
 }
 ```
 
@@ -1414,10 +1411,11 @@ LLVM Module 文本（.ll）
 | 枚举匹配 | ISENUM | load variant + icmp eq | variant tag 比较 |
 | 枚举字段读取 | RDENUM | getelementptr + load payload | payload 提取（写链指向枚举自身存储） |
 | 全局变量 | GLOBAL_LOAD/GLOBAL_STORE | load/store @global | 值类型 struct 内联存储 |
-| 地址元内建 | ADDRESS_OF/LOAD_PTR/STORE_PTR | ptrtoint / inttoptr + load/store | `#__address_of`/`#__load`/`#__store` |
+| 原生数组创建 | ARRAY_NEW_ZEROED | call `_emperor_array_create(meta, count, stride)` | 分配即刻清零；布局 `{ ptr metadata, i64 length, elements... }` |
+| 原生数组元素访问 | ARRAY_GET/ARRAY_SET/ARRAY_LEN | getelementptr + load/store / load i64 @+8 | 无检查；值类元素整结构拷贝；边界检查在 penguin 层 `at`/`set` 包装 |
 | 类型转换 | CAST | zext/sext/trunc/sitofp 等 | 数值类型转换 |
 | try/catch | （setjmp 序列） | `_setjmp` 落点 + jmp_buf 表 | `try_site_counter` 索引 |
-| 完整 ClassMetadata | — | `@<Type>_metadata`（9 字段） | 所有 class 与 enum；含 interface_map + field_offsets + field_is_ptr + destructor |
+| 完整 ClassMetadata | — | `@<Type>_metadata`（9 字段） | 所有 class 与 enum；含 interface_map + field_offsets + field_is_ptr + refmap（destructor 槽已随原生数组一轮退役） |
 | 接口默认方法分派 | CALL | vtable slot 指向特化后的默认实现 | 空 impl 继承默认实现 |
 | 确定性分派 | CALL | call @func_name | 具体类型方法调用 |
 | DWARF 调试信息 | — | `debug_*` 元数据（`-g`/`--debug`） | 编译单元、逐函数 DISubprogram + DIFile、行号、局部变量 |

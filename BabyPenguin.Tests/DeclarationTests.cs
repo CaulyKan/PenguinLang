@@ -1,3 +1,5 @@
+using BabyPenguin.Type;
+
 namespace BabyPenguin.Tests
 {
     public class DeclarationTests(ITestOutputHelper helper) : TestBase(helper)
@@ -1053,16 +1055,26 @@ namespace BabyPenguin.Tests
                 namespace ns {
                     class Foo {}
 
-                    let a : u8[];
-                    let b : ns.Foo[];
+                    let a : array<u8>;
+                    let b : array<ns.Foo>;
+                    let c : array<array<i32>>;
                 }
             ");
             var model = compiler.Compile();
 
             var a = model.ResolveSymbol("ns.a");
-            Assert.Equal("mut __builtin.IIterator<!mut u8>", a!.TypeInfo.FullName());
+            Assert.Equal("mut array<u8>", a!.TypeInfo.FullName());
             var b = model.ResolveSymbol("ns.b");
-            Assert.Equal("mut __builtin.IIterator<!mut ns.Foo>", b!.TypeInfo.FullName());
+            Assert.Equal("mut array<ns.Foo>", b!.TypeInfo.FullName());
+            var c = model.ResolveSymbol("ns.c");
+            Assert.Equal("mut array<array<i32>>", c!.TypeInfo.FullName());
+            // element types resolve through the array node
+            Assert.Equal(TypeEnum.Array, a.TypeInfo.Type);
+            var elemNode = (a.TypeInfo.TypeNode as ArrayTypeNode)!.ElementNode;
+            Assert.Equal("u8", elemNode.FullName());
+            // one node per element type (identity-based cast compatibility)
+            var again = model.GetArrayTypeNode(elemNode);
+            Assert.Same(a.TypeInfo.TypeNode, again);
         }
 
         [Fact]

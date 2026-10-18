@@ -22,20 +22,6 @@ namespace __builtin {
     // retains it as a root because integers are invisible to the marker.
     extern fun gc_pin_object(addr: u64);
 
-    // Raw heap allocation for manually-managed buffers (Array<T,N>, _ptr<T>).
-    // Routed to @_emperor_malloc / @_emperor_mfree in core_builtin.c (libc
-    // malloc/free, NOT the GC arena). Unreferenced externs are free.
-    extern fun _malloc(size: u64) -> u64;
-    extern fun _mfree(addr: u64);
-    // GC scan-region registration for raw buffers that CONTAIN pointers to GC
-    // objects (Vector/HashMap/Array element storage). The conservative
-    // collector cannot see inside malloc'd memory: register the buffer right
-    // after allocating it, and remove the region BEFORE freeing/replacing it
-    // (dispose_mem / _grow). A missing registration means live elements get
-    // swept; a stale one only retains garbage.
-    extern fun _gc_scan_add(addr: u64, size: i64);
-    extern fun _gc_scan_remove(addr: u64);
-
     // Byte-level helpers for generic HashMap<K,V>: hash and equality over the raw
     // bytes of a value-type key (address + #sizeof). Routed to @_emperor_hash_bytes
     // / @_emperor_bytes_equal in core_builtin.c.
@@ -161,12 +147,14 @@ namespace __builtin {
     // ---- Native atomics (multi-thread scheduler M1; see
     // docs/zh/wip/concurrent_scheduler.md §12) ----
     // The atomic cell lives OUTSIDE the GC heap (plain malloc in
-    // core_builtin.c) keyed by the integer handle; the wrapper's
-    // IMemoryDispose frees the cell when the GC sweeps it. Available under
-    // BOTH schedulers (single-threaded CAS loops are legal today); cross-
-    // thread safety arrives with the sim-mt scheduler. AtomicI64's method
-    // surface mirrors BabyPenguin's builtin (swap/compare_exchange/
-    // fetch_add return the ORIGINAL value).
+    // core_builtin.c) keyed by the integer handle. The wrapper holds no
+    // back-pointer, so the cell of an unreachable wrapper is NOT reclaimed
+    // (it leaks to process exit — the GC finalizer machinery is retired;
+    // same trade-off as std.io.File handles). Available under BOTH
+    // schedulers (single-threaded CAS loops are legal today); cross-thread
+    // safety arrives with the sim-mt scheduler. AtomicI64's method surface
+    // mirrors BabyPenguin's builtin (swap/compare_exchange/fetch_add return
+    // the ORIGINAL value).
     extern fun atomic_i64_new(v: i64) -> i64;
     extern fun atomic_i64_free(h: i64);
     extern fun atomic_i64_load(h: i64) -> i64;
@@ -209,11 +197,6 @@ namespace __builtin {
         fun fetch_add(mut this, value: i64) -> i64 {
             return atomic_i64_add(this.cell, value);
         }
-        impl IMemoryDispose {
-            fun dispose_mem(mut this) {
-                atomic_i64_free(this.cell);
-            }
-        }
     }
 
     class AtomicU64 {
@@ -238,11 +221,6 @@ namespace __builtin {
         fun fetch_add(mut this, value: u64) -> u64 {
             return atomic_u64_add(this.cell, value);
         }
-        impl IMemoryDispose {
-            fun dispose_mem(mut this) {
-                atomic_u64_free(this.cell);
-            }
-        }
     }
 
     class AtomicBool {
@@ -260,11 +238,6 @@ namespace __builtin {
         }
         fun swap(mut this, value: bool) -> bool {
             return atomic_bool_swap(this.cell, value);
-        }
-        impl IMemoryDispose {
-            fun dispose_mem(mut this) {
-                atomic_bool_free(this.cell);
-            }
         }
     }
 
@@ -358,17 +331,6 @@ namespace __builtin {
             i = i + 1;
         }
         return sb.to_string();
-    }
-
-    // Marker for reference types that own raw memory (Array<T,N>,
-    // HashMap<K,V>, ...). dispose_mem() may be called explicitly, and for
-    // IReferenceType classes it is also invoked automatically by the GC when
-    // a dead instance is swept (the emitter points the class metadata
-    // destructor slot at dispose_mem). Implementations must be idempotent —
-    // an owner's finalizer may dispose an inner object before that object's
-    // own finalizer runs.
-    interface IMemoryDispose {
-        fun dispose_mem();
     }
 
     #template(T: type)
@@ -1225,6 +1187,109 @@ class Range {
 
     fun range(start: i64, end: i64) -> mut RangeIterator {
         return new RangeIterator(start, end);
+    }
+
+    // ==== Native arrays array<T> ====
+    //
+    // The six compiler-known intrinsics: declaration-only (no penguin body) —
+    // the IR generator recognizes the names and lowers the bodies to the
+    // ARRAY_* instructions / the _emperor_array_* extern calls. Only stdlib
+    // internals (below) call them.
+
+    #template(T: type)
+    fun __array_new(len: u64) -> mut array<T>;
+
+    #template(T: type)
+    fun __array_get(a: mut array<T>, i: u64) -> T;
+
+    #template(T: type)
+    fun __array_set(a: mut array<T>, i: u64, v: T);
+
+    #template(T: type)
+    fun __array_len(a: mut array<T>) -> u64;
+
+    #template(T: type)
+    fun __array_fill(a: mut array<T>, v: T);
+
+    #template(T: type)
+    fun __array_copy_range(dst: mut array<T>, src: mut array<T>, n: u64);
+
+    // Independent cursor over a native `array<T>` (mirrors RangeIterator: no
+    // interface needed, for-in desugars through iter()).
+    #template(T: type)
+    class ArrayIterator {
+        impl IReferenceType;
+        array: mut array<T>;
+        current: mut u64 = 0;
+
+        fun new(mut this, array: mut array<T>) {
+            this.array = array;
+            this.current = 0;
+        }
+
+        fun next(mut this) -> __builtin.Option<T> {
+            if (this.current < __builtin.__array_len<T>(this.array)) {
+                let res: mut __builtin.Option<T> = new __builtin.Option<T>.some(__builtin.__array_get<T>(this.array, this.current));
+                this.current = this.current + 1;
+                return res;
+            }
+            return new __builtin.Option<T>.none();
+        }
+
+        fun iter(this) -> ArrayIterator<T> {
+            return this;
+        }
+    }
+
+    // Magic-method surface of the native array `array<T>` — the binding layer
+    // rewrites `a.at(i)` / `a.set(i, v)` / `a.size()` / `a.iter()` /
+    // `a.iter_mut()` to these generic functions (the array type itself
+    // declares no members). Bounds checks live here, in penguin source.
+    #template(T: type)
+    fun __array_at(a: mut array<T>, i: u64) -> __builtin.Option<T> {
+        if (i >= __builtin.__array_len<T>(a)) {
+            return new __builtin.Option<T>.none();
+        }
+        return new __builtin.Option<T>.some(__builtin.__array_get<T>(a, i));
+    }
+
+    #template(T: type)
+    fun __array_set_checked(a: mut array<T>, i: u64, v: T) {
+        if (i >= __builtin.__array_len<T>(a)) {
+            return;
+        }
+        __builtin.__array_set<T>(a, i, v);
+    }
+
+    #template(T: type)
+    fun __array_size(a: mut array<T>) -> u64 {
+        return __builtin.__array_len<T>(a);
+    }
+
+    #template(T: type)
+    fun __array_iter(a: mut array<T>) -> mut ArrayIterator<T> {
+        return new ArrayIterator<T>(a);
+    }
+
+    // Array constructors — implemented directly over the intrinsics so the
+    // generic function call resolves without routing through a generic class's
+    // static method syntax.
+    #template(T: type)
+    fun create_array(len: u64, fill: T) -> mut array<T> {
+        let a: mut array<T> = __builtin.__array_new<T>(len);
+        __builtin.__array_fill<T>(a, fill);
+        return a;
+    }
+
+    #template(T: type)
+    fun create_array_with(len: u64, f: mut fun<T, u64>) -> mut array<T> {
+        let a: mut array<T> = __builtin.__array_new<T>(len);
+        let i: mut u64 = 0;
+        while (i < len) {
+            __builtin.__array_set<T>(a, i, f(i));
+            i = i + 1;
+        }
+        return a;
     }
 
 }

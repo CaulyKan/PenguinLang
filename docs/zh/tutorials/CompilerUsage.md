@@ -76,7 +76,7 @@ build/bootstrap/pass3 hello.penguin -o hello.ll-out
 
 ### std 动态库（`--enable-std`，默认开）
 
-标准库模块（`std.Vector`、`std.Hashmap`、`std.Array`、JSON、argparse……）以独立动态库 `libemperorpenguin-std.penguin-lib` 发布，与编译器可执行文件**放在同一目录**。具备 dyn-lib 能力的编译器会自动加载它（`--enable-std`，默认开；`--disable-std` 关闭），用户程序无需任何 flag、无需 `Compile.Args` 即可使用 std 模块：
+标准库模块（`std.Vector`、`std.Hashmap`、JSON、argparse……）以独立动态库 `libemperorpenguin-std.penguin-lib` 发布，与编译器可执行文件**放在同一目录**。具备 dyn-lib 能力的编译器会自动加载它（`--enable-std`，默认开；`--disable-std` 关闭），用户程序无需任何 flag、无需 `Compile.Args` 即可使用 std 模块：
 
 ```penguin
 fun main() -> i64 {

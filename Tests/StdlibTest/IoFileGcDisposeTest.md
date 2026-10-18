@@ -1,6 +1,6 @@
 # IoFileGcDisposeTest
 ## Description
-std.io.File implements IMemoryDispose: a File that goes out of scope is closed by the GC finalizer when swept (the emitter points the class metadata destructor slot at dispose_mem). Opening, reading, dropping the reference and forcing gc_collect must not crash and the file contents stay intact for a later reader.
+std.io.File closes EXPLICITLY (close()); an open handle that becomes unreachable leaks to process exit (the IMemoryDispose/finalizer hook is retired with the native-arrays GC simplification). Dropping the reference and forcing gc_collect must not crash, and a later reader opening its own handle still reads intact contents.
 
 ## Apply To
 * EmperorPenguin Pass2

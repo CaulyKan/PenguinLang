@@ -525,6 +525,86 @@ namespace __builtin {
         return cast<mut IIterator<i64>>(new RangeIterator(start, end));
     }
 
+    // Independent cursor over a native `array<T>`. Reference-typed (iterators hold
+    // mutable shared state across next() calls, mirroring RangeIterator).
+    #template(T: type)
+    class ArrayIterator {
+        impl IReferenceType;
+        array: mut array<T>;
+        current: mut u64 = 0;
+
+        fun new(mut this, array: mut array<T>) {
+            this.array = array;
+            this.current = 0;
+        }
+
+        impl IIterator<T> {
+            fun next(this: mut IIterator<T>) -> Option<T> {
+                let self : mut Self = cast<mut Self>(this);
+                if (self.current < self.array.size()) {
+                    let res : mut Option<T> = new Option<T>.some(__builtin.__array_get(self.array, self.current));
+                    self.current += 1;
+                    return res;
+                } else {
+                    return new Option<T>.none();
+                }
+            }
+        }
+    }
+
+    // Magic-method surface of the native array type `array<T>` — `a.at(i)`,
+    // `a.set(i, v)`, `a.size()`, `a.iter()`, `a.iter_mut()` and the
+    // constructors `create_array(len, fill)` / `create_array_with(len, f)`
+    // are routed here by the binding layer (the array type itself declares
+    // no members). All members are static (no `this`): the array arrives as
+    // the first parameter. The `__builtin.__array_*` calls are
+    // compiler-known intrinsics with no penguin declaration — the binder
+    // recognizes the names and lowers them to array instructions.
+    #template(T: type)
+    class __ArrayBuiltin {
+        fun at(a: mut array<T>, i: u64) -> Option<T> {
+            if (i >= a.size()) {
+                return new Option<T>.none();
+            }
+            return new Option<T>.some(__builtin.__array_get(a, i));
+        }
+
+        fun set(a: mut array<T>, i: u64, v: T) {
+            if (i >= a.size()) {
+                return;
+            }
+            __builtin.__array_set(a, i, v);
+        }
+
+        fun size(a: mut array<T>) -> u64 {
+            return __builtin.__array_len(a);
+        }
+
+        fun iter(a: mut array<T>) -> mut IIterator<T> {
+            return cast<mut IIterator<T>>(new ArrayIterator<T>(a));
+        }
+
+        fun iter_mut(a: mut array<T>) -> mut IIterator<T> {
+            return cast<mut IIterator<T>>(new ArrayIterator<T>(a));
+        }
+
+        fun create(len: u64, fill: T) -> mut array<T> {
+            let a : mut array<T> = __builtin.__array_new(len);
+            __builtin.__array_fill(a, fill);
+            return a;
+        }
+
+        fun create_with(len: u64, f: mut fun<T, u64>) -> mut array<T> {
+            let a : mut array<T> = __builtin.__array_new(len);
+            let i : mut u64 = 0;
+            while (i < len) {
+                a.set(i, f(i));
+                i = i + 1;
+            }
+            return a;
+        }
+    }
+
     // An atomic cell is a SHARED mutable cell by design (scheduler state,
     // object ids): it must stay reference-typed so that value-copy semantics
     // (copying a field read / parameter) shares the cell instead of forking it.

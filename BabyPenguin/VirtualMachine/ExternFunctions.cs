@@ -19,6 +19,7 @@ namespace BabyPenguin.VirtualMachine
             AddAtmoic(vm);
             AddList(vm);
             AddRoutineContext(vm);
+            AddArrayOps(vm);
 
             AddFile(vm);
             AddArgs(vm);
@@ -29,6 +30,40 @@ namespace BabyPenguin.VirtualMachine
             AddThrowRuntimeError(vm);
             AddSimActivity(vm);
             // AddMap(vm);
+        }
+
+        /// <summary>
+        /// Native-array extern helpers. The binding layer lowers
+        /// `__builtin.__array_fill` / `__builtin.__array_copy_range` to plain
+        /// extern CALLs on these names (matching the EmperorPenguin C runtime
+        /// symbols `_emperor_array_fill` / `_emperor_array_copy_range`).
+        /// </summary>
+        public static void AddArrayOps(BabyPenguinVM vm)
+        {
+            vm.Global.RegisterExternFunction("_emperor_array_fill", (result, args) =>
+            {
+                if (args.Count == 2 && args[0] is ArrayRuntimeValue arr)
+                {
+                    var value = RuntimeValueCopier.CopyIfValueSemantic(args[1], vm.Global);
+                    for (long i = 0; i < arr.Length; i++)
+                        arr.Elements[i] = RuntimeValueCopier.CopyIfValueSemantic(value, vm.Global);
+                }
+            });
+
+            vm.Global.RegisterExternFunction("_emperor_array_copy_range", (result, args) =>
+            {
+                if (args.Count == 3
+                    && args[0] is ArrayRuntimeValue dst
+                    && args[1] is ArrayRuntimeValue src
+                    && args[2] is BasicRuntimeValue cnt)
+                {
+                    var count = Convert.ToInt64(cnt.DynamicValue);
+                    if (count > dst.Length) count = dst.Length;
+                    if (count > src.Length) count = src.Length;
+                    for (long i = 0; i < count; i++)
+                        dst.Elements[i] = RuntimeValueCopier.CopyIfValueSemantic(src.Elements[i], vm.Global);
+                }
+            });
         }
 
         public static void AddPrint(BabyPenguinVM vm)

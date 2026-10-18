@@ -5,11 +5,10 @@
 // exceeds 0.75. Keys are hashed via `k.hash()` (IHash: primitives dispatch
 // directly, classes/enums via their IHash vtable) and compared with `==`.
 // Slot storage is three Vectors (occupied flags / keys / values) pre-sized via
-// Vector.resize_to; the uninitialized key/value slots beyond the valid range
+// Vector.resize_to; the zero-filled key/value slots beyond the valid range
 // are gated by the occupied flags (0=empty, 1=used, 2=tombstone) — reads of
 // keys/values only happen when occ == 1. Vector is an IReferenceType, so field
-// assignment is reference semantics; dispose_mem() releases the buffers. No
-// raw _malloc/_mfree/#__load/#__store/#__address_of here.
+// assignment is reference semantics. No raw buffers, nothing to dispose.
 namespace std {
 
 // Compile-time check (Phase 6 meta): the HashMap key type must implement IHash.
@@ -34,7 +33,6 @@ namespace std {
 #template(K: type, V: type)
 export class HashMap {
     impl __builtin.IReferenceType;
-    impl __builtin.IMemoryDispose;
     occupied: mut Vector<u8>;   // 0 empty, 1 used, 2 tombstone
     keys: mut Vector<K>;
     values: mut Vector<V>;
@@ -98,7 +96,7 @@ export class HashMap {
     }
 
     // Grow to new_cap: fresh Vectors, re-insert live entries (dropping
-    // tombstones), then dispose the old Vectors' buffers.
+    // tombstones). The old Vectors become garbage the next sweep reclaims.
     fun _resize(mut this, new_cap: u64) {
         let old_occ: mut Vector<u8> = this.occupied;
         let old_keys: mut Vector<K> = this.keys;
@@ -126,9 +124,6 @@ export class HashMap {
             }
             si = si + 1;
         }
-        old_occ.dispose_mem();
-        old_keys.dispose_mem();
-        old_values.dispose_mem();
     }
 
     fun put(mut this, k: K, v: V) {
@@ -226,12 +221,6 @@ export class HashMap {
     // Value iteration (the pre-redesign iter() semantics).
     fun iter_values(this) -> _HashMapIterator<V> {
         return new _HashMapIterator<V>(this.occupied, this.values, this.cap);
-    }
-
-    fun dispose_mem(mut this) {
-        this.occupied.dispose_mem();
-        this.keys.dispose_mem();
-        this.values.dispose_mem();
     }
 }
 

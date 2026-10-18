@@ -228,20 +228,61 @@ void* _emperor_alloc_impl(int size) {
     return _emperor_gc_alloc(size, 0);
 }
 
-/* --- Raw heap allocation for manually-managed buffers (Array<T,N>, _ptr<T>).
- * Wraps libc malloc/free directly (NOT the GC arena) — buffer lifetime is
- * explicitly controlled by IMemoryDispose.dispose_mem(). The raw address is
- * returned as an i64 (u64 in PenguinLang); the GC never touches this memory. */
-int64_t _emperor_malloc(int64_t size) {
-    EMPEROR_ASSERT(size > 0, "_emperor_malloc: size must be positive");
-    void* p = malloc((size_t)size);
-    EMPEROR_ASSERT(p != NULL, "_emperor_malloc: allocation failed");
-    return (int64_t)(uintptr_t)p;
+/* --- Native arrays T[] ---
+ * Layout: { EmperorClassMetadata* metadata @0, int64_t length @8, elements @16
+ * (stride-aligned) }. instance_size in the metadata is 0 = variable-length;
+ * the collector's REFARR ref-map node reads the live length from +8 and walks
+ * element slots precisely. _emperor_array_create zero-fills the whole block
+ * immediately: a recycled slot's stale data (including stale pointers that
+ * would pass the evacuator's sanity checks) must never be observable, and a
+ * collection may run at the allocation's own poll window — the quarantine
+ * covers the object until it is reachable, and the zeroed body keeps any
+ * premature walk harmless. */
+
+void* _emperor_array_create(EmperorClassMetadata* meta, int64_t count, int64_t stride) {
+    EMPEROR_ASSERT(count >= 0, "_emperor_array_create: negative length");
+    EMPEROR_ASSERT(stride > 0, "_emperor_array_create: stride must be positive");
+    size_t body = (size_t)(16 + count * stride);
+    void* obj = _emperor_gc_alloc((int)body, 0);
+    EMPEROR_ASSERT(obj != NULL, "_emperor_array_create: allocation failed");
+    memset(obj, 0, body);
+    *(EmperorClassMetadata**)obj = meta;
+    *(int64_t*)((char*)obj + 8) = count;
+    return obj;
 }
 
-void _emperor_mfree(int64_t addr) {
-    if (addr != 0) {
-        free((void*)(uintptr_t)addr);
+void _emperor_array_fill(void* arr, void* value_ptr) {
+    if (!arr) return;
+    EmperorClassMetadata* meta = *(EmperorClassMetadata**)arr;
+    /* The refmap's REFARR node carries the element stride; the fill stride
+     * must match the allocation stride, which the metadata does NOT store —
+     * so the stride comes from the caller's codegen constant... but the C ABI
+     * here only receives pointers. Derive nothing from meta: instead rely on
+     * the (map[2] == stride) invariant: the REFARR payload's second word IS
+     * the element stride. */
+    const int32_t* map = meta ? meta->refmap : NULL;
+    if (!map || map[1] != 3) return; /* not an array program — nothing to do */
+    int64_t stride = map[2];
+    int64_t count = *(int64_t*)((char*)arr + 8);
+    char* elements = (char*)arr + 16;
+    for (int64_t i = 0; i < count; i++) {
+        memcpy(elements + i * stride, value_ptr, (size_t)stride);
+    }
+}
+
+void _emperor_array_copy_range(void* dst, void* src, int64_t count) {
+    if (!dst || !src || count <= 0) return;
+    EmperorClassMetadata* meta = *(EmperorClassMetadata**)dst;
+    const int32_t* map = meta ? meta->refmap : NULL;
+    if (!map || map[1] != 3) return;
+    int64_t stride = map[2];
+    int64_t dst_len = *(int64_t*)((char*)dst + 8);
+    int64_t src_len = *(int64_t*)((char*)src + 8);
+    int64_t n = count;
+    if (n > dst_len) n = dst_len;
+    if (n > src_len) n = src_len;
+    if (n > 0) {
+        memcpy((char*)dst + 16, (char*)src + 16, (size_t)(n * stride));
     }
 }
 

@@ -632,11 +632,16 @@ class MonomorphizePass {
         // its type arguments are. This is computed from the args alone (no
         // dependence on whether the specialization/injection has happened yet),
         // which is what makes the object-arg gate work during early passes.
-        let short_name: mut string = "";
-        if (td is BoundDefinition.class_def) { short_name = td.class_def.name; }
-        if (td is BoundDefinition.enum_def) { short_name = td.enum_def.name; }
-        let is_core_wrapper: bool = short_name == "List" || short_name == "Box"
-            || short_name == "Option" || short_name == "Result" || short_name == "Pair";
+        // Match by FULL name: a user-defined top-level `class Box` must not
+        // masquerade as the wrapper — the short name would report it umangleable
+        // with zero generic args, and the injected impl bodies would then call
+        // get_unique_name() on a type that has none.
+        let wrapper_name: mut string = "";
+        if (td is BoundDefinition.class_def) { wrapper_name = td.class_def.full_name; }
+        if (td is BoundDefinition.enum_def) { wrapper_name = td.enum_def.full_name; }
+        let is_core_wrapper: bool = wrapper_name == "_utils.List" || wrapper_name == "__builtin.Box"
+            || wrapper_name == "__builtin.Option" || wrapper_name == "__builtin.Result"
+            || wrapper_name == "__builtin.Pair";
         if (is_core_wrapper) {
             let ai: mut i64 = 0;
             while (ai < cast<i64>(bt.generic_args.size())) {
@@ -2410,6 +2415,9 @@ class MonomorphizePass {
         let full_name: string = this.build_specialized_full_name(tmpl, mangled_name, class_scope);
         let result: mut BoundFunctionDefinition = new BoundFunctionDefinition(mangled_name, full_name, ast_func.is_extern, ast_func.is_pure, ast_func.is_new, ast_func.is_extern);
         result.is_specialized = true;
+        // Native-array intrinsics stay intrinsic through specialization (the
+        // specialized body is still lowered by IRGenerator, not bound from AST).
+        result.array_intrinsic = tmpl.array_intrinsic;
         // Carry the template's AST for body replay (bind_body_for_specialized_def
         // prefers ast_source over the ambiguous bare-name search). Re-wrap the
         // payload: the template binding is immutable, and its field read cannot
@@ -2449,7 +2457,11 @@ class MonomorphizePass {
             vni = vni + 1;
         }
 
-        if (!ast_func.is_extern && ast_func.body.is_some()) {
+        // Declaration-only generics (the compiler-known __array_* intrinsics)
+        // still need the specialization scope so the SIGNATURE resolves with
+        // the type args bound (resolve_spec_pair falls back to the global
+        // scope otherwise, where T is unbound).
+        if (!ast_func.is_extern) {
             // Use class_scope as parent if available (for methods in specialized generic classes)
             // so that class type params (e.g., T=i32) are visible in the method body
             if (class_scope.is_some()) {
@@ -2582,6 +2594,16 @@ class MonomorphizePass {
         }
         let resolved_spec: mut BoundDefinition = this.resolve_spec_pair(m8, ast_def.some, spec_result.some, result.global_scope);
         if (resolved_spec is BoundDefinition.function_def) {
+            // Register template instantiations referenced by the signature
+            // (return type + parameters) that the fixpoint never saw.
+            this.ensure_signature_instantiations(resolved_spec.function_def.return_type, result);
+            let spi: mut i64 = 0;
+            while (spi < cast<i64>(resolved_spec.function_def.parameters.size())) {
+                this.ensure_signature_instantiations(resolved_spec.function_def.parameters.at(cast<u64>(spi)).some.bound_type, result);
+                spi = spi + 1;
+            }
+        }
+        if (resolved_spec is BoundDefinition.function_def) {
             let parent_cls: Option<BoundClassDefinition> = this.find_parent_class_for_method(result.definitions, new _utils.List<BoundDefinition>(), resolved_spec.function_def.full_name);
             if (parent_cls.is_some()) {
                 this.fix_this_param_type(resolved_spec.function_def, parent_cls.some);
@@ -2594,6 +2616,84 @@ class MonomorphizePass {
             return new Option<BoundFunctionSymbol>.some(resolved_spec.function_def.symbol.some);
         }
         return new Option<BoundFunctionSymbol>.none();
+    }
+
+    // Recursively ensure the template instantiations a late-specialized
+    // function's SIGNATURE references (return type, parameters). The pass-3
+    // fixpoint already registered every instantiation visible in defs, but a
+    // pass-8 ensure_function_specialization_now resolves types the fixpoint
+    // never saw — e.g. __array_at<i32>'s return `Option<i32>` — and without a
+    // specialized def the emitter finds no enum layout (the enum<X> fallback
+    // degenerates to i64, corrupting the call ABI).
+    fun ensure_signature_instantiations(mut this, bt: BoundType, result: mut BoundCompilationUnit) {
+        if (bt.type_definition.is_some() && cast<i64>(bt.generic_args.size()) > 0) {
+            let td: BoundDefinition = bt.type_definition.some;
+            // ENUM-ONLY: the emitter needs the specialized def's member layout
+            // when the enum is only ever used as a return/payload spelling.
+            // Classes/interfaces referenced from signatures get their
+            // specializations through the ordinary use-site paths (new/call),
+            // which bind bodies properly — forcing a layout-only class def
+            // here would shadow that.
+            let is_template: mut bool = false;
+            if (td is BoundDefinition.enum_def) { is_template = cast<i64>(td.enum_def.generic_params.size()) > 0; }
+            if (is_template) {
+                // A late `is Option<i32>.none` check registers the TYPE SYMBOL
+                // without ever creating the specialized DEF — and the emitter
+                // builds layouts from defs, so the enum<X> spelling would fall
+                // back to i64 and corrupt the ABI. Bypass the symbol-existence
+                // gate: create + catch up + push the def directly when the
+                // unit does not carry it yet.
+                let td2: BoundDefinition = bt.type_definition.some;
+                let mangled2: string = mangle_generic_name(
+                    (if (td2 is BoundDefinition.class_def) { td2.class_def.full_name }
+                 else if (td2 is BoundDefinition.enum_def) { td2.enum_def.full_name }
+                 else { td2.interface_def.full_name }),
+                    bt.generic_args);
+                let have_it: mut bool = false;
+                let di: mut i64 = 0;
+                while (di < cast<i64>(result.definitions.size())) {
+                    let dd: BoundDefinition = result.definitions.at(cast<u64>(di)).some;
+                    if (dd is BoundDefinition.enum_def && dd.enum_def.name == mangled2) { have_it = true; }
+                    if (dd is BoundDefinition.class_def && dd.class_def.name == mangled2) { have_it = true; }
+                    if (dd is BoundDefinition.interface_def && dd.interface_def.name == mangled2) { have_it = true; }
+                    di = di + 1;
+                }
+                if (!have_it) {
+                    // specialize_enum_def resolves member payload types during
+                    // specialization, so the def is layout-complete on push.
+                    // Do NOT stamp it processed: the emitter lowers the enum
+                    // spec's OWN method list (is_some/is_none/value_or/
+                    // get_unique_name/...) from this def and callers resolve
+                    // to those methods directly — a layout-only def compiles
+                    // each method to frame glue + `unreachable`, which at the
+                    // machine level FALLS THROUGH into whatever function is
+                    // emitted next (the ArrayNestedChainThenIterate segfault:
+                    // Option<i32>.is_none fell into __array_at<i32>). The
+                    // dynamic pass-8 loop (its bound is re-read per iteration)
+                    // reaches late-pushed defs and binds their method bodies;
+                    // when created inside the pass-8 window the catch-up
+                    // chain of ensure_function_specialization_now replays
+                    // passes 4..7 first. specialize_enum_def builds the enum
+                    // scope with the type args bound, so 'this' resolves.
+                    let spec2: Option<BoundDefinition> = this.ensure_specialized_def(bt, result.global_scope);
+                    if (spec2.is_some()) {
+                        let m9: mut SemanticModel = this.model.some;
+                        if (m9.current_pass_index >= 8) {
+                            m9.catch_up_def_before_bodies(spec2.some, result);
+                        }
+                        result.definitions.push(spec2.some);
+                    }
+                }
+            }
+        }
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(bt.generic_args.size())) {
+            let a: BoundTypeArg = bt.generic_args.at(cast<u64>(gi)).some;
+            if (!arg_is_value(a)) {
+                this.ensure_signature_instantiations(arg_as_bound_type(a), result);
+            }
+            gi = gi + 1;
+        }
     }
 
     // resolve_pair wrapper for ensure_function_specialization_now: picks the

@@ -158,6 +158,14 @@ class IRGenerator {
         this.builder.func.display_name = def.name;
         this.builder.func.is_extern = def.is_extern;
         this.reset_locals();
+        // Compiler-known native-array intrinsics: the declaration has no body —
+        // lower the params + intrinsic instructions directly.
+        if (string_length(def.array_intrinsic) > 0) {
+            this.lower_array_intrinsic_body(def);
+            let intr_func: mut IRFunction = this.builder.func;
+            module.add_function(intr_func);
+            return;
+        }
         let this_reg: mut Option<IRValue> = new Option<IRValue>.none();
         let pi: mut i64 = 0;
         while (pi < cast<i64>(def.parameters.size())) {
@@ -221,6 +229,89 @@ class IRGenerator {
         if (string_find(def.full_name, ".__construct_") >= 0) {
             module.init_functions.push(func_ref);
         }
+    }
+
+    // The element display of an array type's generic arg 0 (used by the
+    // ARRAY_NEW_ZEROED display `<T>`).
+    // The element's IR-type spelling of an array type (one ArrayKind layer
+    // stripped): "enum<X>" for enums, "ref<Y>" for references, primitives
+    // bare — exactly what get/set derive from their value types. ARRAY_NEW
+    // MUST use the same spelling: a bare display name would mint a SECOND
+    // array-meta entry with a fallback 8-byte stride against the real
+    // element size, and allocation would disagree with every later write
+    // (the List<emperor.Definition> heap corruption).
+    fun array_elem_ir(this, bt: BoundType) -> string {
+        if (bt.kind is TypeKind.ArrayKind && cast<i64>(bt.generic_args.size()) > 0) {
+            let elem: BoundType = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+            return this.bound_type_to_ir_type(elem);
+        }
+        return this.bound_type_to_ir_type(bt);
+    }
+
+    // Lower a compiler-known `__builtin.__array_*` intrinsic function: params in
+    // declaration order, then the array instruction(s) / extern call, then RET.
+    fun lower_array_intrinsic_body(mut this, def: BoundFunctionDefinition) {
+        let func_loc: SourceLocation = this.sym_loc_func(def.symbol);
+        let arg_regs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(def.parameters.size())) {
+            let p: BoundFunctionParameter = def.parameters.at(cast<u64>(pi)).some;
+            let p_ir: string = this.bound_type_to_ir_type(p.bound_type);
+            let _: IRValue = this.builder.func.alloc_param(p.name, p_ir, func_loc.line, func_loc.col);
+            let param_full_name: string = def.full_name + ".<body>." + p.name;
+            let arg_reg: IRValue = this.builder.emit_arg(p.name, pi, p_ir, func_loc);
+            this.set_symbol_reg_by_name(param_full_name, arg_reg);
+            arg_regs.push(arg_reg);
+            pi = pi + 1;
+        }
+        if (def.array_intrinsic == "new") {
+            // __array_new<T>(len: u64) -> mut array<T>
+            let elem_ir: string = this.array_elem_ir(def.return_type);
+            let r: IRValue = this.builder.emit_array_new_zeroed(elem_ir, arg_regs.at(cast<u64>(0)).some, this.bound_type_to_ir_type(def.return_type), func_loc);
+            this.builder.emit_ret(r, func_loc);
+            return;
+        }
+        if (def.array_intrinsic == "get") {
+            // __array_get<T>(a: mut array<T>, i: u64) -> T
+            let elem_ir: string = this.bound_type_to_ir_type(def.return_type);
+            let r: IRValue = this.builder.emit_array_get(arg_regs.at(cast<u64>(0)).some, arg_regs.at(cast<u64>(1)).some, elem_ir, func_loc);
+            this.builder.emit_ret(r, func_loc);
+            return;
+        }
+        if (def.array_intrinsic == "set") {
+            // __array_set<T>(a: mut array<T>, i: u64, v: T)
+            this.builder.emit_array_set(arg_regs.at(cast<u64>(0)).some, arg_regs.at(cast<u64>(1)).some, arg_regs.at(cast<u64>(2)).some, func_loc);
+            this.builder.emit_ret_void(func_loc);
+            return;
+        }
+        if (def.array_intrinsic == "len") {
+            // __array_len<T>(a: mut array<T>) -> u64
+            let r: IRValue = this.builder.emit_array_len(arg_regs.at(cast<u64>(0)).some, func_loc);
+            this.builder.emit_ret(r, func_loc);
+            return;
+        }
+        if (def.array_intrinsic == "fill") {
+            // __array_fill<T>(a: mut array<T>, v: T) -> void — plain extern call
+            let cargs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+            cargs.push(arg_regs.at(cast<u64>(0)).some);
+            cargs.push(arg_regs.at(cast<u64>(1)).some);
+            let _: Option<IRValue> = this.builder.emit_call("_emperor_array_fill", cargs, "void", func_loc);
+            this.builder.emit_ret_void(func_loc);
+            return;
+        }
+        if (def.array_intrinsic == "copy_range") {
+            // __array_copy_range<T>(dst: mut array<T>, src: mut array<T>, n: u64) -> void
+            let cargs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+            cargs.push(arg_regs.at(cast<u64>(0)).some);
+            cargs.push(arg_regs.at(cast<u64>(1)).some);
+            cargs.push(arg_regs.at(cast<u64>(2)).some);
+            let _: Option<IRValue> = this.builder.emit_call("_emperor_array_copy_range", cargs, "void", func_loc);
+            this.builder.emit_ret_void(func_loc);
+            return;
+        }
+        // Unknown intrinsic: leave a plain void return (should not happen — the
+        // marker is only set for the six known names).
+        this.builder.emit_ret_void(func_loc);
     }
 
     fun lower_class_def(mut this, def: BoundClassDefinition, module: mut IRModule) {
@@ -695,8 +786,6 @@ class IRGenerator {
 
     fun lower_function_call(mut this, expr: BoundFunctionCallExpression) -> IRValue {
         _utils.trace_enter("Enter lower_function_call");
-        // Pointer intrinsics: dispatched by the synthetic callee full_name set in
-        // SemanticModel.bind_meta_call (#__address_of / #__load / #__store).
         if (expr.callee_symbol.is_some()) {
             let sym: BoundSymbol = expr.callee_symbol.some;
             if (sym is BoundSymbol.function_sym) {
@@ -715,44 +804,6 @@ class IRGenerator {
                             }
                         }
                     }
-                }
-                if (iname == "<intrinsic>.address_of") {
-                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
-                    let operand: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
-                    return this.builder.emit_address_of(operand, loc);
-                }
-                if (iname == "<intrinsic>.load") {
-                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
-                    let addr: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
-                    let elem_ir_type: string = this.bound_type_to_ir_type(expr.get_bound_type());
-                    return this.builder.emit_load_ptr(addr, elem_ir_type, loc);
-                }
-                if (iname == "<intrinsic>.store") {
-                    let loc: SourceLocation = this.sym_loc(expr.callee_symbol);
-                    let addr: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
-                    let v: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(1)).some);
-                    this.builder.emit_store_ptr(addr, v, v.get_ir_type(), loc);
-                    return this.builder.void_value();
-                }
-                if (iname == "<intrinsic>.track_buffer") {
-                    // GC v2 3b: typed container-buffer registration. The element
-                    // BoundType rides in the call's generic arguments; splice its
-                    // IR spelling into the callee token so the LLVM emitter can
-                    // pick the ref-map operand (bare-ref / class / enum / none).
-                    let loc2: SourceLocation = this.sym_loc(expr.callee_symbol);
-                    let taddr: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(0)).some);
-                    let tcount: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(1)).some);
-                    let tstride: IRValue = this.lower_expression(expr.arguments.at(cast<u64>(2)).some);
-                    let elem_ir: mut string = "void";
-                    if (cast<i64>(expr.generic_args.size()) > 0) {
-                        elem_ir = this.bound_type_to_ir_type(expr.generic_args.at(cast<u64>(0)).some);
-                    }
-                    let targs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
-                    targs.push(taddr);
-                    targs.push(tcount);
-                    targs.push(tstride);
-                    this.builder.emit_call("<intrinsic>.track_buffer::" + elem_ir, targs, "void", loc2);
-                    return this.builder.void_value();
                 }
             }
         }
@@ -2136,6 +2187,17 @@ class IRGenerator {
             if (bt.primitive is PrimitiveType.CharType) { return "char"; }
             if (bt.primitive is PrimitiveType.StringType) { return "ref<string>"; }
             if (bt.primitive is PrimitiveType.VoidType) { return "void"; }
+        }
+        // Native array `array<T>`: the reserved wrapper spelling around the
+        // element IR type. A reference object — the binding's mutability does
+        // not change storage (no "mut " prefix, matching the shared-IR display
+        // contract with BabyPenguin).
+        if (bt.kind is TypeKind.ArrayKind) {
+            if (cast<i64>(bt.generic_args.size()) > 0) {
+                let elem: BoundType = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+                return "array<" + this.bound_type_to_ir_type(elem) + ">";
+            }
+            return "array<ref<unknown>>";
         }
         if (bt.kind is TypeKind.ClassKind) {
             if (bt.type_definition.is_some()) {

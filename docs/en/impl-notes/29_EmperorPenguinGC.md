@@ -149,10 +149,10 @@ When the current span has no free slot, `gt_retire_refill` (under
 approximate counter, retires the exhausted span to the shared full list,
 and takes a fresh one: shared partial → empty pool (re-classed on demand,
 so classes cannot strand memory) → new superchunk. On superchunk
-failure it runs an emergency collection **outside** the lock (a finalizer
-may allocate, and the lock is not recursive) and retries once; mid
-parallel-delta the emergency collect is skipped and the boundary collects
-instead (§7.3). Allocation never clears alloc bits — only the sweep does —
+failure it runs an emergency collection **outside** the lock (collect-time
+allocations take the malloc path, and the lock is not recursive) and
+retries once; mid parallel-delta the emergency collect is skipped and the
+boundary collects instead (§7.3). Allocation never clears alloc bits — only the sweep does —
 so freed slots are reusable only after that sweep.
 
 ### 2.4 The malloc large path
@@ -194,7 +194,7 @@ forever in the gap between the two.
 | --- | --- |
 | Stack frames (all stacks) | `EmperorGcFrame` chains linked onto `_emperor_gc_frame_head` (thread-local; the scheduler swaps it per coroutine and restores it on sjlj throws). Each slot is either a bare pointer home (`map == NULL`: `*addr` is one reference) or an inline struct home walked with its ref-map. The scheduler's `_emperor_sched_each_frame_head` enumerates every PARKED coroutine's saved chain. |
 | Globals | `_emperor_gc_add_root(void**)` registry (swap-remove on unregister); value-class/enum globals additionally register their whole struct as a scan region. |
-| Container buffers | Raw malloc'd storage holding references, registered as scan regions: conservative (`_emperor_gc_scan_add`) or **typed** (`_emperor_gc_track_buffer`: `count × stride` elements described by one element's ref-map — Vector/HashMap/Array register this way). The finalizer is load-bearing here: containers unregister in `dispose_mem`, which the sweep runs on dead instances. |
+| Native arrays `array<T>` | First-class GC objects — no registration needed. Layout `{ ptr metadata, i64 length, elements... }`; the per-element-type metadata's refmap is a REFARR node (kind 3: `elem_stride`, `elem_sub`), and the walker reads the live count at object+8 and walks each element with `elem_sub` (primitive elements are a precise no-op, not a conservative scan). Containers (List/Vector/HashMap) are backed by `array<T>` slots now, so container graphs trace precisely through ordinary object marking. |
 | Coroutine stacks | Registered as regions by the scheduler, narrowed to `[parked_sp, top)` via `_emperor_gc_scan_set_live` so dead frames below a parked sp — stale garbage a conservative scan would pin forever — are excluded; the RUNNING coroutine's region is capped at the collect-time sp. |
 | Meta pins | `_emperor_gc_pin_object`: compile-time object values baked into meta stubs as raw i64 addresses are pinned for the process lifetime (integers are invisible to the marker). |
 | Quarantine ring | A bounded ring (512 entries) of each arena's most recent allocations — covers freshly allocated objects that are reachable only from unhomed SSA temporaries (the `this.f = new Outer(new Inner(...))` shape: the Inner result has no slot and no heap home until the statement completes, yet polls sit between the two allocations). Explicit `gc_collect()` cycles DROP the rings (collect-now semantics — young garbage must die; the conservative cover below holds the in-flight temps); automatic cycles consume them. |
@@ -258,8 +258,9 @@ pointer locations the emitter declared are read. Mapless bodies (foreign
 metadata, or a freshly allocated block between zeroing and metaptr
 stamping) fall back to a conservative whole-body word scan. Corrupt
 ref-map programs (offsets outside the object, enum tags outside the
-variant table) abort loudly with forensics; typed-buffer walks tolerate
-uninitialized capacity-tail garbage.
+variant table, REFARR extents beyond the object) abort loudly with
+forensics. A REFARR node with `elem_sub == 0` (pointer-free elements) never
+reads the element area — spare capacity slots are invisible to the marker.
 
 **Failure policy**: if any worklist/queue growth fails mid-mark,
 `_emperor_gc_mark_failed` is set, marking is partial, and the cycle
@@ -271,29 +272,23 @@ warns once per mapless type name.
 
 ## 5. Sweep
 
-After a successful mark, black = live. The driver runs four phases in a
-load-bearing order:
+After a successful mark, black = live. No finalizers exist (the
+IMemoryDispose/destructor machinery was retired with the native-arrays
+round — files close explicitly, containers are GC-traced `array<T>` objects),
+so the sweep runs no user code at all and needs no phase ordering:
 
-1. `gc_sweep_pass1` — walk the malloc list, unlink dead blocks into a
-   pending chain (tombstoning them `marked == 2`), and run **every**
-   malloc-side finalizer while all dead bodies — span slots included —
-   are still allocated and readable.
-2. `gt_sweep_finalize` — run finalizers on dead **span** slots (alloc &
-   ~black). No state change yet.
-3. `gc_sweep_pass2` — compact the sorted index, then free the dead
-   malloc chain. No user code runs here.
-4. `gt_sweep_reclaim` — clear dead alloc bits, recompute live counts,
-   repool each span: **wholesale** recycling to the class-agnostic empty
-   pool when `live == 0` (infant-mortality workloads mostly produce dead
-   spans, so reclamation cost drops from O(objects) to O(spans)),
+1. `gc_sweep` (gc.c, single pass) — walk the malloc list, unlink dead
+   blocks into a pending chain (tombstoned `marked == 2`), compact the
+   sorted index in the same walk, then `free()` the chain.
+2. `gt_sweep_reclaim` (gc_span.c) — clear dead alloc bits, recompute live
+   counts, repool each span: **wholesale** recycling to the class-agnostic
+   empty pool when `live == 0` (infant-mortality workloads mostly produce
+   dead spans, so reclamation cost drops from O(objects) to O(spans)),
    otherwise partial/full.
 
-The ordering guarantee: every finalizer — either heap — observes every
-dead object intact (a container's `dispose_mem` may touch the objects it
-owns), and finalizer-time allocations (malloc path; the collecting latch
-suppresses nested collection) are never visited by this cycle's unlink
-walk. `dispose_mem` must be idempotent (buf != 0 guards in the stdlib
-containers); a second dispose is a no-op.
+Collect-time allocations take the malloc path (the collecting latch
+suppresses nested collection) and are never visited by this cycle's unlink
+walk.
 
 ## 6. Collection cycle
 
@@ -308,7 +303,7 @@ gc_collect_greentea():
     setjmp register flush; capture sp
     gc_refresh_sorted()                     # incremental index merge
     mark: global roots → meta pins → frame chains (running + parked)
-          → regions (typed precise, conservative word-scan)
+          → regions (conservative word-scan)
     gc_mark_drain()
     quarantine: explicit cycle drops the rings, auto cycle consumes them
     conservative stack cover (this thread's watermark + every other
@@ -316,7 +311,7 @@ gc_collect_greentea():
     gt_drain()                              # to gray == black
     [GC_VERIFY] gt_verify_invariants()
     on mark failure: reset all colors, retain everything, return
-    sweep: malloc pass1 → gt_sweep_finalize → malloc pass2 → gt_sweep_reclaim
+    sweep: gc_sweep (unlink+compact+free) → gt_sweep_reclaim
     gc_update_unified_goal(freed)
 ```
 
@@ -399,8 +394,8 @@ per-back-edge hot path of every coroutine.
 
 * Safepoint polls (`_emperor_gc_poll`) before every call and allocation;
   frame-chain link/unlink per function; ref-map programs and metadata
-  globals per type; typed-buffer registration for container storage.
-* The runtime ABI tag `_emperor_runtime_abi == "emperor-rt-gc3-gt2"` is
+  globals per type (arrays included: one REFARR node per element type).
+* The runtime ABI tag `_emperor_runtime_abi == "emperor-rt-gc3-gt3"` is
   compared on mixed dynlib builds so an emission never meets a foreign
   runtime silently.
 * JIT modules and dynlib consumers bind the allocator/poll/frame-head
@@ -431,8 +426,8 @@ is set).
   address-recycling, checksum stability), precise ref-map walking with
   exact live/die deltas (poison words, stale enum payloads, tag flips),
   and a green-tea section (mixed span/malloc graph integrity, exact
-  finalizer counts, ring-queue wrap+grow regression, wholesale
-  reclaim). **Harness discipline**: the exact-delta assertions hold only
+  dead-slot reclamation deltas, ring-queue wrap+grow regression,
+  wholesale reclaim). **Harness discipline**: the exact-delta assertions hold only
   when no stale copy of a to-be-freed pointer survives in a LIVE frame —
   the conservative cover reads every live-frame word. Pointers that a
   later assertion frees are therefore allocated, published and dropped
@@ -444,11 +439,11 @@ is set).
   cover).
 * **`make gc-bench`** (`EmperorPenguin/std/c/gc_bench.sh`): builds
   gc_torture in release and drives the six deterministic workloads
-  (churn / ptrdense / container / deepsurvive / finstorm / mixed512),
+  (churn / ptrdense / container / deepsurvive / mixed512),
   tabulating the `GC_PROFILE` phase-timing line per workload.
 * **`Tests/GcTest/*.md`**: the cross-compiler e2e guards — enum globals
-  and payloads under churn, typed container buffers, finalizer
-  reentrancy, write-chain/parameter rooting, span-stats introspection.
+  and payloads under churn, native-array element tracing, container
+  reclamation, write-chain/parameter rooting, span-stats introspection.
 * The C runtime builds `-O2` by default (std/c Makefile `OPT`; the
   allocator and the scheduler's context switch are hot paths).
 * Platforms: linux x86_64 + aarch64, `CROSS=win64` (llvm-mingw). The
@@ -459,11 +454,9 @@ is set).
 
 - **SIMD bitmap kernels**: `gray & ~black` over AVX-512/GFNI blocks,
   CPUID-gated with the scalar kernel as fallback.
-- **Headerless slots**: derive size/class from the span, keep metadata
-  only for finalizable classes — recovers the 24 B per object.
-- **`_emperor_alloc_impl(size, flags)`**: additive ABI so codegen can
-  mark finalizer-free allocations, making wholesale span recycle O(1)
-  (no destructor probe).
+- **Headerless slots**: derive size/class from the span — recovers the
+  24 B per object (nothing is finalizable anymore, so no class needs to
+  keep metadata for the sweep).
 - **Local/shared domain split**: per-arena local collectors with
   promotion at the scheduler handoff points, instead of one global
   stop-the-world pass over every arena.

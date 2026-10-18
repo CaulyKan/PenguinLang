@@ -1,6 +1,6 @@
 # StdVectorTest
 ## Description
-End-to-end test of the stdlib `std.Vector<T>` from `EmperorPenguin/std/penguin/vector.penguin` (NOT auto-loaded; passed via Compile.Args). Growable contiguous buffer: starts empty, first `push` allocates cap 8, then doubles (8→16→32). Pushing 17 elements forces both resize steps. Exercises push/at (bounds-checked, out-of-range → Option.none)/set/size/capacity, for-loop iteration via the independent `_VectorIterator<T>` (sum), and `dispose_mem()`. Pass3-only (pointer IR intrinsics; EmperorPenguin-native).
+End-to-end test of the stdlib `std.Vector<T>` from `EmperorPenguin/std/penguin/vector.penguin` (NOT auto-loaded; passed via Compile.Args). Growable container over the NATIVE array `array<T>`: starts empty (buf null), first `push` allocates cap 8, then doubles (8→16→32) via `__array_copy_range`. Pushing 17 elements forces both resize steps. Exercises push/at (bounds-checked, out-of-range → Option.none)/set/size/capacity, for-loop iteration via the independent `_VectorIterator<T>` (sum). Nothing to dispose — the old element buffer becomes garbage at grow and the sweep reclaims it. Pass3-only (native-array intrinsics; EmperorPenguin-native).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -22,7 +22,6 @@ initial {
     let sum: mut i64 = 0;
     for (let x in v) { sum = sum + x; }
     println("sum=" + cast<string>(sum));
-    v.dispose_mem();
 }
 ```
 

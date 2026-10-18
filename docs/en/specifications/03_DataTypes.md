@@ -332,6 +332,46 @@ Function parameters can specify their expected mutability.
     }
     ```
 
+## Native Arrays `array<T>`
+
+`array<T>` is a dense native array of one element type — a reference type and a
+first-class GC object (precisely traced; see
+[EmperorPenguin GC](../impl-notes/29_EmperorPenguinGC.md)). The length is
+fixed at creation; arrays nest (`array<array<i32>>` is an array of `array<i32>`
+references). A bare `array<T>` is mutable by default (`!mut array<T>` for an
+immutable binding).
+
+There is no index syntax and no array literal yet — element access goes
+through magic methods:
+
+* `a.at(i) -> Option<T>` — read element `i`; out of bounds yields `none`
+* `a.set(i, v)` — write element `i`; out of bounds is a no-op (needs a `mut` binding)
+* `a.size() -> u64` — element count
+* `a.iter()` / `a.iter_mut()` — for-in iteration (`for (let x in a) ...`)
+
+```penguin
+initial {
+    let a : mut array<i32> = create_array(5, 0);       // 5 zeros
+    a.set(0, 10);
+    let first : i32 = a.at(0).some;               // 10 (at returns Option)
+    let total : mut i64 = 0;
+    for (let v in a) { total += v; }              // iteration
+
+    let b : mut array<i64> = create_array_with(4, fun (i: u64) -> i64 {
+        return cast<i64>(i) * cast<i64>(i);       // 0, 1, 4, 9
+    });
+}
+```
+
+Constructors: `create_array<T>(len, fill)` fills every slot with `fill`
+(for reference elements this means every slot holds the SAME reference);
+`create_array_with<T>(len, f)` initializes slot `i` with `f(i)`. There is
+no null array — creation always supplies initial values.
+
+Value-class (ICopy) elements have whole-struct copy semantics: reading an
+element copies it out of the slot, writing copies into it. The bound
+`let x = a.at(i).some;` on a value-class element owns an independent copy.
+
 ## Built-in Data Structures
 
 Penguin-lang provides several built-in data structures.

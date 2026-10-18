@@ -47,7 +47,7 @@ The lexer only produces a `Hash` token (Lexer.penguin line 678) — there are no
 | `#fun` registration, `#class` placeholders, `#specializing` blocks | Pass 1 (build_scopes) | SemanticBuildScopes.penguin ~405–474 |
 | meta calls in **type positions** | Pass 2 (resolve_types) — `try_resolve_meta_type_specifier` | SemanticResolveTypes.penguin 856 |
 | `#specializing` execution per instantiation | Pass 3 (monomorphize) — `run_specializing_for_spec` / gates JIT-called; activated impl slots read back and injected | SemanticMonomorphize.penguin 450–555 |
-| `#fun` call splicing, `#sizeof`, `#__address_of`/`#__load`/`#__store`, template-instantiation routing | Pass 8c (BindMetaCallsPass) | SemanticBindMetaCalls.penguin |
+| `#fun` call splicing, `#sizeof`, template-instantiation routing | Pass 8c (BindMetaCallsPass) | SemanticBindMetaCalls.penguin |
 | `#defined`/`#option`/`#define`/`#typeof`/`#compiler()`/`#error` inside `#fun` bodies | MetaEngine dispatch (shadowable by user `#fun`s) | MetaEngine.penguin 1541–1647 |
 
 `#for` is parsed (`MetaForDefinition`) but the prepass only splices `#if`/`#while`/`#define`; collection iteration is not implemented. `MetaRewriter.run_prepass` (SemanticMetaRewrite.penguin lines 34–49) runs before the 9 passes: collect `#fun` → collect `#class` → seed the engine → def-level rewrite (in place, keeping definition indices aligned) → statement-level rewrite.

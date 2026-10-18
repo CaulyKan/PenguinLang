@@ -47,7 +47,7 @@ JIT 是小 C API 背后的 LLVM ORC：`std/c/penguin_jit.h`（`_emperor_penguin_
 | `#fun` 注册、`#class` 占位、`#specializing` 块 | Pass 1（build_scopes） | SemanticBuildScopes.penguin 约 405–474 |
 | **类型位置**的元调用 | Pass 2（resolve_types）——`try_resolve_meta_type_specifier` | SemanticResolveTypes.penguin 856 |
 | 每实例化的 `#specializing` 执行 | Pass 3（monomorphize）——`run_specializing_for_spec` / 门控 JIT 调用；激活的 impl 槽读回并注入 | SemanticMonomorphize.penguin 450–555 |
-| `#fun` 调用拼接、`#sizeof`、`#__address_of`/`#__load`/`#__store`、模板实例化路由 | Pass 8c（BindMetaCallsPass） | SemanticBindMetaCalls.penguin |
+| `#fun` 调用拼接、`#sizeof`、模板实例化路由 | Pass 8c（BindMetaCallsPass） | SemanticBindMetaCalls.penguin |
 | `#fun` 体内的 `#defined`/`#option`/`#define`/`#typeof`/`#compiler()`/`#error` | MetaEngine 分派（可被用户 `#fun` 遮蔽） | MetaEngine.penguin 1541–1647 |
 
 `#for` 已解析（`MetaForDefinition`）但预处理只拼接 `#if`/`#while`/`#define`；集合迭代未实现。`MetaRewriter.run_prepass`（SemanticMetaRewrite.penguin 34–49 行）在 9 遍之前运行：收集 `#fun` → 收集 `#class` → 播种引擎 → 定义级重写（原位，保持定义索引对齐）→ 语句级重写。

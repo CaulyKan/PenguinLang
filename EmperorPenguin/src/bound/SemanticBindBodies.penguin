@@ -997,7 +997,7 @@ class BindBodiesPass {
                             // immutable binding even though the new-expression's type
                             // is mutable), so an immutable binding assigned to a
                             // mutable target fails E_MUTABILITY.
-                            if (value.is_some() && this.model.some.classify_value_types_pass.is_iref_type(value_type)) {
+                            if (value.is_some() && (this.model.some.classify_value_types_pass.is_iref_type(value_type) || value_type.kind is TypeKind.ArrayKind)) {
                                 let val_type: BoundType = value.some.get_bound_type();
                                 let target_mut: Mutability = value_type.mutability;
                                 let val_mut: mut Mutability = val_type.mutability;
@@ -1173,7 +1173,7 @@ class BindBodiesPass {
                     // must not fail the binding (e.g. macro-generated
                     // `let mut _map = _f.as_object()` where as_object returns a
                     // non-mut type).
-                    if (stmt.let_decl.type_spec.is_some() && this.model.some.classify_value_types_pass.is_iref_type(decl_type)) {
+                    if (stmt.let_decl.type_spec.is_some() && (this.model.some.classify_value_types_pass.is_iref_type(decl_type) || decl_type.kind is TypeKind.ArrayKind)) {
                         let target_mut: Mutability = decl_type.mutability;
                         let val_mut: mut Mutability = init_type.mutability;
                         if (initializer.some is BoundExpression.identifier) {

@@ -204,8 +204,7 @@ namespace BabyPenguin.VirtualMachine
         override public string StringResult => TargetValue.ToString() ?? "";
     }
 
-    public class TypeCheckInstruction(SourceLocation sourceLocation, ISymbol operand, IType checkType, ISymbol target) : BabyPenguinIR
-    {
+    public class TypeCheckInstruction(SourceLocation sourceLocation, ISymbol operand, IType checkType, ISymbol target) : BabyPenguinIR    {
         public ISymbol Operand { get; } = operand;
         public IType CheckType { get; } = checkType;
         public ISymbol Target { get; } = target;
@@ -214,5 +213,76 @@ namespace BabyPenguin.VirtualMachine
         override public string StringOP1 => Operand.ToString() ?? "";
         override public string StringOP2 => CheckType.ToString() ?? "";
         override public string StringResult => Target.ToString() ?? "";
+    }
+
+    // === Native array instructions ===
+    // Produced by the binding layer when it recognizes the compiler-known
+    // `__builtin.__array_*` intrinsic call names; element/value semantics:
+    // value-type elements copy whole-structure on get/set.
+
+    public class ArrayNewZeroedInstruction(SourceLocation sourceLocation, ISymbol lengthSymbol, IType arrayType, ISymbol target) : BabyPenguinIR
+    {
+        public ISymbol LengthSymbol { get; } = lengthSymbol;
+        public IType ArrayType { get; } = arrayType;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ARR_NEW";
+        override public string StringOP1 => LengthSymbol.ToString() ?? "";
+        override public string StringOP2 => ArrayType.ToString() ?? "";
+        override public string StringResult => Target.ToString() ?? "";
+    }
+
+    public class ArrayGetInstruction(SourceLocation sourceLocation, ISymbol arraySymbol, ISymbol indexSymbol, ISymbol target) : BabyPenguinIR
+    {
+        public ISymbol ArraySymbol { get; } = arraySymbol;
+        public ISymbol IndexSymbol { get; } = indexSymbol;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ARR_GET";
+        override public string StringOP1 => ArraySymbol.ToString() ?? "";
+        override public string StringOP2 => IndexSymbol.ToString() ?? "";
+        override public string StringResult => Target.ToString() ?? "";
+    }
+
+    public class ArraySetInstruction(SourceLocation sourceLocation, ISymbol arraySymbol, ISymbol indexSymbol, ISymbol valueSymbol) : BabyPenguinIR
+    {
+        public ISymbol ArraySymbol { get; } = arraySymbol;
+        public ISymbol IndexSymbol { get; } = indexSymbol;
+        public ISymbol ValueSymbol { get; } = valueSymbol;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ARR_SET";
+        override public string StringOP1 => ArraySymbol.ToString() ?? "";
+        override public string StringOP2 => IndexSymbol.ToString() ?? " " + ValueSymbol.ToString();
+    }
+
+    public class ArrayLenInstruction(SourceLocation sourceLocation, ISymbol arraySymbol, ISymbol target) : BabyPenguinIR
+    {
+        public ISymbol ArraySymbol { get; } = arraySymbol;
+        public ISymbol Target { get; } = target;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ARR_LEN";
+        override public string StringOP1 => ArraySymbol.ToString() ?? "";
+        override public string StringResult => Target.ToString() ?? "";
+    }
+
+    public class ArrayFillInstruction(SourceLocation sourceLocation, ISymbol arraySymbol, ISymbol valueSymbol) : BabyPenguinIR
+    {
+        public ISymbol ArraySymbol { get; } = arraySymbol;
+        public ISymbol ValueSymbol { get; } = valueSymbol;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ARR_FILL";
+        override public string StringOP1 => ArraySymbol.ToString() ?? "";
+        override public string StringOP2 => ValueSymbol.ToString() ?? "";
+    }
+
+    public class ArrayCopyRangeInstruction(SourceLocation sourceLocation, ISymbol destSymbol, ISymbol srcSymbol, ISymbol countSymbol) : BabyPenguinIR
+    {
+        public ISymbol DestSymbol { get; } = destSymbol;
+        public ISymbol SrcSymbol { get; } = srcSymbol;
+        public ISymbol CountSymbol { get; } = countSymbol;
+        public override SourceLocation SourceLocation { get; set; } = sourceLocation;
+        override public string StringCommand => "ARR_COPY";
+        override public string StringOP1 => DestSymbol.ToString() ?? "";
+        override public string StringOP2 => SrcSymbol.ToString() ?? " " + CountSymbol.ToString();
     }
 }

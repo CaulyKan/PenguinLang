@@ -11,6 +11,18 @@ class NamedTypeEntry {
     }
 }
 
+// Array cache entry: the BoundType must round-trip as `mut` (callers hold it
+// in mut fields), so the entry carries a mutable binding.
+class ArrayTypeEntry {
+    name: string = "";
+    bound_type: mut BoundType = new BoundType();
+
+    fun new(mut this, name: string, bound_type: mut BoundType) {
+        this.name = name;
+        this.bound_type = bound_type;
+    }
+}
+
 class BoundTypeRegistry {
     bool_type: BoundType;
     i8_type: BoundType;
@@ -27,6 +39,30 @@ class BoundTypeRegistry {
     string_type: BoundType;
     void_type: BoundType;
     registered_types: mut _utils.List<NamedTypeEntry> = new _utils.List<NamedTypeEntry>();
+    // Native array types `array<T>`, keyed by the element's serialization (the
+    // serialization is mutability-free, so one entry per element TYPE).
+    array_types: mut _utils.List<ArrayTypeEntry> = new _utils.List<ArrayTypeEntry>();
+
+    // The canonical (immutable-based) array type for an element type. Element
+    // mutability is normalized away — slots store the reference/value, the
+    // array binding's own mutability comes from with_mutability at use sites.
+    fun array_type_of(mut this, elem: mut BoundType) -> mut BoundType {
+        let elem_norm: mut BoundType = elem.with_mutability(new Mutability.Immutable());
+        let key: string = serialize_bound_type(elem_norm);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.array_types.size())) {
+            if (this.array_types.at(cast<u64>(i)).some.name == key) {
+                return this.array_types.at(cast<u64>(i)).some.bound_type;
+            }
+            i = i + 1;
+        }
+        let t: mut BoundType = new BoundType();
+        t.kind = new TypeKind.ArrayKind();
+        t.generic_args.push(make_type_arg(elem_norm));
+        t.mutability = new Mutability.Immutable();
+        this.array_types.push(new ArrayTypeEntry(key, t));
+        return t;
+    }
 
     fun new(mut this) {
 

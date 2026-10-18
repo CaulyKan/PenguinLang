@@ -31,22 +31,11 @@ void* _emperor_gc_frame_get(void);
 void _emperor_gc_frame_set(void* head);
 
 /* Register/unregister a RAW (non-GC) buffer whose CONTENTS include pointers
- * to GC objects (std container element storage). The collector scans every
- * registered region like an extension of the stack. Containers must remove
- * the region when they free or replace the buffer (dispose_mem / _grow). */
+ * to GC objects (the coroutine scheduler's stacks). The collector scans
+ * every registered region like an extension of the stack; the owner removes
+ * the region when it frees or replaces the buffer. */
 void _emperor_gc_scan_add(void* base, size_t bytes);
 void _emperor_gc_scan_remove(void* base);
-
-/* Typed buffer registration: like _gc_scan_add but the buffer holds
- * COUNT elements of STRIDE bytes whose reference layout is described by
- * ELEM_MAP (an emperor ref-map program for ONE element; NULL = each
- * element is a single bare reference). The walk is precise: only declared
- * pointer slots are read. Remove with _gc_untrack_buffer.
- * _emperor_gc_bare_refmap is the shared map for bare-ref element buffers. */
-void _emperor_gc_track_buffer(void* base, uint64_t count, uint64_t stride,
-                              const int32_t* elem_map);
-void _emperor_gc_untrack_buffer(void* base);
-extern const int32_t _emperor_gc_bare_refmap[5];
 
 
 /* Debug introspection (test-only): split of _emperor_gc_info() into the

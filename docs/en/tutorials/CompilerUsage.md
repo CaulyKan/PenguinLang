@@ -76,7 +76,7 @@ Useful flags: `-enable-meta` links the LLVM ORC JIT runtime (required for compil
 
 ### The std dyn-lib (`--enable-std`, default on)
 
-The standard-library modules (`std.Vector`, `std.Hashmap`, `std.Array`, JSON, argparse, …) ship as a separate dyn-lib, `libemperorpenguin-std.penguin-lib`, placed **beside the compiler executable** in every release layout. A dyn-lib-capable compiler auto-loads it (`--enable-std`, the default; `--disable-std` opts out), so user programs use the std modules with no flags and no `Compile.Args`:
+The standard-library modules (`std.Vector`, `std.Hashmap`, JSON, argparse, …) ship as a separate dyn-lib, `libemperorpenguin-std.penguin-lib`, placed **beside the compiler executable** in every release layout. A dyn-lib-capable compiler auto-loads it (`--enable-std`, the default; `--disable-std` opts out), so user programs use the std modules with no flags and no `Compile.Args`:
 
 ```penguin
 fun main() -> i64 {

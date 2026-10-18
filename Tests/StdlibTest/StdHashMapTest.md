@@ -1,6 +1,6 @@
 # StdHashMapTest
 ## Description
-End-to-end test of the stdlib `std.HashMap<K,V>` from `EmperorPenguin/std/penguin/hashmap.penguin` (NOT auto-loaded; passed via Compile.Args). Growable open-addressing hash map with linear probing + tombstones: starts at cap 8 and doubles when the load factor would exceed 0.75. Keys are hashed via the IHash interface (`k.hash()` — primitive direct dispatch for i64/string) and compared with `==`. Putting 10 entries forces the 8→16 resize; a `HashMap<string, i64>` sub-case exercises the string IHash (FNV-1a) path. Exercises put/get/contains/remove/size, for-loop iteration via the independent `_HashMapIterator<V>`, and `dispose_mem()`. Pass3-only (meta `#fun require_ihash` compile-time key check + pointer IR intrinsics; EmperorPenguin-native).
+End-to-end test of the stdlib `std.HashMap<K,V>` from `EmperorPenguin/std/penguin/hashmap.penguin` (NOT auto-loaded; passed via Compile.Args). Growable open-addressing hash map with linear probing + tombstones: starts at cap 8 and doubles when the load factor would exceed 0.75. Keys are hashed via the IHash interface (`k.hash()` — primitive direct dispatch for i64/string) and compared with `==`. Putting 10 entries forces the 8→16 resize; a `HashMap<string, i64>` sub-case exercises the string IHash (FNV-1a) path. Exercises put/get/contains/remove/size, for-loop iteration via the independent `_HashMapIterator<V>`, Pass3-only (meta `#fun require_ihash` compile-time key check + native-array intrinsics; EmperorPenguin-native).
 
 ## Apply To
 * EmperorPenguin Pass3
@@ -34,7 +34,6 @@ initial {
     let kcount: mut i64 = 0;
     for (let k in m.iter_keys()) { kcount = kcount + 1; }
     println("kcount=" + cast<string>(kcount));
-    m.dispose_mem();
 
     let mut ms = new std.HashMap<string, i64>();
     ms.put("apple", 1);
@@ -55,7 +54,6 @@ initial {
     let ssum: mut i64 = 0;
     for (let v in ms.iter_values()) { ssum = ssum + v; }
     println("string_sum=" + cast<string>(ssum));
-    ms.dispose_mem();
 }
 ```
 

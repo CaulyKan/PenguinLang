@@ -304,6 +304,41 @@ Penguin-lang 有一套编译期强制、显式而细粒度的可变性系统，�
     }
     ```
 
+## 原生数组 `array<T>`
+
+`array<T>` 是单一元素类型的密集原生数组——引用类型，一等 GC 对象（精确追踪；
+见 [EmperorPenguin GC](../impl-notes/29_EmperorPenguinGC.md)）。长度在创建时
+固定；数组可嵌套（`array<array<i32>>` 是 `array<i32>` 引用的数组）。裸 `array<T>` 默认可变
+（`!mut array<T>` 得到不可变绑定）。
+
+暂无索引语法与数组字面量——元素访问走魔法方法：
+
+* `a.at(i) -> Option<T>`——读第 `i` 个元素；越界返回 `none`
+* `a.set(i, v)`——写第 `i` 个元素；越界为无操作（需要 `mut` 绑定）
+* `a.size() -> u64`——元素个数
+* `a.iter()` / `a.iter_mut()`——for-in 迭代（`for (let x in a) ...`）
+
+```penguin
+initial {
+    let a : mut array<i32> = create_array(5, 0);       // 5 个 0
+    a.set(0, 10);
+    let first : i32 = a.at(0).some;               // 10（at 返回 Option）
+    let total : mut i64 = 0;
+    for (let v in a) { total += v; }              // 迭代
+
+    let b : mut array<i64> = create_array_with(4, fun (i: u64) -> i64 {
+        return cast<i64>(i) * cast<i64>(i);       // 0, 1, 4, 9
+    });
+}
+```
+
+构造：`create_array<T>(len, fill)` 把每个槽位填为 `fill`（对引用元素意味
+着每个槽持有**同一个**引用）；`create_array_with<T>(len, f)` 用 `f(i)` 初始
+化第 `i` 槽。不存在空引用数组——创建必须给初始值。
+
+值类（ICopy）元素是整结构拷贝语义：读元素是把整个 struct 从槽位拷出，
+写元素是整个 struct 拷入。值类元素上 `let x = a.at(i).some;` 拥有独立副本。
+
 ## 内建数据结构
 
 Penguin-lang 提供若干内建数据结构。

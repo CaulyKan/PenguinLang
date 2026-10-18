@@ -144,7 +144,7 @@ initial {
 }
 ```
 
-模板参数也可以是值（`#template(N: i32)`），定长类型如 `std.Array<T, N>` 就是这样表达的。参见[类型与模板](./TypesAndTemplates.md)。
+模板参数也可以是值（`#template(N: i32)`）——编译期常量，直接烧进特化实例。参见[类型与模板](./TypesAndTemplates.md)。
 
 ## 控制流
 

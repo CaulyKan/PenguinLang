@@ -252,26 +252,34 @@ class IRBuilder {
         this.func.add_inst(new IRInstruction.global_store(new IRGlobalStore(global_name, value, loc)));
     }
 
-    // ADDRESS_OF - result is always u64 (raw address).
-    fun emit_address_of(mut this, operand: IRValue, loc: SourceLocation) -> IRValue {
-        _utils.trace_enter("Enter emit_address_of");
-        let result: IRValue = this.alloc_temp("u64");
-        this.func.add_inst(new IRInstruction.address_of(new IRAddressOf(result, operand, loc)));
+    // ARRAY_NEW_ZEROED - allocate a zeroed native array of the element type
+    fun emit_array_new_zeroed(mut this, elem_type: string, length: IRValue, ir_type: string, loc: SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_array_new_zeroed");
+        let result: IRValue = this.func.alloc_temp(ir_type);
+        this.func.add_inst(new IRInstruction.array_new_zeroed(new IRArrayNewZeroed(result, elem_type, length, loc)));
         return result;
     }
 
-    // LOAD_PTR - load `load_type` from a u64 address.
-    fun emit_load_ptr(mut this, addr: IRValue, load_type: string, loc: SourceLocation) -> IRValue {
-        _utils.trace_enter("Enter emit_load_ptr");
-        let result: IRValue = this.alloc_temp(load_type);
-        this.func.add_inst(new IRInstruction.load_ptr(new IRLoadPtr(result, addr, load_type, loc)));
+    // ARRAY_GET - read element (whole-structure copy for value-class elements)
+    fun emit_array_get(mut this, array: IRValue, index: IRValue, ir_type: string, loc: SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_array_get");
+        let result: IRValue = this.func.alloc_temp(ir_type);
+        this.func.add_inst(new IRInstruction.array_get(new IRArrayGet(result, array, index, ir_type, loc)));
         return result;
     }
 
-    // STORE_PTR - store value of `store_type` to a u64 address.
-    fun emit_store_ptr(mut this, addr: IRValue, value: IRValue, store_type: string, loc: SourceLocation) {
-        _utils.trace_enter("Enter emit_store_ptr");
-        this.func.add_inst(new IRInstruction.store_ptr(new IRStorePtr(addr, value, store_type, loc)));
+    // ARRAY_SET - write element (whole-structure copy for value-class elements)
+    fun emit_array_set(mut this, array: IRValue, index: IRValue, value: IRValue, loc: SourceLocation) {
+        _utils.trace_enter("Enter emit_array_set");
+        this.func.add_inst(new IRInstruction.array_set(new IRArraySet(array, index, value, loc)));
+    }
+
+    // ARRAY_LEN - element count
+    fun emit_array_len(mut this, array: IRValue, loc: SourceLocation) -> IRValue {
+        _utils.trace_enter("Enter emit_array_len");
+        let result: IRValue = this.func.alloc_temp("u64");
+        this.func.add_inst(new IRInstruction.array_len(new IRArrayLen(result, array, loc)));
+        return result;
     }
 }
 

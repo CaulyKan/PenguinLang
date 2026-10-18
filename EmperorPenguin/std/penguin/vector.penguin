@@ -1,44 +1,28 @@
-// Stdlib growable Vector, built with meta-programming (the pointer IR + #sizeof
-// intrinsics). NOT auto-loaded — compile it explicitly (e.g. via a markdown
-// test's Compile.Args). Grows by doubling (initial capacity 8); element storage
-// is one contiguous _malloc'd buffer. Manual memory management via
-// _malloc/_mfree; release with dispose_mem(). Iteration goes through the
-// independent _VectorIterator<T> (not Self).
+// Stdlib growable Vector over the NATIVE array `array<T>` (the native-arrays
+// round): element storage is a GC-managed array object traced precisely via
+// its REFARR ref-map — no manual memory management, no dispose. NOT
+// auto-loaded — compile it explicitly (e.g. via a markdown test's
+// Compile.Args). Grows by doubling (initial capacity 8). Iteration goes
+// through the independent _VectorIterator<T> (not Self).
 namespace std {
 
 #template(T: type)
 export class Vector {
     impl __builtin.IReferenceType;
-    impl __builtin.IMemoryDispose;
-    buf: mut u64;
+    // Element storage: a native array<T>. Stays null until the first push
+    // (len == 0 gates every read).
+    buf: mut array<T>;
     len: mut u64 = 0;
     cap: mut u64 = 0;
 
-    fun new(mut this) {
-        this.buf = 0;
-        this.len = 0;
-        this.cap = 0;
-    }
+    fun new(mut this) {}
 
-    // Grow to new_cap, copying existing elements element-by-element.
+    // Grow to new_cap slots, copying existing elements over. The fresh
+    // array is zero-filled at allocation; the old one becomes garbage the
+    // next sweep reclaims.
     fun _grow(mut this, new_cap: u64) {
-        let new_bytes: u64 = new_cap * cast<u64>(#sizeof(T));
-        let new_buf: u64 = __builtin._malloc(new_bytes);
-        // Register the new buffer with its PRECISE element layout (GC v2 3b)
-        // BEFORE elements land in it: a minor collection rewrites young
-        // references in place (the legacy _gc_scan_add byte-region could only
-        // pin them). Primitive elements compile this to nothing.
-        #__track_buffer(T, new_buf, new_cap, cast<u64>(#sizeof(T)));
-        let i: mut u64 = 0;
-        while (i < this.len) {
-            let v: T = #__load(T, this.buf + i * cast<u64>(#sizeof(T)));
-            #__store(T, new_buf + i * cast<u64>(#sizeof(T)), v);
-            i = i + 1;
-        }
-        if (this.buf != 0) {
-            __builtin._gc_scan_remove(this.buf);
-            __builtin._mfree(this.buf);
-        }
+        let new_buf: mut array<T> = __builtin.__array_new<T>(new_cap);
+        __builtin.__array_copy_range<T>(new_buf, this.buf, this.len);
         this.buf = new_buf;
         this.cap = new_cap;
     }
@@ -48,13 +32,15 @@ export class Vector {
             let new_cap: u64 = if (this.cap == 0) { 8 } else { this.cap * 2 };
             this._grow(new_cap);
         }
-        #__store(T, this.buf + this.len * cast<u64>(#sizeof(T)), v);
+        __builtin.__array_set<T>(this.buf, this.len, v);
         this.len = this.len + 1;
     }
 
     // Grow the vector to hold at least n elements. Elements in [old_len, n)
-    // are UNINITIALIZED (garbage) — callers must gate reads on their own
-    // validity flags (HashMap uses this to pre-size its slot vectors).
+    // are ZERO (the array is zero-filled at allocation, unlike the old raw
+    // buffer's garbage tail) — callers gating reads on their own validity
+    // flags (HashMap's occupied flags read 0 = empty slot, which is exactly
+    // the zero value) keep working, and nothing can observe stale data.
     fun resize_to(mut this, n: u64) {
         if (n > this.cap) {
             this._grow(n);
@@ -68,13 +54,13 @@ export class Vector {
         if (i >= this.len) {
             return new __builtin.Option<T>.none();
         }
-        let v: T = #__load(T, this.buf + i * cast<u64>(#sizeof(T)));
+        let v: T = __builtin.__array_get<T>(this.buf, i);
         return new __builtin.Option<T>.some(v);
     }
 
     fun set(mut this, i: u64, v: T) {
         if (i >= this.len) { return; }
-        #__store(T, this.buf + i * cast<u64>(#sizeof(T)), v);
+        __builtin.__array_set<T>(this.buf, i, v);
     }
 
     fun size(this) -> u64 {
@@ -86,41 +72,35 @@ export class Vector {
     }
 
     fun iter(this) -> mut _VectorIterator<T> {
-        return new _VectorIterator<T>(this.buf, this.len);
+        return new _VectorIterator<T>(this);
     }
 
     fun iter_mut(mut this) -> mut _VectorIterator<T> {
-        return new _VectorIterator<T>(this.buf, this.len);
-    }
-
-    fun dispose_mem(mut this) {
-        if (this.buf != 0) {
-            __builtin._gc_scan_remove(this.buf);
-            __builtin._mfree(this.buf);
-            this.buf = 0;
-        }
+        return new _VectorIterator<T>(this);
     }
 }
 
-// Independent iterator for Vector<T>.
+// Independent iterator for Vector<T>. Holds a reference to the Vector and
+// re-reads buf/len on every next(): the GC traces iterator -> vector ->
+// element array (so iterating a temporary Vector keeps its storage alive),
+// and a push() during iteration swaps in the fresh array instead of a stale
+// reference.
 #template(T: type)
 export class _VectorIterator {
     impl __builtin.IReferenceType;
-    base: u64;
+    vector: Vector<T>;
     cursor: mut u64 = 0;
-    end: u64;
 
-    fun new(mut this, base: u64, end: u64) {
-        this.base = base;
-        this.end = end;
+    fun new(mut this, vector: Vector<T>) {
+        this.vector = vector;
         this.cursor = 0;
     }
 
     fun next(mut this) -> __builtin.Option<T> {
-        if (this.cursor >= this.end) {
+        if (this.cursor >= this.vector.len) {
             return new __builtin.Option<T>.none();
         }
-        let v: T = #__load(T, this.base + this.cursor * cast<u64>(#sizeof(T)));
+        let v: T = __builtin.__array_get<T>(this.vector.buf, this.cursor);
         this.cursor = this.cursor + 1;
         return new __builtin.Option<T>.some(v);
     }
@@ -130,10 +110,10 @@ export class _VectorIterator {
     // IIterator vtable entry and dispatch through it dereferences NULL).
     impl __builtin.IIterator<T> {
         fun next(mut this) -> __builtin.Option<T> {
-            if (this.cursor >= this.end) {
+            if (this.cursor >= this.vector.len) {
                 return new __builtin.Option<T>.none();
             }
-            let v: T = #__load(T, this.base + this.cursor * cast<u64>(#sizeof(T)));
+            let v: T = __builtin.__array_get<T>(this.vector.buf, this.cursor);
             this.cursor = this.cursor + 1;
             return new __builtin.Option<T>.some(v);
         }

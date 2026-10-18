@@ -25,7 +25,6 @@ namespace emperor {
         Ellipsis;
         LParen;
         RParen;
-        ArrayBracket;
         LBrace;
         RBrace;
         Star;

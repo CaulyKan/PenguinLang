@@ -94,5 +94,17 @@ namespace BabyPenguin.VirtualMachine
 
         public void EmitGlobalStore(string globalName, IRValue value, IRSourceLocation loc) =>
             _function.AddInst(new IRGlobalStoreInst(globalName, value, loc));
+
+        public void EmitArrayNewZeroed(IRValue result, string elemType, IRValue length, IRSourceLocation loc) =>
+            _function.AddInst(new IRArrayNewZeroedInst(result, elemType, length, loc));
+
+        public void EmitArrayGet(IRValue result, IRValue array, IRValue index, string irType, IRSourceLocation loc) =>
+            _function.AddInst(new IRArrayGetInst(result, array, index, irType, loc));
+
+        public void EmitArraySet(IRValue array, IRValue index, IRValue value, IRSourceLocation loc) =>
+            _function.AddInst(new IRArraySetInst(array, index, value, loc));
+
+        public void EmitArrayLen(IRValue result, IRValue array, IRSourceLocation loc) =>
+            _function.AddInst(new IRArrayLenInst(result, array, loc));
     }
 }

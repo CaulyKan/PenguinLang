@@ -18,6 +18,22 @@ namespace BabyPenguin
 
         public BasicTypeNodes BasicTypeNodes { get; }
 
+        // === Native array type cache ===
+        // One ArrayTypeNode per element type node (keyed by element full
+        // name), so `i32[]` is a single node everywhere and ArrayType
+        // identity checks (same node => cast-compatible) hold.
+        private readonly Dictionary<string, ArrayTypeNode> _arrayTypeNodes = [];
+
+        public ArrayTypeNode GetArrayTypeNode(ITypeNode elementNode)
+        {
+            var key = elementNode.FullName();
+            if (_arrayTypeNodes.TryGetValue(key, out var existing))
+                return existing;
+            var node = new ArrayTypeNode(this, elementNode);
+            _arrayTypeNodes[key] = node;
+            return node;
+        }
+
         /// <summary>
         /// Implicit wire nets: a `mut` variable used as a connect source
         /// (connect(x, f.in)) gets a hidden _Fanout hub; every assignment to
@@ -416,6 +432,24 @@ namespace BabyPenguin
             if (nameComponents.IsMutable != Mutability.Auto)
                 throw new BabyPenguinException("ResolveTypeNode dont support mutability", null, code: ErrorCode.E_INTERNAL);
 
+            // native array type `array<T>` (possibly nested `array<array<T>>`).
+            // `array` is a reserved type-constructor name: bare use is a clear
+            // error, and element mutability is rejected — the mutability prefix
+            // on `array<...>` applies to the array reference, elements are
+            // immutable (silently normalizing `array<mut T>` would be a trap).
+            if (name == "array")
+                throw new BabyPenguinException("array<T> requires an element type argument", null, code: ErrorCode.E_RESOLVE_TYPE);
+            if (name.StartsWith("array<") && name.EndsWith(">"))
+            {
+                var elemText = name["array<".Length..^1];
+                if (elemText.StartsWith("mut ") || elemText.StartsWith("!mut "))
+                    throw new BabyPenguinException($"array element mutability is not supported yet: write array<T>, not array<{elemText}> (the mutability prefix on array<...> applies to the array reference)", null, code: ErrorCode.E_RESOLVE_TYPE);
+                var elemNode = ResolveTypeNodeUncached(elemText, predicate, scope);
+                if (elemNode == null) return null;
+                var arrayNode = GetArrayTypeNode(elemNode);
+                return predicate_(arrayNode) ? arrayNode : null;
+            }
+
             // check if is a built-in type
             if (BasicTypeNodes.Nodes.TryGetValue(name, out BasicTypeNode? value))
                 return value;
@@ -568,6 +602,16 @@ namespace BabyPenguin
                         isMutable = genericArgument.IsMutable;
                 }
             }
+
+            // Native arrays default MUTABLE when the spelling carried no
+            // mutability prefix (Auto): arrays are reference objects and the
+            // whole magic-method surface (at/size/iter included) takes mut
+            // receivers. The old `T[]` string path carried this via the
+            // folded "mut " name prefix; the array node restores it here so
+            // the generic immutable-default does not apply. An explicit !mut
+            // stays immutable.
+            if (typeNode is ArrayTypeNode && nameComponents.IsMutable == Mutability.Auto)
+                return typeNode.ToType(Mutability.Mutable);
 
             return typeNode.ToType(isMutable);
         }

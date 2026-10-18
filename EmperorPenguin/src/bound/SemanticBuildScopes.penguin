@@ -611,7 +611,10 @@ class BuildScopesPass {
         // D6: value-template functions carry non-type params (N: i32) that must be
         // substituted into the specialized body (mirrors bind_class_def).
         this.extract_value_param_names(def.template_decl, result.value_param_names);
-        if (!def.is_extern && def.body.is_some()) {
+        // Declaration-only functions (no body — e.g. the compiler-known
+        // __builtin.__array_* intrinsics) still need their scope so the
+        // generic type params resolve in the signature.
+        if (!def.is_extern) {
             let func_scope: mut BoundScope = new BoundScope(new ScopeKind.FunctionScope(), def.name, full_name + ".<body>", new Option<BoundScope>.some(scope));
             result.scope = new Option<BoundScope>.some(func_scope);
             // Register generic type params in function scope so parameter/return types
@@ -644,6 +647,16 @@ class BuildScopesPass {
         // bare-name AST lookups mis-resolve same-named methods of different
         // classes (map/filter/... on every iterator class).
         result.ast_source = new Option<Definition>.some(new Definition.function_def(def));
+        // Compiler-known native-array intrinsics: declaration-only functions
+        // whose bodies IRGenerator lowers to the array instructions / extern
+        // call. Match the SHORT name (the file namespace prefixes full_name,
+        // and the names are a reserved __-prefix convention).
+        if (def.name == "__array_new") { result.array_intrinsic = "new"; }
+        if (def.name == "__array_get") { result.array_intrinsic = "get"; }
+        if (def.name == "__array_set") { result.array_intrinsic = "set"; }
+        if (def.name == "__array_len") { result.array_intrinsic = "len"; }
+        if (def.name == "__array_fill") { result.array_intrinsic = "fill"; }
+        if (def.name == "__array_copy_range") { result.array_intrinsic = "copy_range"; }
         scope.add_symbol(new BoundSymbol.function_sym(sym));
         return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
     }
@@ -912,7 +925,6 @@ class BuildScopesPass {
         c.is_auto_mutability = ts.is_auto_mutability;
         c.is_value_arg = ts.is_value_arg;
         c.value_arg_text = ts.value_arg_text;
-        c.is_iterable = ts.is_iterable;
         c.is_function_type = ts.is_function_type;
         c.is_async_function_type = ts.is_async_function_type;
         let qi: mut i64 = 0;

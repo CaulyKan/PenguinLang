@@ -92,9 +92,6 @@ static inline void gc_request_collect(void) {
 void gc_alloc_lock(void);
 void gc_alloc_unlock(void);
 
-/* Run a dead object's dispose_mem, if any (gc.c's finalizer probe). */
-void _emperor_gc_finalize(GCHeader* h);
-
 /* Full greentea collect for the allocation slow path (conservative cover
  * on; re-entrancy and init guards live in the driver). */
 void gc_collect_greentea_emergency(void);
@@ -181,12 +178,7 @@ void gt_drain(void);
  * pre-sweep); aborts loudly on violation. */
 void gt_verify_invariants(void);
 
-/* Sweep phase 1: run finalizers on every dead (alloc & ~black) slot. No
- * state change — dead bodies stay intact for the malloc sweep's own
- * finalizer pass, which runs between this and gt_sweep_reclaim. */
-void gt_sweep_finalize(void);
-
-/* Sweep phase 2: clear dead alloc bits, recompute live counts/bytes, and
+/* Sweep: clear dead alloc bits, recompute live counts/bytes, and
  * repool spans (full/partial/empty). No user code runs here. */
 void gt_sweep_reclaim(void);
 

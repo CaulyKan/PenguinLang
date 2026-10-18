@@ -56,61 +56,36 @@ namespace _utils {
         return result;
     }
 
-    // Contiguous-buffer List (the std.Vector design: one _malloc'd element
-    // buffer, doubling growth, #sizeof/#__load/#__store intrinsics), replacing
-    // the old per-element _ListNode linked list — one allocation per grow
-    // instead of one per element, and O(1) random access without the old
-    // head/tail/cursor walk. The public surface (push/at/set/pop/remove/size/
+    // Contiguous-buffer List over the NATIVE array `array<T>` (the native-arrays
+    // round): the element storage is a GC-managed array object the collector
+    // traces precisely through its REFARR ref-map (no scan-region
+    // registration, no finalizer), grown by doubling via
+    // __array_copy_range. The public surface (push/at/set/pop/remove/size/
     // iter/iter_mut and their signatures) is unchanged, so callers are
     // untouched.
     //
-    // Each slot stores a bare T (loaded/stored via #__load(T)/#__store(T)),
-    // NOT Option<T>: value-type elements nest INLINE in the buffer (their
-    // whole struct is copied in/out by the pointer intrinsics — value
-    // semantics, no per-element boxing), and reference-type elements store
-    // their pointer. at()/pop()/next() wrap the loaded element in a fresh
-    // Option<T>.some on return, which for value-type payloads is an inline
-    // struct copy — no heap allocation. The buffer is raw malloc memory that
-    // may hold GC references, so it is registered as a GC scan region right
-    // after allocation and unregistered before free/grow-replace; dispose_mem
-    // is also wired into the GC finalizer (IReferenceType + IMemoryDispose),
-    // so unreachable lists release their buffer automatically.
+    // Each slot stores a bare T; value-type elements are copied whole by the
+    // array get/set intrinsics (value semantics, no per-element boxing) and
+    // reference-type elements store their pointer. at()/pop()/next() wrap
+    // the loaded element in a fresh Option<T>.some on return, which for
+    // value-type payloads is an inline struct copy — no heap allocation.
+    // buf stays null until the first push (len == 0 gates every read).
     #template(T: type)
     class List {
         impl __builtin.IReferenceType;
-        impl __builtin.IMemoryDispose;
-        buf: mut u64 = 0;
+        buf: mut array<T>;
         len: mut u64 = 0;
         cap: mut u64 = 0;
 
         fun new(mut this) {}
 
-        fun slot_size(this) -> u64 {
-            return cast<u64>(#sizeof(T));
-        }
-
-        fun slot_addr(this, index: u64) -> u64 {
-            return this.buf + index * this.slot_size();
-        }
-
-        // Reallocate to new_cap slots, copying existing elements over. The new
-        // buffer is registered with its PRECISE element layout (GC v2 3b)
-        // BEFORE elements land in it, and the old region is removed before the
-        // old buffer is freed — the collector must never scan freed memory,
-        // and a minor must be able to rewrite young element references.
+        // Reallocate to new_cap slots, copying existing elements over. The
+        // fresh array is zero-filled at allocation and the elements land
+        // after the copy; the old array becomes garbage the next sweep
+        // reclaims (nothing to unregister, nothing to free by hand).
         fun _grow(mut this, new_cap: u64) {
-            let bytes: u64 = new_cap * this.slot_size();
-            let new_buf: u64 = __builtin._malloc(bytes);
-            #__track_buffer(T, new_buf, new_cap, this.slot_size());
-            let i: mut u64 = 0;
-            while (i < this.len) {
-                #__store(T, new_buf + i * this.slot_size(), #__load(T, this.buf + i * this.slot_size()));
-                i = i + 1;
-            }
-            if (this.buf != 0) {
-                __builtin._gc_scan_remove(this.buf);
-                __builtin._mfree(this.buf);
-            }
+            let new_buf: mut array<T> = __builtin.__array_new<T>(new_cap);
+            __builtin.__array_copy_range<T>(new_buf, this.buf, this.len);
             this.buf = new_buf;
             this.cap = new_cap;
         }
@@ -120,7 +95,7 @@ namespace _utils {
                 let new_cap: u64 = if (this.cap == 0) { 8 } else { this.cap * 2 };
                 this._grow(new_cap);
             }
-            #__store(T, this.slot_addr(this.len), value);
+            __builtin.__array_set<T>(this.buf, this.len, value);
             this.len = this.len + 1;
         }
 
@@ -128,14 +103,14 @@ namespace _utils {
             if (index >= this.len) {
                 return new __builtin.Option<T>.none();
             }
-            return new __builtin.Option<T>.some(#__load(T, this.slot_addr(index)));
+            return new __builtin.Option<T>.some(__builtin.__array_get<T>(this.buf, index));
         }
 
         fun set(mut this, index: u64, value: T) {
             if (index >= this.len) {
                 return;
             }
-            #__store(T, this.slot_addr(index), value);
+            __builtin.__array_set<T>(this.buf, index, value);
         }
 
         fun pop(mut this) -> __builtin.Option<T> {
@@ -143,7 +118,7 @@ namespace _utils {
                 return new __builtin.Option<T>.none();
             }
             this.len = this.len - 1;
-            return new __builtin.Option<T>.some(#__load(T, this.slot_addr(this.len)));
+            return new __builtin.Option<T>.some(__builtin.__array_get<T>(this.buf, this.len));
         }
 
         // Shift [index+1, len) left one slot, then shrink. Same observable
@@ -154,7 +129,7 @@ namespace _utils {
             }
             let i: mut u64 = index;
             while (i + 1 < this.len) {
-                #__store(T, this.slot_addr(i), #__load(T, this.slot_addr(i + 1)));
+                __builtin.__array_set<T>(this.buf, i, __builtin.__array_get<T>(this.buf, i + 1));
                 i = i + 1;
             }
             this.len = this.len - 1;
@@ -170,14 +145,6 @@ namespace _utils {
 
         fun iter_mut(this) -> mut _ListIterator<T> {
             return new _ListIterator<T>(this);
-        }
-
-        fun dispose_mem(mut this) {
-            if (this.buf != 0) {
-                __builtin._gc_scan_remove(this.buf);
-                __builtin._mfree(this.buf);
-                this.buf = 0;
-            }
         }
     }
 
@@ -254,10 +221,11 @@ namespace _utils {
 
     // Iterator over List<T>. It holds a reference to the List and re-reads
     // buf/len on every next() rather than snapshotting them, on purpose:
-    //  - the GC traces iterator -> list -> scan region, so iterating a
-    //    temporary list (e.g. `for (x in f())`) keeps its buffer alive;
-    //  - a push() during iteration may reallocate the buffer — the fresh
-    //    buf is picked up instead of dereferencing a freed snapshot;
+    //  - the GC traces iterator -> list -> element array (REFARR), so
+    //    iterating a temporary list (e.g. `for (x in f())`) keeps its
+    //    storage alive;
+    //  - a push() during iteration may swap in a fresh, larger array — the
+    //    fresh buf is picked up instead of reading a stale reference;
     //  - len is re-read, so elements appended or popped during iteration
     //    are seen/hidden exactly as they were with the linked list.
     #template(T: type)
@@ -275,7 +243,7 @@ namespace _utils {
             if (this.cursor >= this.list.len) {
                 return new __builtin.Option<T>.none();
             }
-            let result: T = #__load(T, this.list.slot_addr(this.cursor));
+            let result: T = __builtin.__array_get<T>(this.list.buf, this.cursor);
             this.cursor = this.cursor + 1;
             return new __builtin.Option<T>.some(result);
         }

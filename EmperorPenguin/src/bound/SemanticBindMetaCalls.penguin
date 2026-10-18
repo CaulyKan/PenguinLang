@@ -1,10 +1,9 @@
 // Pass 8 (phase 3 of 3) of the SemanticModel pipeline, extracted from
 // SemanticModel.penguin: META CALL binding. This pass binds compile-time #fun
 // invocations (argument binding + JIT evaluation + result splicing), the
-// #sizeof / #__address_of / #__load / #__store pointer intrinsics, meta
-// argument/value evaluation, deferred type-arg handling, the unique-name
-// trampoline and template-instantiation routing. After this split
-// SemanticModel.penguin holds only the shared core.
+// #sizeof compile-time intrinsic, meta argument/value evaluation, deferred
+// type-arg handling, the unique-name trampoline and template-instantiation
+// routing. After this split SemanticModel.penguin holds only the shared core.
 namespace emperor {
 
 class BindMetaCallsPass {
@@ -19,16 +18,12 @@ class BindMetaCallsPass {
 
     fun bind_meta_call(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         _utils.trace_enter("Enter bind_meta_call");
-        // Compile-time / runtime pointer intrinsics — dispatched before the #fun
-        // probe so they never enter the meta-JIT path. #sizeof splices an integer
-        // literal (BoundType.byte_size); #__address_of/#__load/#__store lower to
-        // runtime IR via a synthetic BoundFunctionCallExpression whose callee
-        // full_name is a reserved <intrinsic>.* token matched in IRGenerator.
+        // Compile-time intrinsic — dispatched before the #fun probe so it never
+        // enters the meta-JIT path. #sizeof splices an integer literal
+        // (BoundType.byte_size). The raw pointer intrinsics
+        // (#__address_of/#__load/#__store/#__track_buffer) are RETIRED with
+        // the native-arrays round; #sizeof stays.
         if (expr.func_name == "sizeof") { return this.bind_sizeof_intrinsic(expr, scope); }
-        if (expr.func_name == "__address_of") { return this.bind_address_of_intrinsic(expr, scope); }
-        if (expr.func_name == "__load") { return this.bind_load_intrinsic(expr, scope); }
-        if (expr.func_name == "__store") { return this.bind_store_intrinsic(expr, scope); }
-        if (expr.func_name == "__track_buffer") { return this.bind_track_buffer_intrinsic(expr, scope); }
         // #compiler() is only meaningful inside a #fun body, where MetaEngine
         // rewrites it to `new emperor.CompilerContext()` before unit B compiles.
         // A stray call in unit A (normal source) reaches here — report a clear
@@ -477,11 +472,6 @@ class BindMetaCallsPass {
     }
 
 
-    fun make_intrinsic_symbol(this, full_name: string) -> BoundFunctionSymbol {
-        return new BoundFunctionSymbol(full_name, full_name);
-    }
-
-
     // #sizeof(T) -> i64 integer literal = T.byte_size() (compile-time).
     fun bind_sizeof_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
         if (cast<i64>(expr.arguments.size()) < 1) {
@@ -509,109 +499,6 @@ class BindMetaCallsPass {
         let i64_bt: BoundType = this.model.some.type_registry.resolve_type("i64").some;
         let lit: BoundLiteralExpression = new BoundLiteralExpression(cast<string>(sz), i64_bt, new LiteralKind.IntegerLiteral());
         return new Option<BoundExpression>.some(new BoundExpression.literal(lit));
-    }
-
-
-    // #__track_buffer(T, addr, count, stride) -> void (GC v2 3b).
-    // Registers a malloc'd element buffer with its PRECISE element layout so
-    // a minor collection can rewrite young references in place (the legacy
-    // _gc_scan_add byte-region only pins). The element type rides in the
-    // call's generic arguments — IRGenerator copies it into the synthetic
-    // callee token, the LLVM emitter turns it into the map operand; element
-    // types with no reference payload compile to nothing at all.
-    fun bind_track_buffer_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        if (cast<i64>(expr.arguments.size()) < 4) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__track_buffer expects a type, an address, a count, and a stride", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
-        let type_specs: _utils.List<TypeSpecifier> = this.meta_type_arg_generic_specs(expr.arguments.at(cast<u64>(0)).some);
-        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype_ge(type_name, type_specs, scope);
-        if (elem_bt_opt.is_none()) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__track_buffer: unknown type '" + type_name + "'", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let addr_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
-        let count_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(2)).some, scope);
-        let stride_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(3)).some, scope);
-        if (addr_opt.is_none() || count_opt.is_none() || stride_opt.is_none()) {
-            return new Option<BoundExpression>.none();
-        }
-        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
-        args.push(addr_opt.some);
-        args.push(count_opt.some);
-        args.push(stride_opt.some);
-        let generics: mut _utils.List<BoundType> = new _utils.List<BoundType>();
-        generics.push(elem_bt_opt.some);
-        let void_bt: BoundType = new BoundType();
-        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.track_buffer");
-        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(void_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, generics, false);
-        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
-    }
-
-    // #__address_of(x) -> u64 ; runtime intrinsic -> ADDRESS_OF IR.
-    fun bind_address_of_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        if (cast<i64>(expr.arguments.size()) != 1) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__address_of expects 1 argument", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let arg_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(0)).some, scope);
-        if (arg_opt.is_none()) { return new Option<BoundExpression>.none(); }
-        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
-        args.push(arg_opt.some);
-        let u64_bt: BoundType = this.model.some.type_registry.resolve_type("u64").some;
-        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.address_of");
-        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(u64_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
-        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
-    }
-
-
-    // #__load(T, addr) -> T ; runtime intrinsic -> LOAD_PTR IR.
-    fun bind_load_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        if (cast<i64>(expr.arguments.size()) < 2) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load expects a type and an address", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
-        let load_type_specs: _utils.List<TypeSpecifier> = this.meta_type_arg_generic_specs(expr.arguments.at(cast<u64>(0)).some);
-        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype_ge(type_name, load_type_specs, scope);
-        if (elem_bt_opt.is_none()) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__load: unknown type '" + type_name + "'", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let addr_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
-        if (addr_opt.is_none()) { return new Option<BoundExpression>.none(); }
-        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
-        args.push(addr_opt.some);
-        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.load");
-        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(elem_bt_opt.some, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
-        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
-    }
-
-
-    // #__store(T, addr, v) ; runtime intrinsic -> STORE_PTR IR.
-    fun bind_store_intrinsic(mut this, expr: MetaCallExpression, scope: mut BoundScope) -> Option<BoundExpression> {
-        if (cast<i64>(expr.arguments.size()) < 3) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store expects a type, an address, and a value", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let type_name: string = this.meta_type_arg_name(expr.arguments.at(cast<u64>(0)).some);
-        let store_type_specs: _utils.List<TypeSpecifier> = this.meta_type_arg_generic_specs(expr.arguments.at(cast<u64>(0)).some);
-        let elem_bt_opt: Option<BoundType> = this.resolve_intrinsic_boundtype_ge(type_name, store_type_specs, scope);
-        if (elem_bt_opt.is_none()) {
-            this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "#__store: unknown type '" + type_name + "'", expr.location);
-            return new Option<BoundExpression>.none();
-        }
-        let addr_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(1)).some, scope);
-        let val_opt: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(expr.arguments.at(cast<u64>(2)).some, scope);
-        if (addr_opt.is_none() || val_opt.is_none()) { return new Option<BoundExpression>.none(); }
-        let args: mut _utils.List<BoundExpression> = new _utils.List<BoundExpression>();
-        args.push(addr_opt.some);
-        args.push(val_opt.some);
-        let void_bt: BoundType = new BoundType();
-        let sym: BoundFunctionSymbol = this.make_intrinsic_symbol("<intrinsic>.store");
-        let fc: BoundFunctionCallExpression = new BoundFunctionCallExpression(void_bt, new Option<BoundExpression>.none(), new Option<BoundSymbol>.some(new BoundSymbol.function_sym(sym)), args, false, new _utils.List<BoundType>(), false);
-        return new Option<BoundExpression>.some(new BoundExpression.function_call(fc));
     }
 
 

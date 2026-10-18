@@ -9,9 +9,9 @@
  *  - explicit collect + threshold-triggered collect both behave.
  *
  * Build (from EmperorPenguin/std/c):
- *   clang -I../include -g -fsanitize=address -o /tmp/gc_torture gc_torture.c gc.c gc_span.c scheduler.c
- * (scheduler.c provides the per-thread interop accessors;
- *  pull core_builtin.c too if the link demands it.)
+ *   clang -I../include -g -fsanitize=address -o /tmp/gc_torture gc_torture.c gc.c gc_span.c core_builtin.c scheduler.c
+ * (scheduler.c provides the per-thread interop accessors; core_builtin.c
+ *  provides _emperor_array_create.)
  *
  * The exact managed-byte DELTA assertions below are only meaningful when no
  * stale pointer to the object under test survives in a SCANNED word: the
@@ -45,6 +45,9 @@
 /* gc_span.c introspection (gc_internal.h — kept out of the public header
  * on purpose; the torture TU declares just what it reads). */
 extern uint64_t _emperor_gc_gt_stats(int which);
+/* core_builtin.c: native-array allocation (elements zero-filled, header
+ * stamped). */
+extern void* _emperor_array_create(EmperorClassMetadata* meta, int64_t count, int64_t stride);
 
 typedef struct Node {
     const void* meta;     /* runtime contract: offset 0 is metadata-or-NULL
@@ -97,10 +100,14 @@ static const int32_t M_OUTER[] = {11, 1, 2, 8, 7, 32, -1, 1, 1, 8, -1};
 /* ENUM n=3 (tags 0,1,2): tag1 -> bare-ptr payload node@6, tag2 -> inline
  * TInner payload node@10 (ptr at payload+8). */
 static const int32_t M_SHAPE[] = {14, 2, 3, 0, 6, 10, 1, 1, 0, -1, 1, 1, 8, -1};
+/* REFARR for a pointer-element native array (stride 8): root@1 = REFARR
+ * (kind 3, stride 8, elem node@4); node@4 = SLOTS with one bare ptr @0. */
+static const int32_t M_ARR[] = {8, 3, 8, 4, 1, 1, 0, -1};
 
-static const EmperorClassMetadata META_INNER = {"TInner", 16, 0, NULL, NULL, NULL, 0, NULL, NULL, M_INNER};
-static const EmperorClassMetadata META_OUTER = {"TOuter", 40, 0, NULL, NULL, NULL, 0, NULL, NULL, M_OUTER};
-static const EmperorClassMetadata META_SHAPE = {"TShape", 40, 0, NULL, NULL, NULL, 0, NULL, NULL, M_SHAPE};
+static const EmperorClassMetadata META_INNER = {"TInner", 16, 0, NULL, NULL, NULL, 0, NULL, M_INNER};
+static const EmperorClassMetadata META_OUTER = {"TOuter", 40, 0, NULL, NULL, NULL, 0, NULL, M_OUTER};
+static const EmperorClassMetadata META_SHAPE = {"TShape", 40, 0, NULL, NULL, NULL, 0, NULL, M_SHAPE};
+static const EmperorClassMetadata META_ARR = {"TArr", 0, 0, NULL, NULL, NULL, 0, NULL, M_ARR};
 
 /* Zero the dead-frame region below the caller RECURSIVELY: each level's
  * buffer covers the previous level's frame header and alignment slivers
@@ -327,20 +334,6 @@ static uint64_t kept_checksum(void) {
     return s;
 }
 
-/* ---- Finalizer-observable objects ----
- * A destructor-stamped metadata class shared by the correctness sections
- * and the finstorm benchmark. Handles live in GLOBAL roots and file
- * statics (never live-stack locals): the explicit collect's conservative
- * cover would pin anything the active frames still reference, and the
- * exact-delta assertions must not depend on frame layout. */
-
-static int g_dispose_ran = 0;
-
-static void torture_dispose(void* p) { (void)p; g_dispose_ran++; }
-
-static const EmperorClassMetadata META_DISPOSE = {
-    "TDispose", 40, 0, NULL, NULL, NULL, 0, NULL, torture_dispose, NULL};
-
 /* Every case's SETUP runs in its own function: its frame dies on return and
  * scrub() erases the register/stack residue of the young pointers, so the
  * explicit collect's conservative cover cannot pin the objects these tests
@@ -358,11 +351,11 @@ static const EmperorClassMetadata META_DISPOSE = {
 /* ---- Green-tea span heap section ----
  * Covers the span/malloc-path split at the 512B slot boundary: a mixed
  * small<->large graph (span slot <-> malloc block, both directions) must
- * survive churn + explicit collects byte-exact; dead span slots run their
- * finalizers exactly once; and dropping the graph returns gc_info EXACTLY
- * to the pre-section baseline (dead spans reclaimed wholesale, no slot
- * leakage). Exact deltas hold because span slots are charged by size
- * class via _emperor_gc_alloc_charge. */
+ * survive churn + explicit collects byte-exact; dead span slots are
+ * reclaimed; and dropping the graph returns gc_info EXACTLY to the
+ * pre-section baseline (dead spans reclaimed wholesale, no slot leakage).
+ * Exact deltas hold because span slots are charged by size class via
+ * _emperor_gc_alloc_charge. */
 typedef struct GtSmallNode {
     const void* meta;         /* NULL: conservative body scan, like Node */
     struct GtBigNode* big;    /* span -> malloc edge (600B body: large)   */
@@ -374,7 +367,6 @@ typedef struct GtBigNode {
     uint64_t v[73];           /* 592B body -> malloc (large) path        */
 } GtBigNode;
 
-static int gt_dispose_ran = 0;
 typedef struct BnNode {
     const void* meta;         /* NULL: conservative body scan, like Node */
     struct BnNode* next;
@@ -386,10 +378,6 @@ static uint64_t bench_next(void) {
     bench_rng ^= bench_rng << 13; bench_rng ^= bench_rng >> 7; bench_rng ^= bench_rng << 17;
     return bench_rng;
 }
-
-static void gt_dispose(void* p) { (void)p; gt_dispose_ran++; }
-static const EmperorClassMetadata META_GT_DISPOSE = {
-    "GtDispose", 40, 0, NULL, NULL, NULL, 0, NULL, gt_dispose, NULL};
 
 static int greentea_section(void) {
     scrub();
@@ -425,18 +413,30 @@ static int greentea_section(void) {
         return 1;
     }
 
-    /* Finalizers: dead span slots run dispose exactly once each. */
-    gt_dispose_ran = 0;
-    for (int i = 0; i < 5000; i++) {
-        void* d = _emperor_gc_alloc(40, 0);
-        *(EmperorClassMetadata**)d = (EmperorClassMetadata*)&META_GT_DISPOSE;
-    }
-    scrub();
-    CLEAR_CALLEE_SAVED();
-    _emperor_gc_collect();
-    if (gt_dispose_ran != 5000) {
-        fprintf(stderr, "FAIL gt: finalizer count %d != 5000\n", gt_dispose_ran);
-        return 1;
+    /* Dead span slots reclaimed wholesale: 5000 short-lived objects stamped
+     * with real metadata; after scrub+collect the managed figure must return
+     * EXACTLY to the pre-burst level (not one slot retained). The baseline
+     * is taken after its own scrub+collect — the mixed-graph churn above can
+     * leave conservatively retained garbage that this section's collect
+     * would legitimately drop (breaking an exact-equality assert). */
+    {
+        scrub();
+        CLEAR_CALLEE_SAVED();
+        _emperor_gc_collect();
+        uint64_t before_d = _emperor_gc_info();
+        for (int i = 0; i < 5000; i++) {
+            void* d = _emperor_gc_alloc(40, 0);
+            *(const EmperorClassMetadata**)d = &META_SHAPE;
+        }
+        scrub();
+        CLEAR_CALLEE_SAVED();
+        _emperor_gc_collect();
+        if (_emperor_gc_info() != before_d) {
+            fprintf(stderr, "FAIL gt: dead span slots leaked (%llu -> %llu)\n",
+                    (unsigned long long)before_d,
+                    (unsigned long long)_emperor_gc_info());
+            return 1;
+        }
     }
 
     /* Queue wrap+grow regression: PAIRED graph — nodes are allocated in
@@ -456,9 +456,14 @@ static int greentea_section(void) {
      * passed its first 256 growth). */
     {
         enum { WPAIRS = 100000, WSEED = 64 };
-        static void** wseed; /* typed buffer seeding the first pairs */
-        wseed = (void**)calloc(WSEED, sizeof(void*));
-        _emperor_gc_track_buffer(wseed, WSEED, 8, _emperor_gc_bare_refmap);
+        /* Native pointer-element array (REFARR ref-map) seeds the first
+         * pairs: the array is itself a GC object walked precisely by the
+         * collector (this used to be a #_track_buffer'd malloc buffer —
+         * the typed-region registry is retired). */
+        static void* wseed_obj;
+        wseed_obj = _emperor_array_create((EmperorClassMetadata*)&META_ARR, WSEED, 8);
+        void** wseed = (void**)((char*)wseed_obj + 16); /* elements @+16 */
+        _emperor_gc_add_root(&wseed_obj);
         BnNode** all = (BnNode**)malloc((size_t)WPAIRS * 2 * sizeof(BnNode*));
         for (int i = 0; i < WPAIRS * 2; i++) {
             /* 88B body: word0 metadata(NULL), word1 stamp, words2..5 edges,
@@ -492,8 +497,8 @@ static int greentea_section(void) {
                 }
             }
         }
-        _emperor_gc_untrack_buffer(wseed);
-        free(wseed);
+        _emperor_gc_remove_root(&wseed_obj);
+        wseed_obj = NULL;
         free(all);
     }
 
@@ -510,13 +515,21 @@ static int greentea_section(void) {
     CLEAR_CALLEE_SAVED();
     _emperor_gc_collect();
     uint64_t after = _emperor_gc_info();
-    if (after != before) {
-        fprintf(stderr, "FAIL gt: post-drop managed %llu != baseline %llu "
-                "(span slot leak?)\n",
-                (unsigned long long)after, (unsigned long long)before);
+    /* One-directional: after > before means dead span slots were NOT
+     * reclaimed (leak). A small NEGATIVE delta is the conservative cover's
+     * legitimate churn — objects pinned at baseline-time by stale words of
+     * THIS section's live frames get released once those words are
+     * overwritten (observed -64..-128 depending on frame layout). */
+    if (after > before) {
+        uint64_t ob = 0, yb = 0;
+        _emperor_gc_info_split(&ob, &yb);
+        fprintf(stderr, "FAIL gt: post-drop managed %llu > baseline %llu "
+                "(span slot leak?) [malloc=%llu span=%llu]\n",
+                (unsigned long long)after, (unsigned long long)before,
+                (unsigned long long)ob, (unsigned long long)yb);
         return 1;
     }
-    printf("greentea section: span/malloc graph, finalizers, wholesale reclaim all pass\n");
+    printf("greentea section: span/malloc graph, dead-slot reclaim, wholesale reclaim all pass\n");
     printf("greentea stats: cycles=%llu wholesale=%llu rep=%llu live=%llu goal=%llu "
            "full=%llu partial=%llu empty=%llu supers=%llu\n",
            (unsigned long long)_emperor_gc_gt_stats(7),
@@ -541,9 +554,8 @@ static int greentea_section(void) {
  *
  *   churn       — infant-mortality churn
  *   ptrdense    — pointer-dense: persistent linked graph + relink churn
- *   container   — typed-region (container buffer) element churn
+ *   container   — native-array (REFARR) element churn
  *   deepsurvive — deep survival: a growing persistent forest + churn
- *   finstorm    — finalizer storm: destructor-stamped objects dying in waves
  *   mixed512    — bodies straddling the 512B span cutoff (200..600)
  */
 static BnNode* pd_head = NULL;
@@ -600,28 +612,29 @@ static int bench_ptrdense(void) {
 
 #define CT_BUFS 32
 #define CT_ELEMS 64
+/* Container churn over NATIVE ARRAYS (the REFARR path): rooted
+ * pointer-element arrays whose slots are rewritten at high frequency —
+ * every collection walks exactly the declared element reference slots. */
 static int bench_container(void) {
-    void*** bufs = (void***)malloc(CT_BUFS * sizeof(void**));
-    if (!bufs) return 1;
+    static void* arrs[CT_BUFS];
     for (int b = 0; b < CT_BUFS; b++) {
-        bufs[b] = (void**)calloc(CT_ELEMS, sizeof(void*));
-        if (!bufs[b]) return 1;
-        _emperor_gc_track_buffer(bufs[b], CT_ELEMS, 8, _emperor_gc_bare_refmap);
+        arrs[b] = _emperor_array_create((EmperorClassMetadata*)&META_ARR, CT_ELEMS, 8);
+        if (!arrs[b]) return 1;
+        _emperor_gc_add_root(&arrs[b]);
     }
     for (int i = 0; i < 1500000; i++) {
         int b = (int)(bench_next() % CT_BUFS);
         int e = (int)(bench_next() % CT_ELEMS);
         char* s = (char*)_emperor_gc_alloc(24 + (int)(bench_next() & 24), 1);
         s[0] = (char)('a' + (i & 25)); s[1] = '\0';
-        bufs[b][e] = s;
+        ((void**)((char*)arrs[b] + 16))[e] = s;
         _emperor_gc_poll();
         if ((i & 131071) == 0) _emperor_gc_collect();
     }
     for (int b = 0; b < CT_BUFS; b++) {
-        _emperor_gc_untrack_buffer(bufs[b]);
-        free(bufs[b]);
+        _emperor_gc_remove_root(&arrs[b]);
+        arrs[b] = NULL;
     }
-    free(bufs);
     printf("bench container done\n");
     return 0;
 }
@@ -654,23 +667,6 @@ static int bench_deepsurvive(void) {
     return 0;
 }
 
-static int bench_finstorm(void) {
-    for (int r = 0; r < 60; r++) {
-        for (int i = 0; i < 20000; i++) {
-            void* d = _emperor_gc_alloc(40, 0);
-            *(EmperorClassMetadata**)d = (EmperorClassMetadata*)&META_DISPOSE;
-            _emperor_gc_poll();
-        }
-        _emperor_gc_collect();
-        if (g_dispose_ran == 0) {
-            fprintf(stderr, "bench finstorm: no finalizers ran\n");
-            return 1;
-        }
-    }
-    printf("bench finstorm done\n");
-    return 0;
-}
-
 static int bench_mixed512(void) {
     for (int r = 0; r < 32; r++) _emperor_gc_add_root((void**)&mx_ring[r]);
     for (int i = 0; i < 1000000; i++) {
@@ -688,7 +684,7 @@ static int bench_mixed512(void) {
 }
 
 static const char* _WORKLOADS[] = {
-    "churn", "ptrdense", "container", "deepsurvive", "finstorm", "mixed512", NULL
+    "churn", "ptrdense", "container", "deepsurvive", "mixed512", NULL
 };
 
 static int bench_dispatch(const char* name) {
@@ -696,7 +692,6 @@ static int bench_dispatch(const char* name) {
     if (strcmp(name, "ptrdense") == 0) return bench_ptrdense();
     if (strcmp(name, "container") == 0) return bench_container();
     if (strcmp(name, "deepsurvive") == 0) return bench_deepsurvive();
-    if (strcmp(name, "finstorm") == 0) return bench_finstorm();
     if (strcmp(name, "mixed512") == 0) return bench_mixed512();
     fprintf(stderr, "unknown workload '%s' (valid:", name);
     for (int i = 0; _WORKLOADS[i]; i++) fprintf(stderr, " %s", _WORKLOADS[i]);
@@ -788,7 +783,8 @@ int main(int argc, char** argv) {
      * intact (partial-survival / index-compaction probe). The dropped node's
      * offset-0 word is cleared first: non-string blocks carry an
      * EmperorClassMetadata* (or NULL) at offset 0 by runtime contract —
-     * leaving a Node* there would make the finalizer read it as metadata. */
+     * leaving a Node* there would make a precise body scan misread it as
+     * metadata. */
     Node* new_head = (Node*)kept_head->next;
     uint64_t head0 = new_head->payload[0];
     ((Node*)kept_head)->next = NULL;

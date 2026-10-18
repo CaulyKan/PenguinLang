@@ -1,6 +1,6 @@
 # DocumentSymbol
 ## Description
-textDocument/documentSymbol e2e against the prebuilt LSP server: the document's namespace member tree comes back as DocumentSymbol[] — class Greeter (kind 5) with field name (8) and method greet (6), enum Color (10) with members Red/Green (22) at their own declaration sites (enum member symbols carry real locations since the parser/binder started populating them — variants used to resolve to the enum's location), free function hello (12). The user namespace node itself is spliced away (EP bound namespaces carry no location); stdlib defs are filtered by location filename. Byte-exact via the MATCH mode (LSP frame headers contain CR bytes; Content-Length counts wildcarded as \d+). Server built by 'make lsp'.
+textDocument/documentSymbol e2e against the prebuilt LSP server: the document's namespace member tree comes back as array<DocumentSymbol> — class Greeter (kind 5) with field name (8) and method greet (6), enum Color (10) with members Red/Green (22) at their own declaration sites (enum member symbols carry real locations since the parser/binder started populating them — variants used to resolve to the enum's location), free function hello (12). The user namespace node itself is spliced away (EP bound namespaces carry no location); stdlib defs are filtered by location filename. Byte-exact via the MATCH mode (LSP frame headers contain CR bytes; Content-Length counts wildcarded as \d+). Server built by 'make lsp'.
 
 ## Apply To
 * Prebuilt

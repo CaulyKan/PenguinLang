@@ -1864,11 +1864,27 @@ namespace BabyPenguin.SemanticInterface
                     break;
                 case FunctionCallExpression exp:
                     {
+                        if (TryGetArrayCallReturnType(exp) is IType arrayRet)
+                            return arrayRet;
                         var funcType = ResolveExpressionType(exp.Callee!);
                         return funcType.GenericArguments.First();
                     }
                 case MemberAccessExpression exp:
                     {
+                        // Array magic member (a.at / a.set / a.size / a.iter /
+                        // a.iter_mut): resolve through the specialized
+                        // __builtin.__ArrayBuiltin<Elem> class before the
+                        // generic member path (arrays declare no members).
+                        if (exp.Member?.Name is "at" or "set" or "size" or "iter" or "iter_mut")
+                        {
+                            var arrayBaseType = TryResolveExpressionTypeQuiet(exp.BaseExpression!);
+                            if (ArrayElementOf(arrayBaseType) is { } arrayElemInfo)
+                            {
+                                var arrayMethodSym = ResolveArrayBuiltinMethod(arrayElemInfo.elemNode, exp.Member.Name, exp.SourceLocation, exp);
+                                return arrayMethodSym.TypeInfo;
+                            }
+                        }
+
                         // First check if the full expression is a type reference (e.g., Namespace.NestedType)
                         var fullType = Model.ResolveType(exp.Text, scope: this);
                         if (fullType != null)
@@ -2423,8 +2439,344 @@ namespace BabyPenguin.SemanticInterface
             }
         }
 
+        // ===================== Native array binding layer =====================
+        //
+        // `T[]` element access goes through MAGIC METHODS (at/set/size/iter/
+        // iter_mut) that have no penguin declaration on the array type itself.
+        // The binding layer intercepts three call shapes:
+        //   1. compiler-known intrinsics `__builtin.__array_new/get/set/len/
+        //      fill/copy_range(...)` — lowered directly to semantic array
+        //      instructions (no symbol exists; only stdlib internals call them)
+        //   2. member calls on an array receiver `a.at(i)/a.set(i,v)/a.size()/
+        //      a.iter()/a.iter_mut()` — routed to the mirrored stdlib class
+        //      `__builtin.__ArrayBuiltin<T>` (bounds checks live in penguin source)
+        //   3. array constructors `create_array(len, fill)` / `create_array_with(
+        //      len, f)` — routed to `__ArrayBuiltin<T>.create/create_with`; the
+        //      element type comes from the assignment target's annotation
+
+        private string? MatchArrayIntrinsicName(string text)
+        {
+            var t = text.StartsWith("__builtin.") ? text["__builtin.".Length..] : text;
+            if (!t.StartsWith("__array_"))
+                return null;
+            var op = t["__array_".Length..];
+            return op is "new" or "get" or "set" or "len" or "fill" or "copy_range"
+                ? $"__builtin.__array_{op}"
+                : null;
+        }
+
+        private static bool IsArrayCtorName(string text)
+            => text is "create_array" or "create_array_with"
+                || text is "__builtin.create_array" or "__builtin.create_array_with";
+
+        private static (ITypeNode elemNode, IType elemImmutable)? ArrayElementOf(IType? type)
+        {
+            if (type != null && type.Type == TypeEnum.Array && type.TypeNode is ArrayTypeNode an)
+                return (an.ElementNode, an.ElementNode.ToType(Mutability.Immutable));
+            return null;
+        }
+
+        /// <summary>Resolve the specialized `__builtin.__ArrayBuiltin&lt;Elem&gt;` class node.</summary>
+        private IClassNode? ResolveArrayBuiltinClass(ITypeNode elemNode)
+        {
+            return Model.ResolveTypeNode($"__builtin.__ArrayBuiltin<{elemNode.FullName()}>") as IClassNode;
+        }
+
+        private ISymbol ResolveArrayBuiltinMethod(ITypeNode elemNode, string methodName, SourceLocation location, ISyntaxExpression callSite)
+        {
+            var opsClass = ResolveArrayBuiltinClass(elemNode)
+                ?? throw new BabyPenguinException($"Cant resolve builtin array operations class '__builtin.__ArrayBuiltin<{elemNode.FullName()}>'", location, code: ErrorCode.E_BUILTIN_MISSING);
+            var method = Model.ResolveShortSymbol(methodName, s => s.IsFunction, scope: opsClass)
+                ?? throw new BabyPenguinException($"Cant resolve array method '{methodName}' on __builtin.__ArrayBuiltin<{elemNode.FullName()}>", location, code: ErrorCode.E_RESOLVE_SYMBOL);
+            return method;
+        }
+
+        /// <summary>
+        /// Entry check for the array binding layer: does this call expression
+        /// need array-specific lowering? (intrinsic name / array-receiver
+        /// member call / create_array(_with)).
+        /// </summary>
+        private bool IsArrayBoundCall(FunctionCallExpression exp)
+        {
+            if (exp.Callee is PrimaryExpression pe && pe.IsSimple && (MatchArrayIntrinsicName(pe.Text) != null || IsArrayCtorName(pe.Text)))
+                return true;
+            if (exp.Callee is MemberAccessExpression ma)
+            {
+                if (MatchArrayIntrinsicName(ma.Text) != null || IsArrayCtorName(ma.Text))
+                    return true;
+                if (ma.Member?.Name is "at" or "set" or "size" or "iter" or "iter_mut")
+                {
+                    var baseType = TryResolveExpressionTypeQuiet(ma.BaseExpression!);
+                    return baseType?.Type == TypeEnum.Array;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>ResolveExpressionType that returns null instead of throwing
+        /// (used to sniff array receivers without polluting diagnostics).</summary>
+        private IType? TryResolveExpressionTypeQuiet(ISyntaxExpression expression)
+        {
+            try
+            {
+                return ResolveExpressionType(expression);
+            }
+            catch (BabyPenguinException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Lower an array-bound call. Returns the result symbol, or null when
+        /// the shape turned out not to be array-related after deeper
+        /// inspection (caller falls back to the generic path).
+        /// </summary>
+        private ISymbol? AddArrayCallExpression(FunctionCallExpression exp, bool isVariableInitialize, ISymbol? targetSymbol)
+        {
+            var loc = exp.SourceLocation;
+
+            // --- 1. compiler-known intrinsics ---
+            string? intrinsic = null;
+            if (exp.Callee is PrimaryExpression pe && pe.IsSimple)
+                intrinsic = MatchArrayIntrinsicName(pe.Text);
+            else if (exp.Callee is MemberAccessExpression ma0)
+                intrinsic = MatchArrayIntrinsicName(ma0.Text);
+            if (intrinsic != null)
+            {
+                return AddArrayIntrinsicCall(intrinsic, exp, targetSymbol);
+            }
+
+            if (exp.Callee is MemberAccessExpression ma)
+            {
+                // --- 2. member call on array receiver ---
+                var baseType = TryResolveExpressionTypeQuiet(ma.BaseExpression!);
+                if (baseType?.Type == TypeEnum.Array && ArrayElementOf(baseType) is { } elemInfo)
+                {
+                    var methodName = ma.Member!.Name;
+                    // set/iter_mut are the WRITE paths of the array magic
+                    // surface: an immutable receiver is a mutability
+                    // violation (the mut-this method rule). at/size/iter
+                    // are read-only and fine on any binding.
+                    if (methodName is "set" or "iter_mut" && baseType.IsMutable == Mutability.Immutable)
+                        throw new BabyPenguinException(
+                            $"Cannot call '{methodName}' on an immutable array binding: writing to a native array requires a mut reference (at/size/iter work on any binding)",
+                            loc, code: ErrorCode.E_TYPE_MISMATCH);
+                    var methodSym = ResolveArrayBuiltinMethod(elemInfo.elemNode, methodName, loc, exp);
+                    var argSyms = new List<ISymbol> { AddExpression(ma.BaseExpression!, false) };
+                    argSyms.AddRange(exp.ArgumentsExpression.Select(a => AddExpression(a, false)));
+                    var converted = convertParamsForSymbol(methodSym, argSyms, loc);
+                    var to = targetSymbol ?? AllocTempSymbol(ResolveExpressionType(exp), loc);
+                    AddInstruction(new FunctionCallInstruction(loc, methodSym, converted, to));
+                    return to;
+                }
+
+                // --- 3a. qualified constructors `__builtin.create_array(...)` ---
+                if (IsArrayCtorName(ma.Text))
+                    return AddArrayCtorCall(exp, ma.Text.Split('.')[^1], targetSymbol);
+                return null;
+            }
+
+            // --- 3b. bare constructors `create_array(...)` ---
+            if (exp.Callee is PrimaryExpression pe2 && pe2.IsSimple && IsArrayCtorName(pe2.Text))
+                return AddArrayCtorCall(exp, pe2.Text.Split('.')[^1], targetSymbol);
+
+            return null;
+        }
+
+        private List<ISymbol> convertParamsForSymbol(ISymbol funcSym, List<ISymbol> paramVars, SourceLocation sourceLocation)
+        {
+            return convertParams(funcSym.TypeInfo, paramVars, sourceLocation);
+        }
+
+        /// <summary>
+        /// Convert call-site argument symbols to the callee's parameter types
+        /// (implicit casts insert a CastInstruction). Interface-level so the
+        /// array binding layer shares it with the generic call path.
+        /// </summary>
+        private List<ISymbol> convertParams(IType funcType, List<ISymbol> paramVars, SourceLocation sourceLocation)
+        {
+            if (!funcType.IsFunctionType)
+                throw new BabyPenguinException($"Function call expects function symbol, but got '{funcType}'", sourceLocation, code: ErrorCode.E_CALL_NOT_FUNCTION);
+
+            if (funcType.GenericArguments.Count - 1 != paramVars.Count)
+                throw new BabyPenguinException($"Function call expects {funcType.GenericArguments.Count - 1} parameters, but got {paramVars.Count}", sourceLocation, code: ErrorCode.E_CALL_ARITY);
+
+            return paramVars.Select((p, i) =>
+            {
+                var expectedParamType = funcType.GenericArguments.ElementAt(i + 1);
+                if (p.TypeNode?.FullName() != expectedParamType.TypeNode?.FullName())
+                {
+                    if (p.TypeInfo.CanImplicitlyCastTo(expectedParamType))
+                    {
+                        var casted = AllocTempSymbol(expectedParamType, sourceLocation);
+                        AddInstruction(new CastInstruction(sourceLocation, p, expectedParamType, casted));
+                        return casted;
+                    }
+                    else throw new BabyPenguinException($"Cant cast type '{p.TypeInfo}' to '{expectedParamType}'", sourceLocation, code: ErrorCode.E_CAST_INVALID);
+                }
+                else
+                    return p;
+            }).ToList();
+        }
+
+        private ISymbol AddArrayIntrinsicCall(string intrinsic, FunctionCallExpression exp, ISymbol? targetSymbol)
+        {
+            var loc = exp.SourceLocation;
+            var args = exp.ArgumentsExpression.Select(a => AddExpression(a, false)).ToList();
+            var op = intrinsic["__builtin.__array_".Length..];
+
+            switch (op)
+            {
+                case "new":
+                    {
+                        // element type comes from the assignment target
+                        var target = targetSymbol
+                            ?? throw new BabyPenguinException($"'__builtin.__array_new' requires a typed assignment target (e.g. `let a : mut T[] = ...`)", loc, code: ErrorCode.E_TYPE_INFERENCE);
+                        var elemInfo = ArrayElementOf(target.TypeInfo)
+                            ?? throw new BabyPenguinException($"Assignment target of '__builtin.__array_new' must be an array type, but got '{target.TypeInfo.FullName()}'", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        if (args.Count != 1)
+                            throw new BabyPenguinException($"'__builtin.__array_new' expects 1 argument (length), got {args.Count}", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        AddInstruction(new ArrayNewZeroedInstruction(loc, args[0], target.TypeInfo, target));
+                        return target;
+                    }
+                case "get":
+                    {
+                        if (args.Count != 2)
+                            throw new BabyPenguinException($"'__builtin.__array_get' expects 2 arguments (array, index), got {args.Count}", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        var elemInfo = ArrayElementOf(args[0].TypeInfo)
+                            ?? throw new BabyPenguinException($"First argument of '__builtin.__array_get' must be an array, but got '{args[0].TypeInfo.FullName()}'", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        var to = targetSymbol != null && targetSymbol.TypeInfo.TypeNode == elemInfo.elemNode
+                            ? targetSymbol
+                            : AllocTempSymbol(elemInfo.elemImmutable, loc);
+                        AddInstruction(new ArrayGetInstruction(loc, args[0], args[1], to));
+                        return to;
+                    }
+                case "set":
+                    {
+                        if (args.Count != 3)
+                            throw new BabyPenguinException($"'__builtin.__array_set' expects 3 arguments (array, index, value), got {args.Count}", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        var elemInfo = ArrayElementOf(args[0].TypeInfo)
+                            ?? throw new BabyPenguinException($"First argument of '__builtin.__array_set' must be an array, but got '{args[0].TypeInfo.FullName()}'", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        AddInstruction(new ArraySetInstruction(loc, args[0], args[1], args[2]));
+                        return args[2];
+                    }
+                case "len":
+                    {
+                        if (args.Count != 1)
+                            throw new BabyPenguinException($"'__builtin.__array_len' expects 1 argument (array), got {args.Count}", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        var to = targetSymbol?.TypeInfo.IsUnsignedIntType == true && targetSymbol.TypeInfo.Type == TypeEnum.U64
+                            ? targetSymbol
+                            : AllocTempSymbol(Model.BasicTypeNodes.U64.ToType(Mutability.Immutable), loc);
+                        AddInstruction(new ArrayLenInstruction(loc, args[0], to));
+                        return to;
+                    }
+                case "fill":
+                    {
+                        if (args.Count != 2)
+                            throw new BabyPenguinException($"'__builtin.__array_fill' expects 2 arguments (array, value), got {args.Count}", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        AddInstruction(new ArrayFillInstruction(loc, args[0], args[1]));
+                        return args[1];
+                    }
+                case "copy_range":
+                    {
+                        if (args.Count != 3)
+                            throw new BabyPenguinException($"'__builtin.__array_copy_range' expects 3 arguments (dst, src, count), got {args.Count}", loc, code: ErrorCode.E_TYPE_MISMATCH);
+                        AddInstruction(new ArrayCopyRangeInstruction(loc, args[0], args[1], args[2]));
+                        return args[2];
+                    }
+                default:
+                    throw new BabyPenguinException($"Unknown array intrinsic '{intrinsic}'", loc, code: ErrorCode.E_INTERNAL);
+            }
+        }
+
+        private ISymbol? AddArrayCtorCall(FunctionCallExpression exp, string ctorName, ISymbol? targetSymbol)
+        {
+            var loc = exp.SourceLocation;
+            // Element type: from the typed assignment target when available;
+            // otherwise (nested constructor as an argument) from the fill
+            // argument's own type (create_array only — create_array_with's
+            // function argument does not pin the element type).
+            ITypeNode? elemNode = null;
+            if (targetSymbol != null && ArrayElementOf(targetSymbol.TypeInfo) is { } targetElem)
+                elemNode = targetElem.elemNode;
+            else if (ctorName == "create_array"
+                && TryResolveExpressionTypeQuiet(exp.ArgumentsExpression.Skip(1).FirstOrDefault()) is IType fillType
+                && fillType.TypeNode != null)
+                elemNode = fillType.TypeNode;
+
+            if (elemNode == null)
+                throw new BabyPenguinException($"'{ctorName}' requires a typed assignment target (e.g. `let a : mut i32[] = {ctorName}(...)`)", loc, code: ErrorCode.E_TYPE_INFERENCE);
+
+            var to = targetSymbol ?? AllocTempSymbol(Model.GetArrayTypeNode(elemNode).ToType(Mutability.Mutable), loc);
+            var methodName = ctorName == "create_array" ? "create" : "create_with";
+            var methodSym = ResolveArrayBuiltinMethod(elemNode, methodName, loc, exp);
+            var args = exp.ArgumentsExpression.Select(a => AddExpression(a, false)).ToList();
+            var converted = convertParamsForSymbol(methodSym, args, loc);
+            AddInstruction(new FunctionCallInstruction(loc, methodSym, converted, to));
+            return to;
+        }
+
+        /// <summary>Return type of an array-bound call for type sniffing
+        /// (ResolveExpressionType path). Null = not array-related.</summary>
+        private IType? TryGetArrayCallReturnType(FunctionCallExpression exp)
+        {
+            string? intrinsic = null;
+            if (exp.Callee is PrimaryExpression pe && pe.IsSimple)
+                intrinsic = MatchArrayIntrinsicName(pe.Text);
+            else if (exp.Callee is MemberAccessExpression ma0)
+                intrinsic = MatchArrayIntrinsicName(ma0.Text);
+            if (intrinsic != null)
+            {
+                var op = intrinsic["__builtin.__array_".Length..];
+                switch (op)
+                {
+                    case "get":
+                        {
+                            var elem = ArrayElementOf(TryResolveExpressionTypeQuiet(exp.ArgumentsExpression.FirstOrDefault()));
+                            return elem?.elemImmutable;
+                        }
+                    case "len":
+                        return Model.BasicTypeNodes.U64.ToType(Mutability.Immutable);
+                    case "set" or "fill" or "copy_range":
+                        return Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+                    default:
+                        return null; // "new": needs a typed target, not inferable
+                }
+            }
+
+            if (exp.Callee is MemberAccessExpression ma && ma.Member?.Name is "at" or "set" or "size" or "iter" or "iter_mut")
+            {
+                var baseType = TryResolveExpressionTypeQuiet(ma.BaseExpression!);
+                var elem = ArrayElementOf(baseType);
+                if (elem == null) return null;
+                var (elemNode, elemImmutable) = elem.Value;
+                return ma.Member.Name switch
+                {
+                    "at" => Model.ResolveType($"__builtin.Option<{elemNode.FullName()}>"),
+                    "set" => Model.BasicTypeNodes.Void.ToType(Mutability.Immutable),
+                    "size" => Model.BasicTypeNodes.U64.ToType(Mutability.Immutable),
+                    "iter" or "iter_mut" => Model.ResolveType($"__builtin.IIterator<{elemNode.FullName()}>")?.WithMutability(Mutability.Mutable),
+                    _ => null,
+                };
+            }
+
+            // create_array(_with): element type not inferable from callee alone
+            return null;
+        }
+
         public ISymbol AddExpression(ISyntaxExpression expression, bool isVariableInitialize, ISymbol? targetSymbol = null)
         {
+            // Array binding layer intercept (must run BEFORE the generic
+            // rightType sniff below — array constructors/intrinsics are not
+            // type-inferable from the callee alone).
+            if (expression is FunctionCallExpression arrayCall && IsArrayBoundCall(arrayCall))
+            {
+                var arrayResult = AddArrayCallExpression(arrayCall, isVariableInitialize, targetSymbol);
+                if (arrayResult != null)
+                    return arrayResult;
+            }
+
             ISymbol to;
             if (targetSymbol != null)
             {
@@ -2496,31 +2848,8 @@ namespace BabyPenguin.SemanticInterface
                 return resVar;
             }
 
-            List<ISymbol> convertParams(IType funcType, List<ISymbol> paramVars, SourceLocation sourceLocation)
-            {
-                if (!funcType.IsFunctionType)
-                    throw new BabyPenguinException($"Function call expects function symbol, but got '{funcType}'", sourceLocation, code: ErrorCode.E_CALL_NOT_FUNCTION);
-
-                if (funcType.GenericArguments.Count - 1 != paramVars.Count)
-                    throw new BabyPenguinException($"Function call expects {funcType.GenericArguments.Count - 1} parameters, but got {paramVars.Count}", sourceLocation, code: ErrorCode.E_CALL_ARITY);
-
-                return paramVars.Select((p, i) =>
-                {
-                    var expectedParamType = funcType.GenericArguments.ElementAt(i + 1);
-                    if (p.TypeNode?.FullName() != expectedParamType.TypeNode?.FullName())
-                    {
-                        if (p.TypeInfo.CanImplicitlyCastTo(expectedParamType))
-                        {
-                            var casted = AllocTempSymbol(expectedParamType, sourceLocation);
-                            AddInstruction(new CastInstruction(sourceLocation, p, expectedParamType, casted));
-                            return casted;
-                        }
-                        else throw new BabyPenguinException($"Cant cast type '{p.TypeInfo}' to '{expectedParamType}'", sourceLocation, code: ErrorCode.E_CAST_INVALID);
-                    }
-                    else
-                        return p;
-                }).ToList();
-            }
+            // convertParams now lives at the interface level (shared with the
+            // array binding layer); call sites below resolve to it directly.
 
             switch (expression)
             {

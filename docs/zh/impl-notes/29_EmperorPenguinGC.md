@@ -137,7 +137,7 @@ TLS 指针服务无锁快路径）。arena 比线程活得久：stop-the-world �
 把 arena 的 `alloc_bytes` 上卷进全局近似计数器，把耗尽的 span 退休到共
 享 full 链表，再取一个新的：共享 partial → 空池（按需重新分类，class
 之间不会困住内存）→ 新 superchunk。superchunk 失败时在锁**外**跑一次应
-急收集（finalizer 可能分配，而锁不可重入）并重试一次；并行 delta 进行中
+急收集（收集期分配走 malloc 路径，而锁不可重入）并重试一次；并行 delta 进行中
 跳过应急收集，改由边界收集（§7.3）。分配从不清除 alloc 位——只有清扫会
 清——所以空闲 slot 只能在那次清扫之后复用。
 
@@ -172,7 +172,7 @@ stale，下一次刷新整体重建——丢失条目会让标记释放活对象
 | --- | --- |
 | 栈帧（所有栈） | `EmperorGcFrame` 链挂到 `_emperor_gc_frame_head`（thread-local；调度器按协程切换，sjlj 抛出时恢复）。每个 slot 要么是裸指针槽（`map == NULL`：`*addr` 是一个引用），要么是按其 ref-map 遍历的内联 struct 槽。调度器的 `_emperor_sched_each_frame_head` 枚举每个**停驻**协程的保存链。 |
 | 全局 | `_emperor_gc_add_root(void**)` 注册表（注销时交换删除）；值类/枚举全局额外把整个 struct 注册为扫描区域。 |
-| 容器缓冲区 | 持有引用的裸 malloc 存储，注册为扫描区域：保守（`_emperor_gc_scan_add`）或**类型化**（`_emperor_gc_track_buffer`：由单个元素的 ref-map 描述 `count × stride` 个元素——Vector/HashMap/Array 走此路径）。这里的 finalizer 是正确性的关键：容器在 `dispose_mem` 中注销，而清扫在死实例上运行它。 |
+| 原生数组 `array<T>` | 一等 GC 对象——无需注册。布局 `{ ptr metadata, i64 length, elements... }`；元素类型的 metadata refmap 是 REFARR 节点（kind 3：`elem_stride`、`elem_sub`），walker 从对象+8 读存活数、用 `elem_sub` 逐元素走（primitive 元素是精确 no-op，不是保守扫描）。容器（List/Vector/HashMap）现在由 `array<T>` 槽位承载，容器图经由普通对象标记精确追踪。 |
 | 协程栈 | 由调度器注册为区域，经 `_emperor_gc_scan_set_live` 收窄到 `[parked_sp, top)`——停驻 sp 之下的死帧是保守扫描会永久钉住的陈旧垃圾，被排除；**运行中**协程的区域在收集时被 sp 封顶。 |
 | meta 固定 | `_emperor_gc_pin_object`：以裸 i64 地址烘焙进 meta stub 的编译期对象值被固定为进程生命周期的根（整数对标记器不可见）。 |
 | 隔离环 | 每个 arena 最近分配的有界环（512 项）——覆盖只被无家可归 SSA 临时值引用的新对象（`this.f = new Outer(new Inner(...))` 形态：Inner 结果在语句完成前没有 slot 也没有堆上的家，而两次分配之间就有轮询）。显式 `gc_collect()` 丢弃环（collect-now 语义——年轻垃圾必须死；在途临时值由下面的保守覆盖兜底）；自动周期消耗环。 |
@@ -224,8 +224,9 @@ Green Tea 得名的机制。
 对象 body 经每类型 **ref-map 程序**精确扫描（`gc_refmap_walk`；编码见
 `emperor_types.h`）：只读取发射器声明的指针位置。无 ref-map 的 body
 （外来元数据，或清零后、元指针盖上前的新块）回退为保守的整 body 按字
-扫描。损坏的 ref-map 程序（偏移越界、枚举 tag 超出变体表）带 forensics
-地大声中止；类型化缓冲区遍历容忍未初始化的容量尾部垃圾。
+扫描。损坏的 ref-map 程序（偏移越界、枚举 tag 超出变体表、REFARR 范围
+超出对象）带 forensics 地大声中止。`elem_sub == 0`（无指针元素）的 REFARR
+节点从不读元素区——备用容量槽位对 marker 不可见。
 
 **失败策略**：标记中途任何工作表/队列增长失败即置
 `_emperor_gc_mark_failed`，标记不完整，该周期保留一切（不清扫）——下一
@@ -237,24 +238,19 @@ ref-map 的类型名警告一次。
 
 ## 5. 清扫
 
-成功的标记之后，黑 = 存活。驱动器按承重顺序跑四个阶段：
+成功的标记之后，黑 = 存活。finalizer 已不存在（IMemoryDispose/destructor
+机制随原生数组一轮退役——文件显式关闭，容器是 GC 追踪的 `array<T>` 对象），
+清扫完全不运行用户代码，也不需要阶段排序：
 
-1. `gc_sweep_pass1`——遍历 malloc 链表，把死块摘成 pending 链（墓碑化
-   为 `marked == 2`），并在所有死 body——含 span slot——仍分配且可读时
-   运行**所有** malloc 侧 finalizer；
-2. `gt_sweep_finalize`——在死 **span** slot 上运行 finalizer（alloc &
-   ~black）。此阶段不改状态；
-3. `gc_sweep_pass2`——压实排序索引，然后释放死 malloc 链。这里不运行
-   用户代码；
-4. `gt_sweep_reclaim`——清除死的 alloc 位，重算存活计数，重新入池：
-   `live == 0` 时**整体**回收到跨 class 的空池（婴儿死亡率型负载大多产
-   出死 span，回收成本从 O(对象) 降到 O(span)），否则进 partial/full。
+1. `gc_sweep`（gc.c，单遍）——遍历 malloc 链表，把死块摘成 pending 链
+   （墓碑化为 `marked == 2`），同遍压实排序索引，然后 `free()` 该链；
+2. `gt_sweep_reclaim`（gc_span.c）——清除死的 alloc 位，重算存活计数，
+   重新入池：`live == 0` 时**整体**回收到跨 class 的空池（婴儿死亡率型
+   负载大多产出死 span，回收成本从 O(对象) 降到 O(span)），否则进
+   partial/full。
 
-顺序保证：每个 finalizer——无论哪个堆——都观察到每个死对象完好（容器
-的 `dispose_mem` 可以触碰它拥有的对象），并且 finalizer 期间的分配
-（malloc 路径；collecting 锁存抑制嵌套收集）不会被本周期的摘链遍历看到。
-`dispose_mem` 必须幂等（标准库容器有 buf != 0 守卫）；第二次 dispose 是
-空操作。
+收集期分配走 malloc 路径（collecting 锁存抑制嵌套收集），不会被本周期
+的摘链遍历看到。
 
 ## 6. 收集周期
 
@@ -268,14 +264,14 @@ gc_collect_greentea():
     setjmp 寄存器冲刷; 捕获 sp
     gc_refresh_sorted()                     # 增量索引合并
     标记: 全局根 → meta 固定 → 帧链(运行中 + 停驻)
-          → 区域(类型化精确, 保守按字扫描)
+          → 区域(保守按字扫描)
     gc_mark_drain()
     隔离环: 显式周期丢弃环, 自动周期消耗环
     保守栈覆盖(本线程 watermark + 其余每个注册线程的停驻范围)
     gt_drain()                              # 到灰 == 黑
     [GC_VERIFY] gt_verify_invariants()
     标记失败: 重置所有颜色, 保留一切, 返回
-    清扫: malloc pass1 → gt_sweep_finalize → malloc pass2 → gt_sweep_reclaim
+    清扫: gc_sweep（摘链+压实+释放）→ gt_sweep_reclaim
     gc_update_unified_goal(freed)
 ```
 
@@ -342,9 +338,9 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
 ## 9. 发射代码 ABI
 
 * 每次调用与分配前的安全点轮询（`_emperor_gc_poll`）；每函数的帧链
-  挂接/摘除；每类型的 ref-map 程序与元数据全局；容器存储的类型化缓冲区
-  注册。
-* 运行时 ABI 标签 `_emperor_runtime_abi == "emperor-rt-gc3-gt2"` 在混
+  挂接/摘除；每类型的 ref-map 程序与元数据全局（数组含在内：每个元素
+  类型一个 REFARR 节点）。
+* 运行时 ABI 标签 `_emperor_runtime_abi == "emperor-rt-gc3-gt3"` 在混
   合 dynlib 构建上被比较，发射代码不会悄悄遇到外来运行时。
 * JIT 模块与 dynlib 消费者经 `-rdynamic` 从宿主可执行文件绑定分配器/
   轮询/帧头符号；所有 `gt_*` 函数是运行时内部的。
@@ -370,7 +366,7 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
 * **`gc_torture.c`**（独立程序；构建命令见其文件头注释）：排序索引的
   正确性段（内部指针、地址复用、校验和稳定），带精确存亡差值的精确
   ref-map 遍历（毒字、陈旧枚举 payload、tag 翻转），以及 green-tea 段
-  （混合 span/malloc 图完整性、精确 finalizer 计数、环队列 wrap+grow 回
+  （混合 span/malloc 图完整性、精确死槽回收差值、环队列 wrap+grow 回
   归、整体回收）。**harness 纪律**：精确差值断言只有在待释放指针的陈旧
   副本不残留在**活**帧中时才成立——保守覆盖读取活帧的每个字。因此后续
   断言要释放的指针，其分配、发布与丢弃都在 helper 函数内完成，帧死亡后
@@ -380,10 +376,10 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
   （假栈会让覆盖看不到它们）。
 * **`make gc-bench`**（`EmperorPenguin/std/c/gc_bench.sh`）：release 构建
   gc_torture 并驱动六个确定性负载（churn / ptrdense / container /
-  deepsurvive / finstorm / mixed512），按负载制表 `GC_PROFILE` 阶段耗时
+  deepsurvive / mixed512），按负载制表 `GC_PROFILE` 阶段耗时
   行。
 * **`Tests/GcTest/*.md`**：跨编译器端到端守卫——搅动下的枚举全局与
-  payload、类型化容器缓冲区、finalizer 重入、写链/参数置根、span 统计
+  payload、原生数组元素追踪、容器回收、写链/参数置根、span 统计
   自省。
 * C 运行时默认 `-O2` 构建（std/c Makefile 的 `OPT`；分配器与调度器的上
   下文切换是热路径）。
@@ -394,10 +390,8 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
 
 - **SIMD 位图内核**：用 AVX-512/GFNI 块计算 `gray & ~black`，CPUID 门控
   加标量内核回退。
-- **无头部槽位**：从 span 推导尺寸/class，只给可终结类保留元数据——每
+- **无头部槽位**：从 span 推导尺寸/class——每
   对象收回 24 B。
-- **`_emperor_alloc_impl(size, flags)`**：加性 ABI，让代码生成可以标记
-  无 finalizer 的分配，使整体 span 回收 O(1)（无需析构探针）。
 - **本地/共享域拆分**：调度器交接点上带晋升的每 arena 本地收集器，取代
   对所有 arena 的一次全局 stop-the-world 遍历。
 - **退役安全网**：隔离环与保守栈覆盖可以在 `GC_VERIFY` 于全集上长期跑

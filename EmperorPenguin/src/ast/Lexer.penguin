@@ -686,15 +686,6 @@ namespace emperor {
                     this.advance_char();
                     continue;
                 }
-                // Array/iterable type suffix: `i64[]`. The parser expects a single
-                // ArrayBracket token for `[]`.
-                if (ch_code == 91 && this.pos + 1 < this.source_len && string_char_code_at(this.source, this.pos + 1) == 93) {
-                    tokens.push(new Token(new TokenType.ArrayBracket(), "[]", new SourceLocation(this.filename, this.line, this.col)));
-                    this.col = this.col + 2;
-                    this.advance_chars(2);
-                    continue;
-                }
-
                 // Check for encoding prefix (u8/u/U/L) for string/char constants
                 if (ch_code == 117 || ch_code == 85 || ch_code == 76) {
                     // u8"..." string prefix
@@ -757,6 +748,15 @@ namespace emperor {
                         this.col = this.col + string_length(text);
                         continue;
                     }
+                }
+
+                // The retired array-postfix brackets must fail LOUDLY: the
+                // generic unknown-char skip would silently erase them and
+                // degrade `mut i32[]` to a plain `mut i32` binding.
+                if (ch_code == 91 || ch_code == 93) {
+                    let bracket: string = if (ch_code == 91) { "[" } else { "]" };
+                    __builtin.eprintln("error[E_LEXER]: unexpected '" + bracket + "' at " + this.filename + ":" + cast<string>(this.line) + ":" + cast<string>(this.col) + " — array types are spelled array<T> (the postfix bracket syntax is retired)");
+                    __builtin.exit(1);
                 }
 
                 // Unknown character - skip

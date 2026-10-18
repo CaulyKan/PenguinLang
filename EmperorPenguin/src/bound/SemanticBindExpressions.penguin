@@ -65,6 +65,12 @@ class BindExpressionsPass {
             return ma_result;
         }
         if (expr is Expression.function_call) {
+            // Native-array magic methods: `a.at(i)` / `a.set(i,v)` / `a.size()`
+            // / `a.iter()` / `a.iter_mut()` on an `array<T>` receiver rewrite to the
+            // generic stdlib functions (specialized by argument inference).
+            if (this.rewrite_array_member_call(expr.function_call, scope)) {
+                return this.bind_function_call(expr.function_call, scope);
+            }
             return this.bind_function_call(expr.function_call, scope);
         }
         if (expr is Expression.if_expr) {
@@ -122,6 +128,71 @@ class BindExpressionsPass {
             i = i + 1;
         }
         return new Expression.function_call(fc);
+    }
+
+    // Native-array magic method rewrite: when the callee is a member access
+    // whose receiver binds to an ArrayKind type and the member is one of the
+    // array magic names, rewrite the call in place to the generic stdlib
+    // function with the receiver as the first argument (`a.at(i)` ->
+    // `__array_at(a, i)`). The callee's type parameters are solved from the
+    // (already-bound) receiver type by ordinary argument inference. Returns
+    // false when the call is not array-shaped (the caller binds it normally).
+    fun rewrite_array_member_call(mut this, expr: mut FunctionCallExpression, scope: mut BoundScope) -> bool {
+        if (expr.callee.is_none()) { return false; }
+        if (!(expr.callee.some is Expression.member_access)) { return false; }
+        let ma: MemberAccessExpression = expr.callee.some.member_access;
+        if (ma.base_expr.is_none()) { return false; }
+        let method: string = ma.member_name;
+        if (method != "at" && method != "set" && method != "size" && method != "iter" && method != "iter_mut") {
+            return false;
+        }
+        // Probe the receiver's type (bind only — no code is generated from the
+        // probe; the rewritten call re-binds the same AST as an argument).
+        let bound_base: Option<BoundExpression> = this.bind_expression(ma.base_expr.some, scope);
+        if (bound_base.is_none()) { return false; }
+        let base_type: BoundType = bound_base.some.get_bound_type();
+        if (!(base_type.kind is TypeKind.ArrayKind)) { return false; }
+        // set/iter_mut are the WRITE paths of the magic surface: an immutable
+        // BINDING is a mutability violation (the same rule as calling a
+        // `mut this` method on an immutable binding). at/size/iter are
+        // read-only and fine on any receiver. The check is BINDING-based:
+        // array types normalize their element position to immutable (the
+        // dedup identity), so a derived receiver (`grid.at(0).some` — an
+        // element reference read out of a container) would be wrongly
+        // rejected by a type-based test; BabyPenguin's element reads come
+        // back mutable via ToType(Auto), and this matches that behavior.
+        // Write enforcement through derived references stays open (documented
+        // corner). Report and continue with the rewrite — the recorded error
+        // already fails the compile.
+        if (method == "set" || method == "iter_mut") {
+            if (bound_base.some is BoundExpression.identifier) {
+                let bsym: Option<BoundSymbol> = bound_base.some.identifier.symbol;
+                if (bsym.is_some() && bsym.some is BoundSymbol.variable) {
+                    if (!bsym.some.variable.is_mutable) {
+                        this.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                            "Cannot call '" + method + "' on an immutable array binding: writing to a native array requires a mut reference (at/size/iter work on any binding)",
+                            new SourceLocation("", 0, 0));
+                    }
+                }
+            }
+        }
+        let fn_name: mut string = "";
+        if (method == "at") { fn_name = "__array_at"; }
+        if (method == "set") { fn_name = "__array_set_checked"; }
+        if (method == "size") { fn_name = "__array_size"; }
+        if (method == "iter" || method == "iter_mut") { fn_name = "__array_iter"; }
+        // Rebuild the argument list: receiver first, then the call arguments.
+        let new_args: mut FunctionCallArguments = new FunctionCallArguments();
+        new_args.push(ma.base_expr.some);
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(expr.arguments.size())) {
+            new_args.push(expr.arguments.at(cast<u64>(ai)).some);
+            ai = ai + 1;
+        }
+        expr.arguments = new_args;
+        let id: IdentifierExpression = new IdentifierExpression(fn_name);
+        expr.callee = new Option<Expression>.some(new Expression.identifier(id));
+        return true;
     }
 
     // Build `__builtin._co_wait()`.
@@ -1991,6 +2062,16 @@ class BindExpressionsPass {
     // Structural unification of one (declared param type, actual arg type)
     // pair into the solved-params lists. Conflicts keep the first solution.
     fun infer_unify_type(mut this, ts: TypeSpecifier, bt: BoundType, generic_params: _utils.List<string>, names: mut _utils.List<string>, types: mut _utils.List<BoundType>) {
+        // `array<U>` unifies with an ArrayKind argument ELEMENT-wise (U solves
+        // to the element type, not the whole array).
+        if (cast<i64>(ts.qualified_parts.size()) == 0 && ts.name == "array") {
+            if (cast<i64>(ts.generic_args.size()) == 1 && bt.kind is TypeKind.ArrayKind && cast<i64>(bt.generic_args.size()) > 0) {
+                let elem_ts: TypeSpecifier = ts.generic_args.at(cast<u64>(0)).some;
+                let elem_bt: BoundType = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+                this.infer_unify_type(elem_ts, elem_bt, generic_params, names, types);
+            }
+            return;
+        }
         if (ts.is_function_type) {
             if (bt.kind is TypeKind.FunctionKind) {
                 if (cast<i64>(ts.function_params.size()) == cast<i64>(bt.generic_args.size())) {
@@ -4786,6 +4867,17 @@ class BindExpressionsPass {
                     this.model.some.report_error(new ErrorCode.E_CAST_INVALID(),
                         "Argument " + cast<string>(arg_i + 1) + " type mismatch in '" + sym.name + "': expected " + param_type.display_name() + " but got " + arg_type.display_name(),
                         sym.location);
+                }
+                // Array mutability compatibility: passing an immutable array
+                // to a `mut array<T>` parameter would let the callee mutate
+                // through the shared reference — the let/assignment
+                // imm-to-mut rule applied at call boundaries.
+                if (param_type.kind is TypeKind.ArrayKind && arg_type.kind is TypeKind.ArrayKind) {
+                    if (param_type.mutability is Mutability.Mutable && arg_type.mutability is Mutability.Immutable) {
+                        this.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                            "Cannot pass an immutable array to a mutable array parameter in '" + sym.name + "' (argument " + cast<string>(arg_i + 1) + ")",
+                            sym.location);
+                    }
                 }
             }
             arg_i = arg_i + 1;

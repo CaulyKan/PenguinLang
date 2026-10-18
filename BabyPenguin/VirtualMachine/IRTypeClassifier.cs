@@ -16,6 +16,11 @@ namespace BabyPenguin.VirtualMachine
             if (typeNode.IsVoidType) return "void";
             if (typeNode.Type == TypeEnum.Char) return "char";
 
+            // Native arrays are reference objects; their IR type is the
+            // array<T> wrapper spelling (e.g. array<i32>, array<__builtin.Option<i32>>).
+            if (typeNode.Type == TypeEnum.Array)
+                return typeNode.FullName();
+
             if (typeNode.IsStringType) return "ref<string>";
             if (typeNode.Type == TypeEnum.U8) return "u8";
             if (typeNode.Type == TypeEnum.U16) return "u16";
@@ -63,6 +68,7 @@ namespace BabyPenguin.VirtualMachine
             if (irType == "bool" || irType == "void" || irType == "char") return true;
             if (irType == "funptr") return false;
             if (irType.StartsWith("ref<")) return false;
+            if (irType.StartsWith("array<") && irType.EndsWith(">")) return false; // native arrays are references
             if (irType.StartsWith("i") || irType.StartsWith("u")) return true;
             if (irType.StartsWith("f")) return true;
             if (irType.StartsWith("enum<")) return true;

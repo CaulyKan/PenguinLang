@@ -202,7 +202,7 @@ initial {
 Template parameters are of two kinds:
 
 * **Type parameters** (`T: type`) — stand for types; mutability flows through them (`Box<mut i32>` makes the stored value mutable).
-* **Value parameters** (`N: i32`) — compile-time constants. They are evaluated by the metaprogramming engine and therefore work on the native EmperorPenguin compilers (Pass2/Pass3); the pass3-only fixed-size array `std.Array<T, N>` is built on them. Example shape:
+* **Value parameters** (`N: i32`) — compile-time constants. They are evaluated by the metaprogramming engine and therefore work on the native EmperorPenguin compilers (Pass2/Pass3). Example shape:
 
 ```penguin
 #template(N: i32)

@@ -787,6 +787,40 @@ namespace BabyPenguin.VirtualMachine
                     case IRUnboxInst:
                     case IRCallVirtInst:
                         throw new NotImplementedException($"Instruction {inst.GetType().Name} not yet implemented");
+
+                    case IRArrayNewZeroedInst ani:
+                        Store(ani.Result, CreateZeroedArray(ani.ElemType, Resolve(ani.Length), ani.Result.GetIrType()));
+                        break;
+
+                    case IRArrayGetInst agi:
+                        {
+                            var arr = ResolveArray(agi.Array);
+                            var idx = ResolveIndex(agi.Index);
+                            if (idx < 0 || idx >= arr.Length)
+                                throw new BabyPenguinRuntimeException($"Array index {idx} out of bounds (length {arr.Length})", code: ErrorCode.E_RUNTIME_INVALID_OP);
+                            // Value-class elements copy whole-structure out of
+                            // the slot; reference elements share (pointer copy).
+                            Store(agi.Result, CopyValue(arr.Elements[idx]));
+                        }
+                        break;
+
+                    case IRArraySetInst asi:
+                        {
+                            var arr = ResolveArray(asi.Array);
+                            var idx = ResolveIndex(asi.Index);
+                            if (idx < 0 || idx >= arr.Length)
+                                throw new BabyPenguinRuntimeException($"Array index {idx} out of bounds (length {arr.Length})", code: ErrorCode.E_RUNTIME_INVALID_OP);
+                            var v = Resolve(asi.Value);
+                            arr.Elements[idx] = CopyValue(v);
+                        }
+                        break;
+
+                    case IRArrayLenInst ali:
+                        {
+                            var arr = ResolveArray(ali.Array);
+                            Store(ali.Result, new BasicRuntimeValue(Model.BasicTypeNodes.U64.ToType(Mutability.Immutable)) { U64Value = (ulong)arr.Length });
+                        }
+                        break;
                 }
 
                 if (!buf.Jumped)
@@ -1203,6 +1237,38 @@ namespace BabyPenguin.VirtualMachine
                     case IRUnboxInst:
                     case IRCallVirtInst:
                         throw new NotImplementedException($"Instruction {inst.GetType().Name} not yet implemented");
+
+                    case IRArrayNewZeroedInst ani:
+                        Store(ani.Result, CreateZeroedArray(ani.ElemType, Resolve(ani.Length), ani.Result.GetIrType()));
+                        break;
+
+                    case IRArrayGetInst agi:
+                        {
+                            var arr = ResolveArray(agi.Array);
+                            var idx = ResolveIndex(agi.Index);
+                            if (idx < 0 || idx >= arr.Length)
+                                throw new BabyPenguinRuntimeException($"Array index {idx} out of bounds (length {arr.Length})", code: ErrorCode.E_RUNTIME_INVALID_OP);
+                            Store(agi.Result, CopyValue(arr.Elements[idx]));
+                        }
+                        break;
+
+                    case IRArraySetInst asi:
+                        {
+                            var arr = ResolveArray(asi.Array);
+                            var idx = ResolveIndex(asi.Index);
+                            if (idx < 0 || idx >= arr.Length)
+                                throw new BabyPenguinRuntimeException($"Array index {idx} out of bounds (length {arr.Length})", code: ErrorCode.E_RUNTIME_INVALID_OP);
+                            var v = Resolve(asi.Value);
+                            arr.Elements[idx] = CopyValue(v);
+                        }
+                        break;
+
+                    case IRArrayLenInst ali:
+                        {
+                            var arr = ResolveArray(ali.Array);
+                            Store(ali.Result, new BasicRuntimeValue(Model.BasicTypeNodes.U64.ToType(Mutability.Immutable)) { U64Value = (ulong)arr.Length });
+                        }
+                        break;
                 }
 
                 _ip++;
@@ -1413,8 +1479,18 @@ namespace BabyPenguin.VirtualMachine
                 _ when irType.StartsWith("enum<") => ResolveComplexType(irType),
                 _ when irType.StartsWith("ref<") => ResolveComplexType(irType),
                 _ when irType.StartsWith("struct<") => ResolveComplexType(irType),
+                _ when irType.StartsWith("array<") && irType.EndsWith(">") => ResolveArrayType(irType),
                 _ => Model.BasicTypeNodes.GetCachedImmutableType("void")!
             };
+        }
+
+        private IType ResolveArrayType(string irType)
+        {
+            var elemName = irType["array<".Length..^1];
+            var elemNode = Model.ResolveTypeNode(elemName);
+            if (elemNode != null)
+                return Model.GetArrayTypeNode(elemNode).ToType(Mutability.Mutable);
+            return Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
         }
 
         private IType ResolveComplexType(string irType)
@@ -1443,6 +1519,66 @@ namespace BabyPenguin.VirtualMachine
         private IRuntimeValue CopyValue(IRuntimeValue val)
         {
             return RuntimeValueCopier.CopyIfValueSemantic(val, Global);
+        }
+
+        // === Native array helpers ===
+
+        private ArrayRuntimeValue ResolveArray(IRValue reg)
+        {
+            var val = Resolve(reg);
+            return val as ArrayRuntimeValue
+                ?? throw new BabyPenguinRuntimeException($"Expected a native array value, got {val?.GetType().Name}", code: ErrorCode.E_RUNTIME_TYPE);
+        }
+
+        private long ResolveIndex(IRValue reg)
+        {
+            var val = Resolve(reg);
+            return val is BasicRuntimeValue bv && bv.TypeInfo.IsIntType
+                ? Convert.ToInt64(bv.DynamicValue)
+                : throw new BabyPenguinRuntimeException($"Array index must be an integer, got {val?.GetType().Name}", code: ErrorCode.E_RUNTIME_TYPE);
+        }
+
+        private IRuntimeValue CreateZeroedArray(string elemType, IRuntimeValue? lengthVal, string arrayIrType)
+        {
+            if (lengthVal is not BasicRuntimeValue lenBv)
+                throw new BabyPenguinRuntimeException("Array length must be an integer value", code: ErrorCode.E_RUNTIME_TYPE);
+            var length = Convert.ToInt64(lenBv.DynamicValue);
+            if (length < 0)
+                throw new BabyPenguinRuntimeException($"Negative array length {length}", code: ErrorCode.E_RUNTIME_INVALID_OP);
+
+            // Resolve the array IType from the register's IR type (e.g.
+            // "i32[]", "__builtin.Option<i32>[]") so the runtime value is
+            // typed for casts / member dispatch.
+            IType arrayType;
+            var elemNode = Model.ResolveTypeNode(elemType);
+            if (elemNode != null)
+                arrayType = Model.GetArrayTypeNode(elemNode).ToType(Mutability.Mutable);
+            else
+                arrayType = Model.BasicTypeNodes.Void.ToType(Mutability.Immutable);
+
+            var arr = new ArrayRuntimeValue(arrayType, length);
+            var elemIType = elemNode?.ToType(Mutability.Immutable);
+            for (long i = 0; i < length; i++)
+            {
+                // Zeroed slots: primitives 0, strings "", reference elements
+                // a not-initialized placeholder (create_array fills before any
+                // read; a raw zeroed ref slot must never be read directly).
+                arr.Elements[i] = elemIType == null || elemIType.TypeNode == null
+                    ? new NotInitializedRuntimeValue(Model.BasicTypeNodes.Void.ToType(Mutability.Immutable))
+                    : DefaultValueFor(elemIType);
+            }
+            return arr;
+        }
+
+        private IRuntimeValue DefaultValueFor(IType type)
+        {
+            if (type.TypeNode.IsSimpleValueType || type.TypeNode.Type == TypeEnum.Char)
+            {
+                var bv = new BasicRuntimeValue(type);
+                if (type.Type == TypeEnum.String) bv.StringValue = "";
+                return bv;
+            }
+            return new NotInitializedRuntimeValue(type);
         }
 
         private IRuntimeValue MakeValue(string literal, string irType)

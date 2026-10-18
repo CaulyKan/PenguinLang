@@ -9,7 +9,7 @@
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-WORKLOADS=${GC_BENCH_WORKLOADS:-churn ptrdense container deepsurvive finstorm mixed512}
+WORKLOADS=${GC_BENCH_WORKLOADS:-churn ptrdense container deepsurvive mixed512}
 OUT=${GC_BENCH_OUT:-}
 BIN=${GC_BENCH_BIN:-}
 CC=${CC:-clang}
@@ -23,7 +23,7 @@ mkdir -p "$OUT"
 if [ -z "$BIN" ]; then
     BIN="$OUT/gc_torture_bench"
     "$CC" -I"$HERE/../include" -O2 -o "$BIN" \
-        "$HERE/gc_torture.c" "$HERE/gc.c" "$HERE/gc_span.c" "$HERE/scheduler.c" "$HERE/penguinlang_interop.c" \
+        "$HERE/gc_torture.c" "$HERE/gc.c" "$HERE/gc_span.c" "$HERE/core_builtin.c" "$HERE/scheduler.c" "$HERE/penguinlang_interop.c" \
         || { echo "gc_bench: build failed" >&2; exit 1; }
 fi
 

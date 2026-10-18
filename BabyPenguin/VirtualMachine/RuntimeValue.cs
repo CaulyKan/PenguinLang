@@ -373,6 +373,40 @@ namespace BabyPenguin.VirtualMachine
     }
 
     /// <summary>
+    /// Native dense array `T[]`: a fixed-length reference object holding its
+    /// elements inline. Element access semantics (whole-structure copy for
+    /// value-class elements, reference sharing otherwise) is applied by the
+    /// ARRAY_GET / ARRAY_SET instruction handlers at the boundary.
+    /// </summary>
+    public class ArrayRuntimeValue : IRuntimeValue
+    {
+        public ArrayRuntimeValue(IType typeInfo, long length)
+        {
+            TypeInfo = typeInfo;
+            Length = length;
+            Elements = new IRuntimeValue[length];
+        }
+
+        public IType TypeInfo { get; }
+
+        public long Length { get; }
+
+        public IRuntimeValue[] Elements { get; }
+
+        public IRuntimeValue Clone() => Clone([]);
+
+        public IRuntimeValue Clone(Dictionary<ulong, ReferenceRuntimeValue> visited)
+        {
+            // Reference semantics: cloning the reference shares the array
+            // object (a native struct copy copies the pointer, not the pointee).
+            return this;
+        }
+
+        public override string ToString()
+            => $"{TypeInfo.Name}[{Length}]";
+    }
+
+    /// <summary>
     /// Value-semantics copy matching EmperorPenguin's native inline layout:
     /// value-class instances are copied memberwise (recursing into value-typed
     /// fields), while reference-class instances are SHARED (a native struct copy
@@ -392,6 +426,10 @@ namespace BabyPenguin.VirtualMachine
         {
             switch (val)
             {
+                case ArrayRuntimeValue:
+                    // Arrays are reference objects — copy shares the array.
+                    return val;
+
                 case ReferenceRuntimeValue rv:
                     if (rv.TypeInfo.TypeNode is null
                         || !IRTypeClassifier.IsValueClassIncludingAuto(rv.TypeInfo.TypeNode))

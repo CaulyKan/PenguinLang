@@ -144,7 +144,7 @@ initial {
 }
 ```
 
-Template parameters can also be values (`#template(N: i32)`), which is how fixed-size types such as `std.Array<T, N>` are expressed. See [Types and Templates](./TypesAndTemplates.md).
+Template parameters can also be values (`#template(N: i32)`) — compile-time constants baked into the specialization. See [Types and Templates](./TypesAndTemplates.md).
 
 ## Control Flow
 

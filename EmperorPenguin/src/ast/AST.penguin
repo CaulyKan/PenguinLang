@@ -1006,7 +1006,6 @@ class TypeSpecifier {
     // A<5>. Carried through parsing/resolve_generic_args to a synthetic BoundType.
     is_value_arg: mut bool = false;
     value_arg_text: mut string = "";
-    is_iterable: mut bool = false;
     is_function_type: mut bool = false;
     is_async_function_type: mut bool = false;
     function_params: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
@@ -1041,7 +1040,6 @@ class TypeSpecifier {
                 s = s + this.return_type.some.build_text();
             }
             s = s + ">";
-            if (this.is_iterable) { s = s + "[]"; }
             return s;
         }
         if (this.is_async_function_type) {
@@ -1057,7 +1055,6 @@ class TypeSpecifier {
                 s = s + this.return_type.some.build_text();
             }
             s = s + ">";
-            if (this.is_iterable) { s = s + "[]"; }
             return s;
         }
         let s: mut string = prefix + this.name;
@@ -1083,9 +1080,44 @@ class TypeSpecifier {
             }
             s = s + ">";
         }
-        if (this.is_iterable) { s = s + "[]"; }
         return s;
     }
+}
+
+// Deep-clone a TypeSpecifier (generic args / function params / return type
+// recurse; the meta_call reference is shared — it is not mutated). Used by the
+// array-type resolution to strip the brackets while keeping everything else.
+fun clone_type_spec(ts: TypeSpecifier) -> mut TypeSpecifier {
+    let c: mut TypeSpecifier = new TypeSpecifier();
+    c.name = ts.name;
+    c.location = ts.location;
+    c.is_mutable = ts.is_mutable;
+    c.is_not_mutable = ts.is_not_mutable;
+    c.is_auto_mutability = ts.is_auto_mutability;
+    c.is_value_arg = ts.is_value_arg;
+    c.value_arg_text = ts.value_arg_text;
+    c.is_function_type = ts.is_function_type;
+    c.is_async_function_type = ts.is_async_function_type;
+    let qi: mut i64 = 0;
+    while (qi < cast<i64>(ts.qualified_parts.size())) {
+        c.qualified_parts.push(ts.qualified_parts.at(cast<u64>(qi)).some);
+        qi = qi + 1;
+    }
+    let gi: mut i64 = 0;
+    while (gi < cast<i64>(ts.generic_args.size())) {
+        c.generic_args.push(clone_type_spec(ts.generic_args.at(cast<u64>(gi)).some));
+        gi = gi + 1;
+    }
+    let fpi: mut i64 = 0;
+    while (fpi < cast<i64>(ts.function_params.size())) {
+        c.function_params.push(clone_type_spec(ts.function_params.at(cast<u64>(fpi)).some));
+        fpi = fpi + 1;
+    }
+    if (ts.return_type.is_some()) {
+        c.return_type = new Option<TypeSpecifier>.some(clone_type_spec(ts.return_type.some));
+    }
+    c.meta_call = ts.meta_call;
+    return c;
 }
 
 class Parameter {
