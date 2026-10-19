@@ -4,7 +4,7 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 
 ## Markdown 测试套件（`Tests/`）
 
-38 个类别目录、673 例（`Tests/<Category>/<Name>.md`），由 `Tests/PenguinTestRunner.csproj` 驱动——一个普通 `net10.0` 控制台 exe，全部实现是 **`Tests/Program.cs`（2866 行，无测试 SDK）**。格式参考：`Tests/Readme.md`。
+42 个类别目录、713 例（`Tests/<Category>/<Name>.md`），由 `Tests/PenguinTestRunner.csproj` 驱动——一个普通 `net10.0` 控制台 exe，全部实现是 **`Tests/Program.cs`（3005 行，无测试 SDK）**。格式参考：`Tests/Readme.md`。
 
 ### 用例格式
 
@@ -43,7 +43,7 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 
 ### 进程内单元测试
 
-`BabyPenguin.Tests` / `EmperorPenguin.Tests`（xunit 2.9.3，`net10.0`）：对 C# 编译器 API 的直接测试（DeclarationTests 1222 行、Project/Mutability/Complex 测试、`CSharpBackendBenchTest`），以及——EmperorPenguin 侧——**批量测试装置**（`EmperorPenguin.Tests/BatchCompiler.cs`，548 行）：每个 `[Fact]` 带批量特性（`BatchTest`/`BatchBoundTest`/`BatchIRTest`/`BatchLLVMTest`/`BatchParseTest`/`BatchTokenizeTest`）；静态 `Lazy<BatchResults>` 把一个类的全部用例**作为一个程序**在进程内 `BabyPenguinVM` 上编译（每个用例包进 `namespace __test_<name>`、`println` 加 `@@name@@` 标签；EmperorPenguin 编译器自己的 `.penguin` 源作为源目录加载），运行后按标签拆分回各测试。断言是对完整期望文本的 xunit `Assert.Equal`（实际值也转储到 `/tmp/actuals/`）。遗留的 `BatchE2ETest`（进程派生）已无人使用。
+`BabyPenguin.Tests` / `EmperorPenguin.Tests`（xunit 2.9.3，`net10.0`）：对 C# 编译器 API 的直接测试（DeclarationTests 1234 行、Project/Mutability/Complex 测试、`CSharpBackendBenchTest`），以及——EmperorPenguin 侧——**批量测试装置**（`EmperorPenguin.Tests/BatchCompiler.cs`，548 行）：每个 `[Fact]` 带批量特性（`BatchTest`/`BatchBoundTest`/`BatchIRTest`/`BatchLLVMTest`/`BatchParseTest`/`BatchTokenizeTest`）；静态 `Lazy<BatchResults>` 把一个类的全部用例**作为一个程序**在进程内 `BabyPenguinVM` 上编译（每个用例包进 `namespace __test_<name>`、`println` 加 `@@name@@` 标签；EmperorPenguin 编译器自己的 `.penguin` 源作为源目录加载），运行后按标签拆分回各测试。断言是对完整期望文本的 xunit `Assert.Equal`（实际值也转储到 `/tmp/actuals/`）。遗留的 `BatchE2ETest`（进程派生）已无人使用。
 
 ## 构建编排——根 Makefile
 

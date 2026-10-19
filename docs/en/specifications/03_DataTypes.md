@@ -341,6 +341,14 @@ fixed at creation; arrays nest (`array<array<i32>>` is an array of `array<i32>`
 references). A bare `array<T>` is mutable by default (`!mut array<T>` for an
 immutable binding).
 
+`array` is a reserved type-constructor name: a user class cannot shadow it,
+and a bare `array` without an element-type argument is rejected at type
+resolution (`array<T> requires an element type argument`). There is no
+postfix array spelling — `mut i32[]` does not parse. The mutability prefix
+applies to the array reference as a whole; elements are always immutable,
+and an element-level prefix (`array<mut i32>`) is rejected with a dedicated
+error instead of being silently normalized.
+
 There is no index syntax and no array literal yet — element access goes
 through magic methods:
 

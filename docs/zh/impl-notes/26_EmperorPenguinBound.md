@@ -320,7 +320,7 @@ SemanticError
 将 AST 表达式/语句转换为绑定表达式/语句，是类型检查与符号引用解析的核心 pass。`BindBodiesPass`（8a，语句/函数体绑定与 `current_unit` 生命周期）分发给两个协作器：
 
 - `BindExpressionsPass`（8b）：字面量、标识符、二元/一元/逻辑运算、成员访问、函数调用（虚调用/泛型调用）、if/while、代码块、cast/new、try-bind、端口语法脱糖
-- `BindMetaCallsPass`（8c）：`#fun` 元调用绑定与 JIT 结果拼接、sizeof/address_of/load/store 内建、unique-name trampoline、模板实例路由
+- `BindMetaCallsPass`（8c）：`#fun` 元调用绑定与 JIT 结果拼接、`#sizeof` 内建、unique-name trampoline、模板实例路由
 
 ### Pass 9：控制流验证（`ValidateControlFlowPass.run(result)`）
 

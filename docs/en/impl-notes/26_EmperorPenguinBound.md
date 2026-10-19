@@ -320,7 +320,7 @@ Classifies ICopy value types / IRef reference types based on interface implement
 Converts AST expressions/statements into bound expressions/statements; it is the core pass for type checking and symbol reference resolution. `BindBodiesPass` (8a, statement/function-body binding and the `current_unit` lifecycle) dispatches to two collaborators:
 
 - `BindExpressionsPass` (8b): literals, identifiers, binary/unary/logical operations, member access, function calls (virtual/generic calls), if/while, code blocks, cast/new, try-bind, port syntax desugaring
-- `BindMetaCallsPass` (8c): `#fun` meta-call binding and JIT result splicing, sizeof/address_of/load/store intrinsics, unique-name trampolines, template instantiation routing
+- `BindMetaCallsPass` (8c): `#fun` meta-call binding and JIT result splicing, the `#sizeof` intrinsic, unique-name trampolines, template instantiation routing
 
 ### Pass 9: Validate Control Flow (`ValidateControlFlowPass.run(result)`)
 

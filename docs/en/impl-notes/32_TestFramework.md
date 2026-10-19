@@ -4,7 +4,7 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 
 ## The Markdown Test Suite (`Tests/`)
 
-673 cases in 38 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (2866 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
+713 cases in 42 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (3005 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
 
 ### Case format
 
@@ -43,7 +43,7 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 
 ### In-process unit tests
 
-`BabyPenguin.Tests` / `EmperorPenguin.Tests` (xunit 2.9.3, `net10.0`): direct tests over the C# compiler API (DeclarationTests 1222 lines, Project/Mutability/Complex tests, `CSharpBackendBenchTest`), and — for EmperorPenguin — the **batch harness** (`EmperorPenguin.Tests/BatchCompiler.cs`, 548 lines): each `[Fact]` carries batch attributes (`BatchTest`/`BatchBoundTest`/`BatchIRTest`/`BatchLLVMTest`/`BatchParseTest`/`BatchTokenizeTest`); a static `Lazy<BatchResults>` compiles all of a class's cases **as one program** on the in-process `BabyPenguinVM` (each case wrapped in `namespace __test_<name>` with `println` tagged `@@name@@`; the EmperorPenguin compiler's own `.penguin` sources are loaded as source dirs), runs it, and splits output back per test. Assertions are xunit `Assert.Equal` over full expected text (actuals also dumped to `/tmp/actuals/`). The legacy `BatchE2ETest` (process-spawning) is unused.
+`BabyPenguin.Tests` / `EmperorPenguin.Tests` (xunit 2.9.3, `net10.0`): direct tests over the C# compiler API (DeclarationTests 1234 lines, Project/Mutability/Complex tests, `CSharpBackendBenchTest`), and — for EmperorPenguin — the **batch harness** (`EmperorPenguin.Tests/BatchCompiler.cs`, 548 lines): each `[Fact]` carries batch attributes (`BatchTest`/`BatchBoundTest`/`BatchIRTest`/`BatchLLVMTest`/`BatchParseTest`/`BatchTokenizeTest`); a static `Lazy<BatchResults>` compiles all of a class's cases **as one program** on the in-process `BabyPenguinVM` (each case wrapped in `namespace __test_<name>` with `println` tagged `@@name@@`; the EmperorPenguin compiler's own `.penguin` sources are loaded as source dirs), runs it, and splits output back per test. Assertions are xunit `Assert.Equal` over full expected text (actuals also dumped to `/tmp/actuals/`). The legacy `BatchE2ETest` (process-spawning) is unused.
 
 ## Build Orchestration — the Root Makefile
 

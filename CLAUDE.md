@@ -123,7 +123,7 @@ cd MagellanicPenguin\vscode && npm run package
 
 ## Markdown Test Framework (cross-compiler e2e)
 
-The cross-compiler end-to-end test suite lives in `Tests/` as **one markdown file per test case** (`Tests/<Category>/<Name>.md`, currently ~194 cases). It is driven by a single-file C# console runner — `Tests/PenguinTestRunner.csproj` (`Tests/Program.cs`, added to the .sln, **no** test SDK / xunit) — which spawns the compilers as processes. Full spec and examples: `Tests/Readme.md`.
+The cross-compiler end-to-end test suite lives in `Tests/` as **one markdown file per test case** (`Tests/<Category>/<Name>.md`, currently ~713 cases). It is driven by a single-file C# console runner — `Tests/PenguinTestRunner.csproj` (`Tests/Program.cs`, added to the .sln, **no** test SDK / xunit) — which spawns the compilers as processes. Full spec and examples: `Tests/Readme.md`.
 
 Each `*.md` describes a penguin program, the compilers it **Apply To** (`BabyPenguin`, `EmperorPenguin Pass1`, `EmperorPenguin Pass2`, `EmperorPenguin Pass3`), and the expected compile/run exit codes and stdout. The runner compiles (+ runs the produced exe, for EmperorPenguin) each program against each applicable compiler and checks results **byte-exact** (`ExpectedStdout: EQUALS \`...\``; `DISCARD` to skip a stream; `ExpectedExitCode` may be `0`, any int, `NONZERO`, or `ANY`). Omit the `## Run` section (or set a non-zero compile exit) for negative/compile-failure tests. Numbered `## Run 1`/`## Run 2`/… sections re-run the SAME compiled executable once per section with that section's own Args/Env/expectations (interpreted BabyPenguin executes Run 1 only — see `Tests/Readme.md`).
 

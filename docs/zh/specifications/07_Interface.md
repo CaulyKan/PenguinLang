@@ -79,7 +79,7 @@ class MyClass {
 * 对静态已知的基元（或任何密封类型——值类、枚举）使用 `prim is I` 会由实现注册表折叠为编译期常量，双向皆可；引用类只折叠判定为真的分支（子类可能实现更多接口），接口类型变量维持运行时检查。
 * 未装箱基元的唯一接口类型用法是**立即调用例外**：`cast<I>(prim).m(...)` 合法，并被重写为该基元实现的直连调用。基元到接口的 cast 出现在任何其他位置（赋值、传参、返回、let 初始化）都是编译错误——"interface cast of a primitive is only allowed as the receiver of an immediate method call"——隐式 `let b : I = prim` 同样被拒绝。需要对基元做真多态时使用 `Box<T>`。
 
-`Box<T>` 就是这座 sanctioned 桥，且自动转发：`Box<T>` 的特化会把 T 实现的每个接口自动重新实现为向 `this.value` 的委托——直连调用（`box.hash()`）、接口类型存储（`let b : IHash = box`）与静态 `is` 全部可用，嵌套 `Box<Box<T>>` 亦然（内层 Box 转发过的接口会再次转发）。不转发的有：运行时标记接口（`ICopy`、`IReferenceType`、`IValueType`、`IMemoryDispose`、`IUniqueMangleName`、`ISync`——转发 ICopy 会翻转 Box 的引用语义）、泛型接口、以及含 `mut this` 方法的接口（转发需要可变的 value 槽位）。
+`Box<T>` 就是这座 sanctioned 桥，且自动转发：`Box<T>` 的特化会把 T 实现的每个接口自动重新实现为向 `this.value` 的委托——直连调用（`box.hash()`）、接口类型存储（`let b : IHash = box`）与静态 `is` 全部可用，嵌套 `Box<Box<T>>` 亦然（内层 Box 转发过的接口会再次转发）。不转发的有：运行时标记接口（`ICopy`、`IReferenceType`、`IValueType`、`IUniqueMangleName`、`ISync`——转发 ICopy 会翻转 Box 的引用语义）、泛型接口、以及含 `mut this` 方法的接口（转发需要可变的 value 槽位）。
 
 ## 标记接口
 
