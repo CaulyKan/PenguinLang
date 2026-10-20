@@ -89,6 +89,14 @@ class MyClass {
 * `ICopy<T>`——带 `extern fun copy(this: T) -> T` 的可选复制语义。
 * `IHash`、`IUniqueMangleName`、`ISynchronizable`——库契约（哈希、值模板实参的唯一命名、线程安全的引用共享）。
 
+**`ISync` 的两层堆契约（2026-10-19）**：实现 `ISync` 意味着"字段位于共享侧 + 一切变更在锁内"。
+**载荷规则**：跨线程通道（`write`/`try_write`/`push`）与结果容器 `complete()` 的载荷类型必须是
+Shareable（`Imm` 深不可变 / 值可共享 / `Sync` / `Ownership`）——`--strict-handoff` 下违反即
+`E_HANDOFF_NOT_SHAREABLE` 编译错误（默认 `-Wconcurrency` 警告）。注意：`Imm` 对象按引用共享后，
+接收方**可以**把它存进本地容器（反向边合法，全局全量标记兜底）。
+**禁止用法**：不得依赖跨线程对象身份（按地址哈希、`__object_id` 比较）——`Ownership` 跨域是
+接收方复制、值语义载荷不保持身份，身份不可观察是共享语义的一部分（P3 审计结论）。
+
 ## 孤儿规则与默认方法
 
 `impl X for Y` 块必须与 `X` 或 `Y` 之一同文件（孤儿规则，编译期检查）。`impl` 块中省略的方法回退到接口的默认实现。当前没有从覆写方法内部调用默认实现的语法——直接引用接口方法（`IBook.get_language(this)`）会被拒绝，因为接口方法没有单一实现；请通过具体类引用。

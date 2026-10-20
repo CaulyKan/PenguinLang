@@ -18,6 +18,10 @@ export enum ErrorCode {
     E_RETURN_TYPE_MISMATCH;
     E_CAST_INVALID;
     E_MUTABILITY;
+
+    // Concurrency / two-tier heap handoff discipline
+    // (channel push/try_write/complete payload not Shareable)
+    E_HANDOFF_NOT_SHAREABLE;
     E_TYPE_INFERENCE;
 
     // Generics

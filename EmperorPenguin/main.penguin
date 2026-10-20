@@ -358,6 +358,7 @@ initial {
     compiler.enable_coroutine = config.coroutine_enabled;
     compiler.enable_mt_scheduler = config.multithread_scheduler_enabled || config.clock_model_enabled;
     compiler.warn_concurrency = config.warn_concurrency;
+    compiler.strict_handoff = config.strict_handoff;
     compiler.meta_user_inputs = user_meta_inputs;
     compiler.cli_define_keys = config.cli_define_keys;
     compiler.cli_define_values = config.cli_define_values;

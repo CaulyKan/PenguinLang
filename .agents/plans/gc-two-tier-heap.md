@@ -1,12 +1,16 @@
 # 双层堆：shared 位"原地提升"计划（含文档修改）
 
 日期: 2026-10-16（三轮评审定稿：出口扫描 → 写点提升 → 闭合性 → **方案 F：全局保持全量标记**）
-基线: **native-arrays 落地后**（`feature/native-arrays` 分支；finalizer/typed region 已删、
-单阶段 sweep、REFARR refmap 已启用、保守 region 注册表保留——scheduler.c 依赖）
+基线: **native-arrays + unsafe_cast 删除轮（`feature/remove-unsafe-cast`）落地后**——finalizer/
+typed region/**meta pin 表**已删、单阶段 sweep、REFARR refmap 已启用、对象桥**句柄化**
+（`28d071c7`..`c894fd6d`：无任何路径产出裸对象地址，meta 对象改经 `MetaEngine.object_values`
+常规追踪）；保守 region 注册表与保守栈扫描保留（scheduler.c 依赖）
 前序: `docs/zh/wip/concurrent_scheduler.md` §9–§10（设计稿）、`.agents/plans/mt-scheduler-implementation.md`（M0–M7）、
 `.agents/plans/gc-greentea-span-heap.md`（当前收集器）、`.agents/plans/native-arrays.md`（本计划的基线）
 设计文档（唯一事实源）: `docs/zh/wip/concurrent_scheduler.md`
 本计划涉及的文档改动: 见 §8
+外部参照（同设计空间先例，2026-10-18 调研，详见 §11 末条）: Pony ORCA、Lattice（2026）、
+Ruby Ractor、OCaml 5、Erlang/BEAM off-heap binary、Rust `Send`/`Sync` 与 Swift `Sendable`
 
 ---
 
@@ -54,7 +58,8 @@
 - 收集器：单分代 / 不搬运 / STW；span 堆 `alloc`+`gray`+`black` 三张位图 + 代表对象快路径
   （`gc_span.c`）；malloc 大对象堆（`gc.c`）。**finalizer / typed region 已随 native-arrays 删除**
   （死对象清扫零用户代码、单阶段 sweep）；**保守 region 注册表保留**（scheduler.c 依赖）；
-  **REFARR refmap 已启用**（`T[]` 数组的元素级精确追踪，写点提升对数组是现成机制覆盖）。
+  **REFARR refmap 已启用**（`T[]` 数组的元素级精确追踪，写点提升对数组是现成机制覆盖）；
+  **meta pin 表已随 unsafe_cast 删除轮删除**（meta 对象 = `MetaEngine.object_values` 常规引用）。
 - 分配已**每线程 arena**（§10.2 第一级），收集仍是"一次 STW 扫全部 arena"。
 - 轮询门（poll gate）：稳态一次宽松读，样本占比 11.7% → 5.3%（同树 A/B，2026-10-15）。
   注意现状是**全局一个字**（`gc_internal.h` 的 `_emperor_gc_poll_gate`），按域粒度是 M4 的正式交付。
@@ -196,17 +201,21 @@
   大对象**本体**的释放仍归全局（malloc 索引不在本地）。
 - **清扫**：`alloc & ~black & ~shared`；`nshared == 0` 的 span 保留整块回收；带位槽一律跳过。
   **清扫零用户代码**（finalizer 已随 native-arrays 删除）——纯位图运算，无重入、无分配、无时序问题。
-- **暂停范围**：**只停本域协程**，其他 worker 继续跑 —— 这是本计划最重要的收益。
+- **执行者与暂停范围**：本地回收由**本域 worker 在安全点就地执行**（无专用 GC 线程，ORCA 同款
+  —— GC 融入执行流而非独立线程）；**只停本域协程**，其他 worker 继续跑 —— 这是本计划最重要的收益。
 - **本地回收必须可靠地定期跑**：全局全量清扫虽然会顺带收本地死对象（§2.6），但全局触发只看共享侧
   ——本地堆的健康完全依赖本地配额触发（见 §5 性能验收）。
 
 ### 2.6 全局回收器：保持今天的全量语义（方案 F 的核心）
 
 - **标记**：**不改**——从**全套全局根**（主栈 + 全部协程栈扫描区 + 全局根 + 同步对象内部引用 +
-  meta pin + 新对象隔离环 + 保守 region 注册表，即 §10.8 原文的全套）出发，**穿透一切对象**
+  新对象隔离环 + 保守 region 注册表，即 §10.8 原文全套减 meta pin）出发，**穿透一切对象**
   （带位、未带位、大对象），全量判定生死。反向边（未带位 → 带位）因此**天然安全**：接收方把消息
   存进本地容器后，全局标记从 帧 → 本地对象 → 带位消息 一路穿透，存活无死角——**不需要任何
   "发现机制"**（注册表 / 上报 / epoch / 自扫，全都不要，见 §2.10）。
+  （注：§10.8 原文的"元编程钉住的对象"一项**已随 unsafe_cast 删除轮失效**——pin 表已删，meta 对象
+  现在是 `MetaEngine.object_values` 里的**常规引用**（List/array refmap 精确追踪、全局根可达），
+  不再是特殊根；B6 应用时把设计文档 §10.8 同步修正。）
 - **清扫**：**不改**——全量清扫，顺带释放本地死对象（全量标记已经看到死活，顺手清扫零额外成本；
   这也是本地回收的兜底）。
 - **唯一改动**：**触发预算拆分**——本地分配走本地配额（不推全局 goal），全局 goal 只由共享侧
@@ -234,6 +243,17 @@
 > finalizer 相关不变量（原 Inv-S6/S7）随机制删除与方案 F 取消：IMemoryDispose 整套已随
 > native-arrays 删除（死对象清扫零用户代码，本地/全局收集器都不再跑用户代码）；
 > Inv-S7（双向闭合）已由方案 F 取代（§2.10 有被否决路线的留档）。
+
+> **unsafe 层例外（forge soundness，对照 Lattice 的第六性质）**：~~`unsafe_cast`（元引擎对象桥，
+> native-arrays 下一轮才删除）在删除前是类型判据的例外——经它伪造的引用可能绕过 Imm/Sync 判据
+> 产生跨色边。处置：`GC_VERIFY` 的 Inv-S1/S2 断言**必须覆盖 unsafe 构造的对象**（debug 构建
+> 当场报错），文档声明"unsafe_cast 与共享侧混用为未定义行为"；该例外随 `unsafe_cast` 删除而消失。~~
+> **已消除（2026-10-19，feature/remove-unsafe-cast）**：`unsafe_cast` 关键字已删除，元引擎对象桥
+> 改为句柄表（MetaEngine.object_values，GC 精确追踪的 `List<IReferenceType>`），引用不再可能被
+> 伪造——本例外不复存在，无需任何 GC_VERIFY 特判。
+> 残余的信任边界只剩 **extern C 函数**（历来如此，与 Erlang NIF / Java JNI 同款）：extern 可以
+> 持有/返回对象指针，Pass 10 的白名单只约束可偷性、不约束引用纪律——C 扩展"存指针、跨线程还回"
+> 属于其自身契约，文档化为 C 扩展引用纪律即可（M6 收口时落 8.3 规范一句）。
 
 `Mutex<T>` 这类**共享容器**再带来七条（Inv-M1..M7，见 §2.9）：写点提升、写入口取值约束、
 以及"访问权不得逃逸"这条 **GC 正确性前提**。
@@ -301,14 +321,18 @@ v 的子图对本地不可见。静态规则：**可变新值从分配点到写�
   （"记 arena 分配序号"不可行——序号只能判断"在不在区间"，**枚举**区间成员仍只能靠隔离环，
   而它只有 512 槽会绕回）：
   ① 进临界区时把新对象挂一条"临界区专用链表"（分配器顺手 push）；
-  ② **临界区内分配时立即置位**（TLS 里放一个"在锁内"深度计数，分配器看到非 0 就顺手置位）
-  —— 多一次 TLS 读 + 分支，逻辑最简单。
+  ② **临界区内分配时立即置位**（TLS arena 里放一个"在锁内"深度计数，分配器看到非 0 就顺手置位）。
+  **分配快路径的成本红线（Lattice 的教训——它把 phase guard 明确排除在分配快路径之外）**：
+  `gt_alloc_small` 本来就要经 TLS 取 arena 并做 quarantine push，所以 ①② 的真实增量只是
+  **已取出的 arena 结构上 +1 字段读 + 可预测分支**——相对成本可忽略；红线是**不得再往分配路径
+  加更重的东西**（新的 TLS 查找、复杂 guard、锁）。
   ⚠️ **已知代价（过度置位）**：临界区内**没进载荷**的临时对象（`let tmp = new Key()`）也会被置位，
   成为共享垃圾、只能等全局收。精化选项（可后补）：出口只提升"**载荷直接字段指向的**区间内新值"
   再从它们递归——空手 `with()` 回到 O(直接字段数)，精度恢复。
-- **(b) 编译器插桩**：只对"写入目标静态可知在共享侧"的字段写插桩（`with` 回调形参、通道 `pop`
-  回来的引用）—— 需要类型系统带"shared-referenced"效应，与 Inv-M5 的逃逸检查同一套机制，
-  留到 P1 之后。
+- **(b) 编译器插桩（终态）**：只对"写入目标在共享侧"的字段写插桩（`with` 回调形参链、通道 `pop`
+  回来的引用）——这正是 Lattice phase guard 的同款位置（**守在写操作上，不碰分配路径**），
+  也是 Inv-M7 静态检查的运行时对应物：P5 落地后**只插静态证明不了的写**，可证明的零成本。
+  演进线：(a) 起步（工程零依赖）→ P5 检查器 → (b) 收尾（把 (a) 的过度置位消掉）。
 
 **统一覆盖所有共享容器**：`Mutex` 的 `with`/`set`、通道的 `push`、`Ownership` 移交、结果容器 `complete()`。
 构造时的初始载荷 = **第一次写**，走同一条路径。
@@ -348,7 +372,8 @@ v 的子图对本地不可见。静态规则：**可变新值从分配点到写�
 **两条硬规定（评审 P3 的遗产，仍然有效）**：
 
 1. `§10.8` 的全局根集合**必须保留全套**：主栈 + **全部协程的栈扫描区** + 全局根 + 同步对象内部引用 +
-   meta pin + **新对象隔离环**（+ 保守 region 注册表）。隔离环是每域 arena 里的数组、不在主栈上，
+   **新对象隔离环**（+ 保守 region 注册表；meta pin 一项已随 unsafe_cast 删除轮失效，见 §2.6 注）。
+   隔离环是每域 arena 里的数组、不在主栈上，
    主栈的保守扫描救不了它——"唯一引用在协程帧/隔离环里的大对象"靠它们保活。
 2. （方案 F 下）全局标记穿透一切对象——"不标不透"只发生在**本地回收器**对带位对象的处理上（Inv-S8）。
 
@@ -379,6 +404,13 @@ m.with(fun(mut s: State) -> void { s.buffer = new BigArray(...); });   // 换缓
   外加"图大不大、访问频不频繁"这一层。
 
 （finalizer 相关的"共享对象无老家"规则已随 IMemoryDispose 删除而取消——清扫零用户代码。）
+
+**为什么共享侧不能学 Erlang 的 off-heap binary / Lattice 的 region 整体释放（留档）**：
+Erlang 的 >64KB binary 是**扁平字节**——无内部指针、无环，引用计数即可立即回收；Lattice 的
+crystal region 对应"一次 freeze 的一张图"、天然整批同死。我们的共享侧是**任意对象图**——
+带位对象生命周期交错、可能有环，refcount 处理不了环、region 整体释放处理不了交错——
+只能全量标记逐对象回收。这是"共享 churn 只能等全局收集"的**结构性原因**，也是引导
+`Ownership` 搬运（搬走的是一张整图，本地侧立即可收）的根本理由。
 
 ### 2.12 `Mutex<T>` 的访问面（与 Inv-M5 配套）
 
@@ -506,11 +538,40 @@ m.with(fun(mut s: State) -> void { s.buffer = new BigArray(...); });   // 换缓
 - 交付：
   ① `GC_VERIFY` 的 **Inv-S1/S2 断言**（正向跨色边扫描：带位对象不得指向未带位对象）——
   **只在全局 STW 期跑**（本地收集期读带位对象的字段本身就与其他域的持锁写并发，断言自己就有数据竞争）；
-  ② Inv-S8 的代码审查清单（本地标记不穿透带位对象——M4 前置）
+  ② Inv-S8 的代码审查清单（本地标记不穿透带位对象——M4 前置）；
+  ③ **外部先例性质核对（一次性，约半天）**：对照 ORCA（ESOP'18 的 soundness 性质）与
+  Lattice（六性质：phase 单调 / 堆分离 / 值隔离 / 消费性 freeze / forge soundness / thaw 独立）
+  逐条核对我们的 Inv 集覆盖面，缺的补进 `GC_VERIFY` 或文档（unsafe 层例外见 §2.7）
 - 验收：负向用例（带位对象被塞进未带位子对象——人为构造）被断言抓住；正向用例全绿
 - 风险：低中
 
 ### M4 — 域本地回收器 + 按域停止 + 根完备 + 预算拆分
+
+> **实现状态（2026-10-19 收口）**：记账 bug 已修（span freed 误减 malloc 计数器），
+> 四种模式（默认/VERIFY/LOCAL/LOCAL+VERIFY）gc_torture 全绿；
+> M5 混合 span 段 + MutexLocalSurvive（4 后端）已交付。
+> M4a 期间：span 域绑定（owner_dom + 每域池）✓；
+> 本地回收算法（header.marked 标记、全套根 + 叶子规则、Inv-S8 跳过、大对象穿透、
+> 配额触发 EMPEROR_GC_LOCAL、与全局双向互斥）✓——三个独立用例（local_min/hole3/hole4：
+> 洞 1/洞 2/REFARR 链/共享保留/全局一致）全绿。
+> **已知 bug（下轮修）**：torture 组合场景（大 churn + 本地 + 全局交错）中
+> heap_bytes_total 记账溢出——本地 sweep 的 freed 折减与 refill fold 的时序交错未对齐；
+> **EMPEROR_GC_LOCAL 默认 0（关闭），发布路径零影响**。
+> M4b（按域停止协议/poll gate 分域化）未开始。
+> 另：torture wrap-grow 用例已按"本地回收可在任意 refill 触发"的现实改造（种子槽直接挂根）。
+
+> **实现期补充的设计决定（2026-10-19，原稿缺口）**：
+> 1. **span 域绑定**——原稿的"span 集合限定为本域"隐含 span 有域归属，但现状的退役 span 进**全局池**，
+>    refill 跨域复用后同一 span 的槽会混多域对象，"本域 span 集合"无从谈起。决定：**span 从被取用
+>    classed 起绑定取用它的域**，退役进**本域池**（GtArena 增 dom_partial/dom_full），refill 优先取
+>    本域池；只有**完全空**的 span（sweep 整块回收）回全局 empty 池供任意域再取。域绑定 + Inv-S5
+>    一起闭合了并发正确性：本地标记永远不会灰化别域的 span，无跨域位图写。
+> 2. **M4 分两步**：M4a（本地回收算法，全局停止协议下触发，标记用 header.marked 而非 span 位图——
+>    绕开两收集器的位图复用问题，保守根 = 全套根 + 叶子规则"非本域未带位对象跳过"（Inv-S5 下与
+>    精确本域根等价）；M4b（按域停止协议——poll gate 分域化，编译器发射侧配合）。
+> 3. **大对象穿透用 marked 防重**（本地回收记录穿透的大对象列表，结束统一清 marked——残留会让
+>    下次回收把活对象误判"已处理"而漏标其子图）。
+
 - 交付：
   ① 按域配额触发；**预算拆分**：本地分配不推全局 goal，带位槽字节（`nshared` × slot）从本地配额
   剔除计入共享预算；本地回收后 live 折进全局 unified goal 重算；
@@ -568,6 +629,7 @@ m.with(fun(mut s: State) -> void { s.buffer = new BigArray(...); });   // 换缓
 | **全局 STW 的到达延迟** | **必须单独度量**：全局收集要等每个 worker 到安全点，而正在做本地收集的 worker 不在安全点 ⇒ 到达延迟会被**拉长最多一次本地收集的时长**。两个暂停指标之间存在隐藏耦合 |
 | 空手 `with()` 的记账 | 恒为 0（不随载荷图规模增长）—— 这条同时是"出口扫描"方案的否决依据（§2.9） |
 | 本地堆不被饿死 | 本地配额可靠触发；**带位字节已从本地配额剔除**（否则本地堆被收不动的对象占满 → 空转抖动） |
+| **共享侧监控** | `gc_info`/`GC_PROFILE` 新增"带位字节数 / 共享占比 / 换出批次数"计数器（支撑上表全部实测；对照 Java 分代对 premature promotion 的监控经验） |
 | 回归红线 | 单线程/顺序负载（编译器自编译）性能与内存不得下降 |
 
 ---
@@ -760,8 +822,10 @@ M6 文档收口时把设计文档 §10.7（终结器回老家）**整节删除**
 - **本地回收器**的根集合 = 本域协程的帧链（含停驻栈）+ 本域 arena 隔离环 + **全局根/保守 region
   注册表的本域过滤**；**带位对象不当根、不穿透**（Inv-S8）；**大对象不释放、但要穿透**；
   本地分配走**本地配额**，带位槽字节计入共享预算。
-- **全局回收器**的根集合 = **§10.8 的全套**：各线程主栈 + **全部协程的栈扫描区** + 全局根 +
-  同步对象内部的引用 + 元编程钉住的对象 + **新对象隔离环** + 保守 region 注册表；
+- **全局回收器**的根集合 = **§10.8 的全套（减 meta pin）**：各线程主栈 + **全部协程的栈扫描区** +
+  全局根 + 同步对象内部的引用 + **新对象隔离环** + 保守 region 注册表
+  （"元编程钉住的对象"一项已随 unsafe_cast 删除轮失效——meta 对象是 `MetaEngine.object_values`
+  里的常规引用、经 refmap 精确追踪，不再是特殊根；应用本块时把设计文档 §10.8 同步修正）；
   **穿透一切对象、全量清扫**（与今天相同）——唯一改动是**触发预算**：本地分配不推全局 goal，
   全局 goal 只由共享侧分配/存活推动。
 
@@ -815,8 +879,16 @@ P5 访问权逃逸检查 + 写入口取值约束（§10.12，是 GC 正确性的
 **回退开关**：运行期 `EMPEROR_GC_REGION=0` 退回今天的单堆行为；任一阶段都必须保证开关关闭时
 **逐字节等价**。完整计划见 `.agents/plans/gc-two-tier-heap.md`。
 
-> **实现状态（2026-10-16）**：设计已细化，**尚未实现**。当前收集器仍是"一次 STW 扫全部 arena"的单堆
-> 形态（§10.2 第一级）。
+> **实现状态（2026-10-19）**：M1–M5 + P1/P6 已落地（feature/gc-two-tier-heap）；
+**实现状态（2026-10-20 M4b 完成）**：M4b 已落地——本地回收器的根集合改为**每线程**
+（帧链只走 `_Thread_local` 的头、scan region 按 `owner_thread` 过滤、主栈用本线程锚 +
+协程态 watermark），LocalGcMultiDomain（4 线程 churn + 锁 + LOCAL=8）全绿。
+**P5 逃逸检查状态**：检查器框架（`check_with_escape`：E1 引用实参 / E2 非本地左值 /
+E3 返回值，值拷贝读取放行）已在 SemanticConcurrency 落地并可编译，但 **EP 的 lambda
+脱糖为闭包 new_expr（构造无实参、body 不在实参链上）**，lambda 体的提取需沿
+"闭包类 → 合成方法 def" 的路径补完（探测记录：with 实参 = new_expr，FunctionKind，
+arguments 为空）——补完后 E1-E3 生效。原计划的 WithEscapeRejected 负向用例待届时
+恢复。Inv-M7 双向别名静态检查同样待做（运行时写点提升已在 M2 兜底正确性）。
 ````
 
 #### B8 → 新增 `### 10.12 共享容器（Mutex<T> / 通道）与 GC 的耦合`
@@ -959,9 +1031,10 @@ P5 访问权逃逸检查 + 写入口取值约束（§10.12，是 GC 正确性的
 
 ## 11. 与既有工作的衔接
 
-- **衔接 native-arrays（基线依赖）**：本计划以 `feature/native-arrays` 落地为基线——finalizer/
-  typed region 已删（清扫零用户代码、原 P4/Inv-S6/B5 全部取消）、单阶段 sweep、**REFARR refmap
-  已启用**（写点提升对 `T[]` 是现成机制覆盖）、**保守 region 注册表保留**（本地根集合的过滤对象）。
+- **衔接基线（native-arrays + unsafe_cast 删除轮）**：finalizer/typed region/meta pin 表已删
+  （清扫零用户代码、原 P4/Inv-S6/B5 全部取消；meta 对象经 `MetaEngine.object_values` 常规追踪）、
+  单阶段 sweep、**REFARR refmap 已启用**（写点提升对 `T[]` 是现成机制覆盖）、对象桥句柄化
+  （语言层无裸地址，forge 口子关闭，§2.7）、**保守 region 注册表保留**（本地根集合的过滤对象）。
 - **衔接 gc 侧**：本计划只动"谁负责回收哪部分 + 触发预算"，不动 green-tea 的标记算法本身
   （span 队列 / 位图 / 代表对象全部复用）；全局收集器的标记/清扫逻辑**一行不改**（方案 F）。
 - **衔接调度器侧**：域边界必须和 **Pass 10 的可偷性**对齐 —— 协程被偷到别的 worker 时，
@@ -969,3 +1042,26 @@ P5 访问权逃逸检查 + 写入口取值约束（§10.12，是 GC 正确性的
 - **衔接 poll gate（已完成）**：本地回收器同样从安全点触发，复用同一个轮询门；但"只停本域"需要
   **每域 gate + 两级停止 + 全局多域会合**——这是 M4 的正式交付（不是"接口预留"）。
 - **衔接 §10.7（终结器）**：已随 native-arrays 失效——M6 文档收口时整节删除，清扫零用户代码。
+- **外部参照（2026-10-18 调研；设计空间不孤立，但我们的精确组合无现成实现）**：
+  - **Pony ORCA**：能力类型 `iso`/`val` ≈ Ownership/Imm + per-actor 本地 GC + 无屏障无 STW。
+    跨 actor 用"数 actor 不数引用"的延迟引用计数（消息驱动更新），协议复杂到需要 ESOP'18
+    soundness 证明——**我们用全局全量标记换掉了这整块协议**（用频率换复杂度）。
+  - **Lattice（2026-02，dual-heap + 深不可变）**：最近亲——crystal 值标记 fast-path 不穿透 ≈ Inv-S8、
+    phase 单调 ≈ D6、consuming freeze ≈ `move()` 消费语义、`--no-regions` 回退 ≈ 总开关。
+    差异：其 freeze 是**深拷贝迁移**、共享侧按 region **整体释放**、判据以动态 tag 为主——
+    我们零拷贝置位 / 全量标记 / 静态判据是同空间里更激进的三个自选动作。
+    其"phase guard 不上分配快路径"的原则已吸收为 §2.9 的成本红线。
+  - **Ruby Ractor**：shareable/copy/move 三分法与 §2.1 同构。教训：运行时深冻结
+    （`make_shareable`）成本高 → 静态 `Imm` 判据正确；shareable 检查限制惯用法 →
+    方案 F 放开反向边（接收方可持有）正确。
+  - **OCaml 5**：per-domain minor heap（本地回收只停本域）+ 共享 major 的两级架构的工业先例；
+    其 major 用并发标记 + 写屏障——我们选全量 STW，是"不要写屏障"的第三种换法。
+  - **Erlang/BEAM**：per-process GC + off-heap binary（>64KB 全局管理）≈ 我们"大对象归全局"；
+    其消息全复制的代价是我们 Imm 零拷贝置位要避免的（见 §2.11 留档）。
+  - **Rust `Send`/`Sync`、Swift `Sendable`/actor isolation**：静态排除共享错误的判据先例
+    （`Sync` 连命名都同源）；Swift 的 `@unchecked Sendable` 逃生舱教训——我们的对应逃生舱
+    是 `Ownership`（显式交出），不再开后门。
+  - **GHC**：per-capability nursery + statics/CAF 的根完备性问题 ↔ 我们的洞 1（本地根必须含
+    全局根/保守 region 的本域过滤）。
+  - **无先例的三处（= 风险所在）**：Imm 图零拷贝置位、共享侧"全量但低频"、静态判据 + 逐对象
+    逻辑分区（span 不物理分家）——恰对应 M2/M4/M5 三个高风险里程碑，M3 的性质核对因此必要。

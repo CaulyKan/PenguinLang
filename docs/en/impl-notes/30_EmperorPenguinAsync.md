@@ -100,6 +100,14 @@ A delta can be arbitrarily long while collection happens only at its stop-the-wo
 - **No virtual clock**: there is no tick to advance and no timer table; `wait n;` with n > 0 is rejected at run time (there is no tick to wait on — wait on an Event, a future or an AsyncQueue instead); `wait;` / `wait 0;` park one convergence round and negative `wait` is a pure yield, exactly as in sim-mt.
 - **Immediate components**: Signal/Fifo/LatestChannel/Event commit and wake inline — a write's effect is visible to a woken reader in the SAME convergence round (the deferred-commit layer of sim-mt is inverted; the boundary has nothing to commit).
 - **Cross-thread structure** goes through `AsyncQueue<T>`: an MPMC queue guarded by an AtomicBool spinlock (a failed test-and-set backs off with a pure yield — the lock is never held across a park); takers finding it empty park as condition waiters and are woken by enqueue. It implements `ISync`, so coroutines holding one are Pass-10 stealable and genuinely run on different threads under `EMPEROR_THREADS`; the immediate Signal/Fifo/Latest/Event stay single-domain (Pass 10 pins their holders, same lattice as sim-mt).
+
+**Handoff points enforced (2026-10-19)**: the payload-Shareable check
+for channel `write`/`try_write`/`push` and the result container's
+`complete()` is in (`--strict-handoff` hard error / `-Wconcurrency`
+warning — see spec 07's ISync contract); write-point promotion (the
+`__gc_promote` intrinsic) is wired into every handoff point (impl
+note 29 §11.5, design doc §10.12). `AsyncQueue` payloads follow the
+channel rule.
 - The boundary keeps only: owed/runnable check → non-blocking fd probe → blocking fd poll when only fd waiters remain → exit when every coroutine finished, otherwise hang by design (decision E; `EMPEROR_IDLE_DUMP` reports it).
 
 For programs that use no simulation time, free-mt and sim-mt behave identically — free-mt exists so services never pay for a virtual clock, and so `wait n` fails loudly instead of silently scheduling on a tick that never advances. Tests: `Tests/FreeMtTest/` (Pass3 only).

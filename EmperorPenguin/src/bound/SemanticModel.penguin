@@ -117,6 +117,9 @@ class SemanticModel {
     current_fn_name: mut string = "";
     // -Wconcurrency: Pass 10 prints per-site stealable/pinned diagnostics.
     warn_concurrency: bool = false;
+    // --strict-handoff (two-tier heap P1): non-Shareable channel payloads
+    // become E_HANDOFF_NOT_SHAREABLE instead of -Wconcurrency warnings.
+    strict_handoff: bool = false;
     // Set during binding whenever a wait form or async spawn binds anywhere in
     // the unit (including instantiated stdlib channel code — their backpressure
     // loops contain `wait;`). Drives emit_main: only modules that actually
@@ -423,6 +426,7 @@ class SemanticModel {
         if (this.enable_mt_scheduler) {
             this.current_pass_index = 10;
             this.concurrency_pass.warn = this.warn_concurrency;
+            this.concurrency_pass.strict_handoff = this.strict_handoff;
             this.concurrency_pass.run(result);
         }
         // E5: static connect-topology checks (output driver uniqueness,

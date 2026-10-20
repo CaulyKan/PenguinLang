@@ -1465,3 +1465,32 @@ void _emperor_atomic_bool_store(int64_t h, int8_t v) {
 int8_t _emperor_atomic_bool_swap(int64_t h, int8_t v) {
     return __atomic_exchange_n((int8_t*)(intptr_t)h, v, __ATOMIC_SEQ_CST);
 }
+
+/* ---- Mutex (two-tier heap P6; .agents/plans/gc-two-tier-heap.md §2.12) ----
+ * The pthread_mutex_t lives OUTSIDE the GC heap (plain malloc keyed by the
+ * u64 handle in the Penguin wrapper), the same trade-off as the atomic
+ * cells and std.io.File handles: an unreachable mutex leaks to process
+ * exit (the GC finalizer machinery is retired). pthreads work on linux
+ * (glibc) and windows (llvm-mingw winpthreads) alike.
+ *
+ * The wrapper's METHODS (with/set) run the whole critical section —
+ * callback included — between lock and unlock, so every payload write is
+ * covered by the write-point promotion that M2 hooks into with/set
+ * (plan Inv-M2: promotion completes inside the lock). */
+
+#include <pthread.h>
+
+uint64_t _emperor_mutex_new(void) {
+    pthread_mutex_t* m = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+    EMPEROR_ASSERT(m, "mutex alloc");
+    pthread_mutex_init(m, NULL);
+    return (uint64_t)(uintptr_t)m;
+}
+
+void _emperor_mutex_lock(uint64_t h) {
+    pthread_mutex_lock((pthread_mutex_t*)(uintptr_t)h);
+}
+
+void _emperor_mutex_unlock(uint64_t h) {
+    pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)h);
+}

@@ -106,7 +106,15 @@ namespace __builtin {
     interface IReferenceType {
         impl IReferenceType;
     }
-        
+
+    // Marker for "safe to share across threads" — mirror of EmperorPenguin's
+    // core_builtin ISync (both sides must carry it: the EP-side Pass 10
+    // shareability analysis keys on `impl ISync`, and classes impl-ing it
+    // exist in both mirrors — e.g. Mutex below).
+    interface ISync {
+        impl IReferenceType;
+    }
+
     impl __builtin.ICopy<i64> for i64;
     impl __builtin.ICopy<u64> for u64;
     impl __builtin.ICopy<i32> for i32;
@@ -720,6 +728,36 @@ namespace __builtin {
         extern fun swap(mut this, value: i64) -> i64;
         extern fun compare_exchange(mut this, current_val: i64, new_val: i64) -> i64;
         extern fun fetch_add(mut this, value: i64) -> i64;
+    }
+
+    // Mutex<T> — BabyPenguin mirror of EmperorPenguin's core_builtin
+    // Mutex (two-tier heap P6; plan §2.12). The BabyPenguin VM is
+    // single-threaded by design (design doc §11): the lock is a no-op and
+    // the payload is accessed directly. Method signatures mirror the EP
+    // side exactly; the lock HANDLE field is EP-only (like AtomicI64's
+    // cell/value split). with() still brackets the callback — that is the
+    // shape M2's write-point promotion hooks on the EP side.
+    #template(T: type)
+    class Mutex {
+        impl IReferenceType;
+        impl ISync;
+        payload: mut T;
+
+        fun new(mut this, init_v: mut T) {
+            this.payload = init_v;
+        }
+
+        fun with(mut this, f: fun<void, mut T>) -> void {
+            f(this.payload);
+        }
+
+        fun get(this) -> T {
+            return this.payload;
+        }
+
+        fun set(mut this, v: mut T) -> void {
+            this.payload = v;
+        }
     }
 
     #template(K: type, V: type)

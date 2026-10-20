@@ -146,6 +146,71 @@ namespace __builtin {
         }
     }
 
+    // ---- Mutex<T> (two-tier heap P6/D13; plan §2.12) ----
+    // Sync for ANY payload T: the constraint is not on T's type but on the
+    // two moments "payload in" (construction/set — checker P5, plan Inv-M7)
+    // and "access out" (with's callback — escape check, Inv-M5). The lock
+    // itself is a pthread_mutex_t OUTSIDE the GC heap (u64 handle, leaks to
+    // process exit — same trade-off as the atomics and std.io.File).
+    // v1 surface: with/get/set ONLY — no lock() guard (needs compile-time
+    // lock-region checking, plan §7 non-goal). with() runs the whole
+    // critical section — callback included — between lock/unlock, so every
+    // payload write is covered by the write-point promotion M2 hooks here
+    // (Inv-M2: promotion completes inside the lock). Re-entrant with() on
+    // the SAME mutex deadlocks (PTHREAD_MUTEX_DEFAULT) — nesting rules are
+    // D11. get()/set() are the value-semantics tier; returning a reference
+    // payload via get() hands out shared access — the checker (P5) is what
+    // constrains that, the runtime surface is permissive.
+    extern fun mutex_new() -> u64;
+    extern fun mutex_lock(h: u64);
+    extern fun mutex_unlock(h: u64);
+    extern fun gc_crit_enter();
+    extern fun gc_crit_exit();
+
+    #template(T: type)
+    class Mutex {
+        impl IReferenceType;
+        impl ISync;
+        handle: u64 = 0;
+        payload: mut T;
+
+        fun new(mut this, init_v: mut T) {
+            // construction point = the first payload write (Inv-M6); the
+            // object is not visible to other threads yet — no lock needed.
+            this.handle = mutex_new();
+            __builtin.__gc_promote<T>(init_v);
+            this.payload = init_v;
+        }
+
+        fun with(mut this, f: fun<void, mut T>) -> void {
+            mutex_lock(this.handle);
+            // Critical-section bracket: allocations made by the callback
+            // land on the arena's crit list and are promoted at exit —
+            // still inside the lock (Inv-M2). An empty with() costs O(1)
+            // (empty-list check only).
+            gc_crit_enter();
+            f(this.payload);
+            gc_crit_exit();
+            mutex_unlock(this.handle);
+        }
+
+        fun get(this) -> T {
+            mutex_lock(this.handle);
+            let v: T = this.payload;
+            mutex_unlock(this.handle);
+            return v;
+        }
+
+        fun set(mut this, v: mut T) -> void {
+            mutex_lock(this.handle);
+            // External value entering the shared side: promote it (and its
+            // closure) before the store — the write point (Inv-M1).
+            __builtin.__gc_promote<T>(v);
+            this.payload = v;
+            mutex_unlock(this.handle);
+        }
+    }
+
     // ---- Native atomics (multi-thread scheduler M1; see
     // docs/zh/wip/concurrent_scheduler.md §12) ----
     // The atomic cell lives OUTSIDE the GC heap (plain malloc in
@@ -1215,6 +1280,17 @@ class Range {
 
     #template(T: type)
     fun __array_copy_range(dst: mut array<T>, src: mut array<T>, n: u64);
+
+    // Two-tier heap M2 (gc-two-tier-heap plan §2.9): write-point promotion.
+    // Reference-typed v lowers to a call of the runtime's closure promotion
+    // (shared bit over v's not-yet-shared graph, stopping at shared
+    // objects). Primitive / function-typed v lowers to nothing (a value
+    // copy carries no shareable reference graph); stack-passed struct
+    // values resolve to no GC object in the runtime and are ignored.
+    // Called ONLY from the handoff points — Mutex construction/set, channel
+    // push, result-container complete().
+    #template(T: type)
+    fun __gc_promote(v: T);
 
     // Independent cursor over a native `array<T>` (mirrors RangeIterator: no
     // interface needed, for-in desugars through iter()).

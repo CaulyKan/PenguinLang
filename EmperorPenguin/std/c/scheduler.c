@@ -229,6 +229,18 @@ void* _emperor_sched_main_watermark(void) {
     return sched_threads[tls_thread_index].watermark;
 }
 
+/* Two-tier M4b (gc.c's domain-local collection): THIS thread's scheduler
+ * index (-1 = no scheduler thread registered) and its main-stack base —
+ * a local collection must cover only its own thread's roots. */
+int _emperor_sched_my_thread_index(void) {
+    return tls_thread_index;
+}
+
+void* _emperor_sched_my_stack_bottom(void) {
+    if (tls_thread_index < 0) return NULL;
+    return sched_threads[tls_thread_index].stack_bottom;
+}
+
 static void sched_thread_set_watermark(void* wm) {
     if (tls_thread_index < 0) return;
     sched_threads[tls_thread_index].watermark = wm;

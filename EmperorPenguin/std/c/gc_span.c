@@ -52,11 +52,27 @@ extern int _emperor_sched_parallel_active(void);
 typedef struct GtSpan {
     uint32_t magic;              /* GT_SPAN_MAGIC, guards gt_span_of()    */
     uint8_t  size_class;         /* index into gt_classes[]               */
-    uint8_t  flags;              /* GT_F_*                                 */
-    uint16_t nslots;             /* slots per span for this class         */
+    uint8_t  flags;              /* GT_F_* (kept a whole byte: headroom
+                                  * for future span-level flags)          */
+    uint8_t  nslots;             /* slots per span for this class (max
+                                  * 252 — gt_classes[0], fits u8)         */
+    uint8_t  nshared;            /* two-tier heap M1: slots carrying the
+                                  * GCHeader shared bit in this span.
+                                  * Fast-path discriminator: nshared == 0
+                                  * spans keep today's bitmap-only paths;
+                                  * written by the owning domain only
+                                  * (plan §2.2/§2.13), always 0 in M1     */
     uint16_t free_index;         /* next slot probe hint (alloc)          */
     uint16_t live_count;         /* allocated (not yet swept-dead) slots  */
     uint16_t rep_slot;           /* representative slot index             */
+    uint8_t  owner_dom;          /* two-tier M4: registry index of the
+                                  * arena this span is bound to (255 =
+                                  * unbound). Set when classed for an
+                                  * arena; retirement goes to that arena's
+                                  * domain pools. A local collection uses
+                                  * it to decide in O(1) whether a resolved
+                                  * slot is a local mark target. Eats the
+                                  * header pad — stays 128B.              */
     uint64_t alloc_bits[GT_BITMAP_WORDS];  /* slot in use                 */
     uint64_t gray_bits[GT_BITMAP_WORDS];   /* reachable, unscanned       */
     uint64_t black_bits[GT_BITMAP_WORDS];  /* reachable, scanned         */
@@ -286,8 +302,9 @@ static GtSuper* gt_super_acquire(void) {
     return su;
 }
 
-/* Take a span from the empty pool and (re)class it for CLS. */
-static GtSpan* gt_span_class(unsigned cls) {
+/* Take a span from the empty pool and (re)class it for CLS, binding it to
+ * DOM (two-tier M4: spans live out their life in their domain's pools). */
+static GtSpan* gt_span_class(unsigned cls, unsigned dom) {
     GtSpan* s = _gt.empty;
     if (!s) return NULL;
     _gt.empty = s->next;
@@ -296,9 +313,15 @@ static GtSpan* gt_span_class(unsigned cls) {
     memset(s, 0, sizeof(GtSpan));
     s->magic = GT_SPAN_MAGIC;
     s->size_class = (uint8_t)cls;
-    s->nslots = gt_classes[cls].nslots;
+    s->nslots = (uint8_t)gt_classes[cls].nslots;
     s->super = su;
+    s->owner_dom = (uint8_t)dom;
     return s;
+}
+
+/* Two-tier M4: this arena's registry index (dom_id) — spans record it. */
+static unsigned gt_dom_of(const GtArena* a) {
+    return (unsigned)(a - _gt_arena_pool);
 }
 
 /* ---- Address -> span / owner ---- */
@@ -356,16 +379,63 @@ void* gt_slot_owner(const void* p) {
     return NULL;
 }
 
+/* ---- Two-tier heap M2: promotion + critical-section tracking ---- */
+
+int gt_promote_slot(void* user) {
+    GtSpan* s = gt_span_of(user);
+    if (!s) return 0;
+    const char* payload = gt_slot_payload(s);
+    const char* c = (const char*)user;
+    if (c < payload) return 0;
+    size_t idx = (size_t)(c - payload) / gt_classes[s->size_class].slot_size;
+    if (idx >= s->nslots) return 0;
+    if (!(s->alloc_bits[idx >> 6] & (1ull << (idx & 63)))) return 0;
+    GCHeader* h = gt_slot_header(s, (unsigned)idx);
+    if (h->size < 0) return 0;
+    if (c < (char*)(h + 1) || c >= (char*)(h + 1) + h->size) return 0;
+    if (!h->shared) {
+        h->shared = 1;
+        s->nshared++;   /* single-writer: the promoting domain owns the span
+                         * (Inv-M4) — plain increment, no atomics (plan D9) */
+    }
+    return 1;
+}
+
+void gt_crit_track(GtArena* a, void* user) {
+    if (a->crit_n == a->crit_cap) {
+        size_t nc = a->crit_cap ? a->crit_cap * 2 : 64;
+        void** na = (void**)realloc(a->crit_arr, nc * sizeof(void*));
+        if (!na) {
+            /* Tracking OOM: fall back to promoting the bare object now.
+             * Its construction-phase edges would miss promotion — GC_VERIFY
+             * (M3) catches that; better than silently losing the object. */
+            _emperor_gc_promote(user);
+            return;
+        }
+        a->crit_arr = na;
+        a->crit_cap = nc;
+    }
+    a->crit_arr[a->crit_n++] = user;
+}
+
 /* ---- Allocation (per-arena fast path) ---- */
 
-static GtSpan* gt_take_span_for(unsigned cls) {
-    GtSpan* s = _gt.partial[cls];
+static GtSpan* gt_take_span_for(GtArena* a, unsigned cls) {
+    /* Two-tier M4: prefer THIS domain's retired partials (a span stays
+     * bound to its arena), then the shared pool, then a fresh empty. */
+    GtSpan* s = (GtSpan*)a->dom_partial[cls];
+    if (s) {
+        a->dom_partial[cls] = (void*)s->next;
+        s->next = NULL;
+        return s;
+    }
+    s = _gt.partial[cls];
     if (s) {
         _gt.partial[cls] = s->next;
         s->next = NULL;
         return s;
     }
-    return gt_span_class(cls);
+    return gt_span_class(cls, gt_dom_of(a));
 }
 
 /* Slow path: retire ARENA's exhausted current span to the shared full
@@ -389,25 +459,36 @@ static GtSpan* gt_retire_refill(GtArena* a, unsigned cls) {
     }
     GtSpan* old = a->current[cls];
     if (old) {
-        gt_pool_push(&_gt.full[cls], old);
+        /* Two-tier M4: retire into THIS domain's pool (the span keeps its
+         * binding; only fully-empty spans ever return to the shared pool,
+         * at sweep time). Retire happens when the current span ran out of
+         * slots, so it is full. */
+        gt_pool_push((GtSpan**)&a->dom_full[cls], old);
         a->current[cls] = NULL;
     }
-    GtSpan* s = gt_take_span_for(cls);
+    GtSpan* s = gt_take_span_for(a, cls);
     if (!s) {
         gt_super_acquire(); /* refills the empty pool (or fails) */
-        s = gt_take_span_for(cls);
+        s = gt_take_span_for(a, cls);
     }
     if (s) {
         s->free_index = 0;
         a->current[cls] = s;
     }
     gc_alloc_unlock();
+    /* Two-tier M4a: the refill slow path is the (low-frequency) budget
+     * check — one span of churn per call. The local collection runs on
+     * THIS thread: it is at a safepoint by construction. */
+    if (s) {
+        a->spans_since_local++;
+        gc_local_check(a);
+    }
     if (!s && !_emperor_sched_parallel_active()) {
         gc_collect_greentea_emergency();
         gc_alloc_lock();
-        s = gt_take_span_for(cls);
+        s = gt_take_span_for(a, cls);
         if (!s && !_gt.empty) {
-            if (gt_super_acquire()) s = gt_take_span_for(cls);
+            if (gt_super_acquire()) s = gt_take_span_for(a, cls);
         }
         if (s) {
             s->free_index = 0;
@@ -444,6 +525,7 @@ static void* gt_alloc_in_span(GtArena* a, GtSpan* s, unsigned cls,
         h->marked = 0;
         h->is_string = is_string;
         h->size = size;
+        h->shared = 0;   /* monotonic bit; M1 keeps it 0 (plan §2.2) */
         memset(h + 1, 0, gt_classes[cls].slot_size - sizeof(GCHeader));
         if (_gc_timing) {
             __atomic_add_fetch(&_gc_st_allocs, 1, __ATOMIC_RELAXED);
@@ -455,6 +537,10 @@ static void* gt_alloc_in_span(GtArena* a, GtSpan* s, unsigned cls,
             gc_request_collect();
         }
         gt_quarantine_push(a, (char*)(h + 1));
+        /* Two-tier M2: track allocations made inside a critical section
+         * (plan §2.9 (a)-1) — +1 field read + predictable branch on the
+         * fast path (the cost red line; nothing heavier may land here). */
+        if (a->crit_depth) gt_crit_track(a, (char*)(h + 1));
         return (char*)(h + 1);
     }
     return NULL;
@@ -727,6 +813,46 @@ void gt_verify_invariants(void) {
     }
 }
 
+/* Two-tier M3 (GC_VERIFY): visit every shared slot on every span that
+ * carries one — the same enumeration as gt_verify_invariants (full/partial
+ * pools + each arena's current; the empty pool holds no allocated slots).
+ * FN receives the object's GCHeader; nshared>0 spans only. */
+void gt_verify_shared_objects(void (*fn)(GCHeader*)) {
+    int n = _gt_narenas;
+    for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
+        GtSpan* lists[2] = {_gt.full[cls], _gt.partial[cls]};
+        for (int L = 0; L < 2; L++) {
+            for (GtSpan* s = lists[L]; s; s = s->next) {
+                if (!s->nshared) continue;
+                for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
+                    uint64_t bits = s->alloc_bits[w];
+                    while (bits) {
+                        unsigned idx = (w << 6) + (unsigned)__builtin_ctzll(bits);
+                        bits &= bits - 1;
+                        if (idx >= s->nslots) break;
+                        GCHeader* h = gt_slot_header(s, idx);
+                        if (h->size >= 0 && h->shared) fn(h);
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < n; i++) {
+            GtSpan* cur = (GtSpan*)_gt_arenas[i]->current[cls];
+            if (!cur || !cur->nshared) continue;
+            for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
+                uint64_t bits = cur->alloc_bits[w];
+                while (bits) {
+                    unsigned idx = (w << 6) + (unsigned)__builtin_ctzll(bits);
+                    bits &= bits - 1;
+                    if (idx >= cur->nslots) break;
+                    GCHeader* h = gt_slot_header(cur, idx);
+                    if (h->size >= 0 && h->shared) fn(h);
+                }
+            }
+        }
+    }
+}
+
 /* ---- Sweep ---- */
 
 /* Walk every LIVE span: the shared full/partial pools plus every
@@ -740,7 +866,13 @@ static void gt_foreach_span(void (*fn)(GtSpan*)) {
             for (GtSpan* s = lists[L]; s; s = s->next) fn(s);
         }
         for (int i = 0; i < n; i++) {
-            GtSpan* c = (GtSpan*)_gt_arenas[i]->current[cls];
+            GtArena* a = _gt_arenas[i];
+            GtSpan* domlists[2] = {(GtSpan*)a->dom_full[cls],
+                                   (GtSpan*)a->dom_partial[cls]};
+            for (int L = 0; L < 2; L++) {
+                for (GtSpan* s = domlists[L]; s; s = s->next) fn(s);
+            }
+            GtSpan* c = (GtSpan*)a->current[cls];
             if (c) fn(c);
         }
     }
@@ -785,9 +917,21 @@ static void gt_repool_swept(GtSpan* s) {
         _gt.live_slot_bytes +=
             (size_t)live * gt_classes[s->size_class].slot_size;
         s->next = NULL;
-        gt_pool_push(live >= s->nslots ? &_gt.full[s->size_class]
-                                       : &_gt.partial[s->size_class],
-                     s);
+        /* Two-tier M4: a swept span with live slots returns to ITS domain's
+         * pool (owner_dom) — never the shared pool. owner_dom == 255 (the
+         * legacy producers are gone, so this cannot happen in practice)
+         * falls back to the shared pool for safety. */
+        if (s->owner_dom != 0xFF && s->owner_dom < GT_MAX_ARENAS) {
+            GtArena* dom = &_gt_arena_pool[s->owner_dom];
+            gt_pool_push(live >= s->nslots
+                             ? (GtSpan**)&dom->dom_full[s->size_class]
+                             : (GtSpan**)&dom->dom_partial[s->size_class],
+                         s);
+        } else {
+            gt_pool_push(live >= s->nslots ? &_gt.full[s->size_class]
+                                           : &_gt.partial[s->size_class],
+                         s);
+        }
     }
 }
 
@@ -815,9 +959,22 @@ void gt_sweep_reclaim(void) {
             }
         }
         for (int i = 0; i < n; i++) {
-            GtSpan* s = (GtSpan*)_gt_arenas[i]->current[cls];
+            GtArena* a = _gt_arenas[i];
+            GtSpan* domlists[2] = {(GtSpan*)a->dom_full[cls],
+                                   (GtSpan*)a->dom_partial[cls]};
+            a->dom_full[cls] = NULL;
+            a->dom_partial[cls] = NULL;
+            for (int L = 0; L < 2; L++) {
+                GtSpan* s = domlists[L];
+                while (s) {
+                    GtSpan* nx = s->next;
+                    gt_repool_swept(s);
+                    s = nx;
+                }
+            }
+            GtSpan* s = (GtSpan*)a->current[cls];
             if (s) {
-                _gt_arenas[i]->current[cls] = NULL;
+                a->current[cls] = NULL;
                 gt_repool_swept(s);
             }
         }
@@ -826,6 +983,135 @@ void gt_sweep_reclaim(void) {
                      __ATOMIC_RELAXED);
     _gt.last_freed = pre - _gt.live_slot_bytes;
     _gt.n_cycles++;
+}
+
+/* ---- Two-tier M4a: domain-local collection (gc_span.c side) ---- */
+
+/* DIAGNOSTIC (EMPEROR_GC_LOCAL_AUDIT): after a full-process mark, report
+   every own-domain slot the GLOBAL mark reached (black) that the local
+   pass left unmarked — the exact objects a local sweep would have
+   reclaimed while live. Aborts on the first gap with its type name. */
+void gt_audit_local_gap(GtArena* a) {
+    for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
+        GtSpan* lists[3];
+        int nl = 0;
+        if (a->dom_full[cls]) lists[nl++] = (GtSpan*)a->dom_full[cls];
+        if (a->dom_partial[cls]) lists[nl++] = (GtSpan*)a->dom_partial[cls];
+        if (a->current[cls]) lists[nl++] = (GtSpan*)a->current[cls];
+        for (int L = 0; L < nl; L++) {
+            for (GtSpan* s = lists[L]; s; s = s->next) {
+                for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
+                    uint64_t bits = s->alloc_bits[w];
+                    while (bits) {
+                        unsigned idx = (w << 6) + (unsigned)__builtin_ctzll(bits);
+                        bits &= bits - 1;
+                        if (idx >= s->nslots) { bits = 0; break; }
+                        GCHeader* h = gt_slot_header(s, idx);
+                        if (h->size < 0) continue;
+                        if ((s->black_bits[w] & (1ull << (idx & 63))) && !h->marked && !h->shared) {
+                            fprintf(stderr,
+                                    "emperor gc: LOCAL-AUDIT GAP: slot %u cls %u"
+                                    " globally-live but locally-dead — root gap\n",
+                                    idx, cls);
+                            abort();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+int gt_span_of_arena(GtArena* a, void* candidate, void** owner_out) {
+    GtSpan* s = gt_span_of(candidate);
+    if (!s) return 0;
+    if (s->owner_dom != (uint8_t)gt_dom_of(a)) return 0;
+    void* user = gt_slot_owner(candidate);
+    if (!user) return 0;
+    if (owner_out) *owner_out = user;
+    return 1;
+}
+
+/* Sweep THIS arena's spans after a local mark pass (header.marked, not the
+ * span bitmaps): a slot dies iff alloc & !marked & !shared. Live slots get
+ * their marked reset (single-use discipline), shared slots are left alone
+ * (the global collector owns them), and an emptied span returns to the
+ * shared empty pool for anyone to reclass. Returns freed slot bytes. */
+size_t gt_local_sweep(GtArena* a) {
+    size_t freed = 0;
+    for (unsigned cls = 0; cls < GT_NCLASS; cls++) {
+        GtSpan* lists[3];
+        int nl = 0;
+        if (a->dom_full[cls]) lists[nl++] = (GtSpan*)a->dom_full[cls];
+        if (a->dom_partial[cls]) lists[nl++] = (GtSpan*)a->dom_partial[cls];
+        if (a->current[cls]) lists[nl++] = (GtSpan*)a->current[cls];
+        for (int L = 0; L < nl; L++) {
+            GtSpan* s = lists[L];
+            unsigned live = 0;
+            for (unsigned w = 0; w < GT_BITMAP_WORDS; w++) {
+                uint64_t bits = s->alloc_bits[w];
+                while (bits) {
+                    unsigned idx = (w << 6) + (unsigned)__builtin_ctzll(bits);
+                    bits &= bits - 1;
+                    if (idx >= s->nslots) { bits = 0; break; }
+                    GCHeader* h = gt_slot_header(s, idx);
+                    if (h->size < 0) continue;
+                    if (h->shared) { live++; continue; }   /* global's */
+                    if (h->marked) {
+                        h->marked = 0;                      /* reset */
+                        live++;
+                        continue;
+                    }
+                    /* dead: drop the slot */
+                    s->alloc_bits[w] &= ~(1ull << (idx & 63));
+                    freed += gt_classes[cls].slot_size;
+                }
+            }
+            s->live_count = (uint16_t)live;
+            s->free_index = 0;
+        }
+        /* Re-distribute: emptied spans -> shared empty; live-full ->
+         * dom_full; else dom_partial. Unlink from whichever list first
+         * (the three source lists are disjoint). */
+        GtSpan* sources[3];
+        int ns = 0;
+        if (a->dom_full[cls]) sources[ns++] = (GtSpan*)a->dom_full[cls];
+        if (a->dom_partial[cls]) sources[ns++] = (GtSpan*)a->dom_partial[cls];
+        if (a->current[cls]) sources[ns++] = (GtSpan*)a->current[cls];
+        a->dom_full[cls] = NULL;
+        a->dom_partial[cls] = NULL;
+        a->current[cls] = NULL;
+        for (int L = 0; L < ns; L++) {
+            GtSpan* s = sources[L];
+            while (s) {
+                GtSpan* nx = s->next;
+                s->next = NULL;
+                if (s->live_count == 0) {
+                    _gt.n_wholesale++;
+                    GtSuper* su = s->super;
+                    memset(s, 0, sizeof(GtSpan));
+                    s->super = su;
+                    gt_pool_push(&_gt.empty, s);
+                    su->nempty++;
+                } else if (s->live_count >= s->nslots) {
+                    gt_pool_push((GtSpan**)&a->dom_full[cls], s);
+                } else {
+                    gt_pool_push((GtSpan**)&a->dom_partial[cls], s);
+                }
+                s = nx;
+            }
+        }
+        /* The retired current becomes the arena's next take candidate via
+         * dom_partial; a fresh current is picked lazily on the next alloc
+         * (gt_alloc_small's !s -> retire_refill path handles NULL). */
+    }
+    if (freed) {
+        __atomic_sub_fetch(&_gt.live_slot_bytes, freed, __ATOMIC_RELAXED);
+        __atomic_sub_fetch(&_gt.heap_bytes_total, freed, __ATOMIC_RELAXED);
+        /* _emperor_gc_total_allocated (gc.c static) is folded back by the
+         * gc_collect_local caller. */
+    }
+    return freed;
 }
 
 /* The span-heap goal heuristic (gt_update_goal/gt_set_goal_params) was

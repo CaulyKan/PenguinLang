@@ -449,6 +449,26 @@ is set).
   only arch-sensitive pieces are the stack-pointer asm and the timing
   clock (QPC vs `clock_gettime`).
 
+## 11.5 The two-tier heap (2026-10-19)
+
+The object header carries a `shared` bit (header stays 24 B; the span
+header carries a `uint8_t nshared`, span stays 128 B). The handoff
+points (channel `write/try_write/push`, the result container's
+`complete`, Mutex construction/set) go through the `__gc_promote`
+intrinsic — a WRITE-POINT promotion: from the new value, set the bit
+over its closure, stopping at already-shared objects. `Mutex.with`
+batch-promotes the critical section's allocations from a per-arena
+quota list (still inside the lock). Shared objects are opaque leaves
+to the local collector (never rooted, traversed, or freed by it — the
+global collector owns them); the local collector
+(`gc_collect_local`) marks via `header.marked` (the span bitmaps are
+untouched), roots = the full root set with the "other domains'
+unshared slots skip" leaf rule, and sweeps only its domain's span
+pools. `GC_VERIFY` asserts (at global STW time) that no cross-color
+edge exists (shared -> unshared). `EMPEROR_GC_REGION=0` rolls the
+whole thing back to the single heap. Details: design doc
+`wip/concurrent_scheduler.md` §10.9-10.12.
+
 ## 12. Future work
 
 - **SIMD bitmap kernels**: `gray & ~black` over AVX-512/GFNI blocks,
@@ -456,9 +476,13 @@ is set).
 - **Headerless slots**: derive size/class from the span — recovers the
   24 B per object (nothing is finalizable anymore, so no class needs to
   keep metadata for the sweep).
-- **Local/shared domain split**: per-arena local collectors with
-  promotion at the scheduler handoff points, instead of one global
-  stop-the-world pass over every arena.
+- **Local/shared domain split**: designed and staged in as the LOGICAL
+  partition (per-object `shared` bit; design doc §10.2-10.12,
+  `.agents/plans/gc-two-tier-heap.md`) — the global collector stays
+  full-mark/full-sweep (the win is frequency), a domain-local collector
+  fires on the `EMPEROR_GC_LOCAL` quota (off by default); remaining:
+  the per-domain stop protocol (poll-gate split, M4b) and the P5
+  escape check.
 - **Retiring safety nets**: the quarantine ring and the conservative
   stack cover can shrink once `GC_VERIFY` runs clean over the full
   corpus for an extended period.

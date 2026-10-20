@@ -101,6 +101,12 @@ export class CompilerConfig {
     // -Wconcurrency: with the mt scheduler, Pass 10 prints
     // per-spawn-site stealable/pinned diagnostics (pin reason chains).
     warn_concurrency: bool = false;
+    // --strict-handoff (two-tier heap P1): channel push/try_write/complete
+    // with a non-Shareable payload becomes E_HANDOFF_NOT_SHAREABLE.
+    // Default: the same condition only warns under -Wconcurrency (stdlib
+    // namespaces are exempt either way — their channel traffic is audited
+    // by the M0 table instead).
+    strict_handoff: bool = false;
     // --enable-std / --disable-std (default on): auto-load the std dynlib
     // (libemperorpenguin-std.penguin-lib) found beside the compiler
     // executable — json/vector/hashmap/array/dynlib/argparse without listing
@@ -219,6 +225,8 @@ export class CompilerConfig {
                 this.clock_model_enabled = false;
             } else if (arg == "-Wconcurrency" || arg == "-Wconcurrency=true") {
                 this.warn_concurrency = true;
+            } else if (arg == "--strict-handoff" || arg == "-strict-handoff") {
+                this.strict_handoff = true;
             } else if (arg == "--enable-std" || arg == "-enable-std") {
                 this.std_enabled = true;
             } else if (arg == "--disable-std" || arg == "-disable-std") {

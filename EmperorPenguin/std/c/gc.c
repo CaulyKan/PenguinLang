@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <setjmp.h>
+#include <sched.h>
 #if defined(_WIN32)
 #  include <windows.h>
 #endif
@@ -315,6 +316,11 @@ typedef struct {
      * treatment). The RUNNING coroutine's region is additionally capped at
      * the collect-time sp in _emperor_gc_collect. */
     char* live_lo;
+    /* Two-tier M4b: the registering scheduler thread's index — a
+     * domain-local collection scans ONLY its own thread's regions (the
+     * other domains' coroutine stacks are concurrently live memory;
+     * reading them races their writers, which only a full stop may do). */
+    int owner_thread;
 } GCScanRegion;
 
 /* Pin-marker slot "map": a frame slot whose value must be PINNED at its
@@ -442,6 +448,8 @@ static pthread_mutex_t gc_region_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define GC_REGION_UNLOCK() pthread_mutex_unlock(&gc_region_mutex)
 #endif
 
+extern int _emperor_sched_my_thread_index(void);
+
 static void gc_scan_add_locked(void* base, size_t bytes) {
     if (!base || bytes == 0) return;
     if (_emperor_gc_scan_region_count == _emperor_gc_scan_region_capacity) {
@@ -459,6 +467,8 @@ static void gc_scan_add_locked(void* base, size_t bytes) {
     _emperor_gc_scan_regions[_emperor_gc_scan_region_count].base = (char*)base;
     _emperor_gc_scan_regions[_emperor_gc_scan_region_count].bytes = bytes;
     _emperor_gc_scan_regions[_emperor_gc_scan_region_count].live_lo = (char*)base;
+    _emperor_gc_scan_regions[_emperor_gc_scan_region_count].owner_thread =
+        _emperor_sched_my_thread_index();   /* M4b: -1 when no scheduler */
     gc_region_map_put(base, _emperor_gc_scan_region_count);
     _emperor_gc_scan_region_count++;
 }
@@ -780,6 +790,8 @@ extern void _emperor_sched_each_frame_head(void (*visit)(void*));
  * registered thread's [base, boundary watermark) — no-op single-threaded). */
 extern int _emperor_sched_am_on_coroutine(void);
 extern void* _emperor_sched_main_watermark(void);
+extern int _emperor_sched_my_thread_index(void);
+extern void* _emperor_sched_my_stack_bottom(void);
 extern void _emperor_sched_each_parked_main_stack(void (*visit)(void* bottom, void* top));
 
 static void _emperor_gc_mark_object(void* obj);
@@ -791,6 +803,28 @@ static void gc_refmap_walk(const int32_t* m, int32_t idx, char* base,
 /* Forensics: which collector phase is walking (set around every refmap walk
  * entry point; printed by gc_refmap_abort). */
 static const char* _gc_walk_ctx = "?";
+/* Two-tier M2: gc_refmap_walk leaf mode — 1 while gc_promote_body walks a
+ * graph (leaves queue unshared objects instead of graying/mark-pushing). */
+static int _gc_walk_promote;
+static void gc_promote_leaf(void* candidate);
+/* Two-tier M3: leaf mode for the GC_VERIFY shared-closure check — leaves
+ * resolve their target and ABORT on an unshared one (Inv-S1/S2: a shared
+ * object must never point at an unshared object; STW-time only, plan §2.7). */
+static int _gc_walk_verify_shared;
+static const char* _gc_verify_cur_name = "?";
+static void* _gc_verify_cur_user = NULL;
+static void gc_verify_shared_leaf(void* candidate);
+/* Two-tier M4a: leaf mode for the domain-local marker — leaves dispatch to
+ * gc_local_leaf (own span marks via header.marked, shared/foreign skip,
+ * large objects traverse). */
+static int _gc_walk_local;
+static void gc_local_leaf(void* candidate);
+/* M4a/M4b prerequisites defined later in this TU: */
+static int _emperor_gc_collecting;              /* defined with init below */
+static void gc_scan_regions_mark(void* raw_co_sp);
+static void gc_scan_regions_mark_local(void* raw_co_sp);
+static EMPEROR_NO_ASAN void _emperor_gc_mark_conservative(void* stack_bottom, void* stack_top);
+static void _emperor_gc_mark_object_raw(void* obj);
 
 static void gc_mark_frame_chain(void* head) {
     for (EmperorGcFrame* f = (EmperorGcFrame*)head; f; f = f->prev) {
@@ -946,6 +980,9 @@ static EMPEROR_NO_ASAN void gc_refmap_walk(const int32_t* m, int32_t idx, char* 
                 /* One span lookup (resolve+gray merged); the fallback goes
                  * straight to the malloc index. */
                 void* candidate = *(void**)(base + off);
+                if (_gc_walk_promote) { gc_promote_leaf(candidate); continue; }
+                if (_gc_walk_verify_shared) { gc_verify_shared_leaf(candidate); continue; }
+                if (_gc_walk_local) { gc_local_leaf(candidate); continue; }
                 if (gt_mark_candidate(candidate)) continue;
                 void* owner = gc_resolve_block(candidate);
                 if (owner) {
@@ -1057,6 +1094,413 @@ void gc_scan_object_body(GCHeader* cur) {
     }
 }
 
+/* ---- Two-tier heap M2: write-point promotion (plan §2.9/§2.10) ----
+ * _emperor_gc_promote(obj) sets the shared bit over obj's not-yet-shared
+ * ref-map closure, stopping at already-shared objects — Inv-S1's monotonic
+ * closure makes "stop" sound. Called from the handoff points (channel push,
+ * Mutex construction/set, Ownership moves through channels) and from
+ * crit_exit (deferred promotion of a critical section's allocations — the
+ * object graphs are complete by then, which is what makes construction-
+ * phase edges safe). Cold path; the worklist persists across calls. */
+int _emperor_gc_region = 1;
+
+static GCHeader** _gc_promote_wl = NULL;
+static size_t _gc_promote_wl_top = 0;
+static size_t _gc_promote_wl_cap = 0;
+static size_t _gc_promoted_total_v = 0;
+
+static int gc_promote_push(GCHeader* h) {
+    if (_gc_promote_wl_top == _gc_promote_wl_cap) {
+        size_t nc = _gc_promote_wl_cap ? _gc_promote_wl_cap * 2 : 256;
+        GCHeader** nw =
+            (GCHeader**)realloc(_gc_promote_wl, nc * sizeof(GCHeader*));
+        if (!nw) {
+            /* Incomplete promotion leaves a cross-color edge behind — loud
+             * warning now, GC_VERIFY (M3) catches it in debug builds. */
+            fprintf(stderr, "emperor gc: promote worklist OOM — promotion "
+                            "INCOMPLETE (cross-color edge possible)\n");
+            return 0;
+        }
+        _gc_promote_wl = nw;
+        _gc_promote_wl_cap = nc;
+    }
+    _gc_promote_wl[_gc_promote_wl_top++] = h;
+    return 1;
+}
+
+/* Walker leaf in promote mode: resolve the candidate to its owning header
+ * (span slot first — O(1) range+magic — then the malloc index) and queue
+ * it when not yet shared. Foreign values resolve to nothing and are
+ * ignored — the same containment rule as the mark leaves. */
+static void gc_promote_leaf(void* candidate) {
+    if (!candidate) return;
+    GCHeader* h = NULL;
+    void* span_user = gt_slot_owner(candidate);
+    if (span_user) {
+        h = (GCHeader*)((char*)span_user - sizeof(GCHeader));
+    } else {
+        void* owner = gc_resolve_block(candidate);
+        if (owner) h = (GCHeader*)((char*)owner - sizeof(GCHeader));
+    }
+    if (h && !h->shared) gc_promote_push(h);
+}
+
+/* Body walk for promotion: ref-map precise when the metadata declares one,
+ * else the conservative word scan with the promote leaf — mirrors
+ * gc_scan_object_body's two shapes. */
+static EMPEROR_NO_ASAN void gc_promote_body(GCHeader* h) {
+    if (h->is_string) return;   /* strings are flat — nothing to traverse */
+    char* user = (char*)h + sizeof(GCHeader);
+    EmperorClassMetadata* meta = *(EmperorClassMetadata**)user;
+    const int32_t* map = meta ? meta->refmap : NULL;
+    if (map) {
+        _gc_walk_ctx = "promote";
+        _gc_walk_promote = 1;
+        gc_refmap_walk(map, 1, user, user, h->size, meta ? meta->name : NULL, 0);
+        _gc_walk_promote = 0;
+        return;
+    }
+    void** ptr = (void**)user;
+    size_t word_count = (size_t)h->size / sizeof(void*);
+    for (size_t i = 0; i < word_count; i++) gc_promote_leaf(ptr[i]);
+}
+
+size_t _emperor_gc_promote(void* obj) {
+    if (!_emperor_gc_region || !obj) return 0;
+    GCHeader* h = NULL;
+    void* span_user = gt_slot_owner(obj);
+    if (span_user) {
+        h = (GCHeader*)((char*)span_user - sizeof(GCHeader));
+    } else {
+        void* owner = gc_resolve_block(obj);
+        if (owner) h = (GCHeader*)((char*)owner - sizeof(GCHeader));
+    }
+    if (!h || h->shared) return 0;   /* foreign value, or already shared: stop */
+    size_t before = _gc_promoted_total_v;
+    size_t base_top = _gc_promote_wl_top;
+    if (!gc_promote_push(h)) return 0;
+    while (_gc_promote_wl_top > base_top) {
+        GCHeader* cur = _gc_promote_wl[--_gc_promote_wl_top];
+        if (cur->shared) continue;   /* queued twice before being reached */
+        /* Span-resident: gt_promote_slot bumps the span's nshared; malloc
+         * blocks set the header directly. */
+        if (!gt_promote_slot((char*)cur + sizeof(GCHeader))) cur->shared = 1;
+        _gc_promoted_total_v++;
+        gc_promote_body(cur);
+    }
+    return _gc_promoted_total_v - before;
+}
+
+size_t _emperor_gc_promoted_total(void) { return _gc_promoted_total_v; }
+
+/* Critical-section bracket around Mutex.with callbacks. Every exit drains
+ * the arena's crit list (innermost nesting included — idempotent): each
+ * tracked allocation is promoted NOW, still inside the caller's lock
+ * (Inv-M2). Promotion never allocates GC objects, so nothing re-enters
+ * the list during the drain. */
+void _emperor_gc_crit_enter(void) {
+    if (!_emperor_gc_region) return;
+    GtArena* a = gt_arena_thread();
+    if (a) a->crit_depth++;
+}
+
+void _emperor_gc_crit_exit(void) {
+    if (!_emperor_gc_region) return;
+    GtArena* a = gt_arena_thread();
+    if (!a || a->crit_depth == 0) return;
+    a->crit_depth--;
+    if (a->crit_n) {
+        void** arr = a->crit_arr;
+        size_t n = a->crit_n;
+        a->crit_n = 0;
+        for (size_t i = 0; i < n; i++) _emperor_gc_promote(arr[i]);
+    }
+}
+
+/* ---- Two-tier M3: GC_VERIFY shared-closure assertion (Inv-S1/S2) ----
+ * STW-time only (the collector driver calls this post-drain, pre-sweep):
+ * reading a shared object's fields races other domains' locked writes
+ * outside a full stop (plan §2.7). Walks every shared object's body and
+ * aborts on any edge resolving to an UNSHARED GC object — a cross-color
+ * edge means promotion missed part of a closure (write-point bug).
+ * Caveat: mapless bodies (foreign metadata) take the conservative word
+ * scan, so an integer word that coincidentally lands on an unshared GC
+ * object would false-positive — in practice every emitted type carries a
+ * ref-map; debug builds only. */
+static void gc_verify_shared_leaf(void* candidate) {
+    if (!candidate) return;
+    GCHeader* h = NULL;
+    void* target_user = NULL;
+    void* span_user = gt_slot_owner(candidate);
+    if (span_user) {
+        target_user = span_user;
+        h = (GCHeader*)((char*)span_user - sizeof(GCHeader));
+    } else {
+        void* owner = gc_resolve_block(candidate);
+        if (owner) {
+            target_user = owner;
+            h = (GCHeader*)((char*)owner - sizeof(GCHeader));
+        }
+    }
+    if (h && !h->shared) {
+        fprintf(stderr,
+                "emperor gc: GC_VERIFY: Inv-S1/S2 violation: shared %p (%s) "
+                "-> UNSHARED %p — promotion missed part of the closure\n",
+                _gc_verify_cur_user, _gc_verify_cur_name, target_user);
+        abort();
+    }
+}
+
+static EMPEROR_NO_ASAN void gc_verify_shared_body(GCHeader* h) {
+    if (h->is_string) return;
+    char* user = (char*)h + sizeof(GCHeader);
+    EmperorClassMetadata* meta = *(EmperorClassMetadata**)user;
+    _gc_verify_cur_user = user;
+    _gc_verify_cur_name = meta ? meta->name : "?";
+    const int32_t* map = meta ? meta->refmap : NULL;
+    if (map) {
+        _gc_walk_ctx = "verify-shared";
+        _gc_walk_verify_shared = 1;
+        gc_refmap_walk(map, 1, user, user, h->size,
+                       meta ? meta->name : NULL, 0);
+        _gc_walk_verify_shared = 0;
+        return;
+    }
+    void** ptr = (void**)user;
+    size_t word_count = (size_t)h->size / sizeof(void*);
+    for (size_t i = 0; i < word_count; i++) gc_verify_shared_leaf(ptr[i]);
+}
+
+static void _emperor_gc_mark_object_raw(void* obj) {
+    if (!obj) return;
+    if (gt_gray_object(obj)) return;
+    GCHeader* header = (GCHeader*)((char*)obj - sizeof(GCHeader));
+    if (header->marked) return;
+    header->marked = 1;
+    if (gc_mark_stack_push(header)) gc_mark_drain();
+}
+
+/* ---- Two-tier M4a: domain-local collection (plan §2.5 / §4 M4) ----
+ * Marks via header.marked (NOT the span bitmaps — no cross-collector
+ * bitmap discipline needed), roots = the FULL root set with local-
+ * dispatch leaves: own-domain unshared span slots mark, shared objects
+ * are opaque (Inv-S8), other domains' unshared slots skip (equivalent to
+ * exact local roots under Inv-S5), unshared large objects traverse (the
+ * frame -> large -> local-slot chain must not break — hole 2). Sweeps
+ * only the arena's domain pools + currents. Mutually exclusive with the
+ * global collector both directions: entry checks _emperor_gc_collecting,
+ * and the global driver spins on the active count before starting. */
+static int _gc_local_mode = 0;      /* root-scan leaf dispatch flag */
+static GtArena* _gc_local_arena = NULL;
+static int _gc_local_active_count = 0;   /* global driver spins on this */
+static GCHeader** _gc_local_wl = NULL;
+static size_t _gc_local_wl_top = 0, _gc_local_wl_cap = 0;
+static GCHeader** _gc_local_marked = NULL;  /* every marked header; cleared before return */
+static size_t _gc_local_marked_n = 0, _gc_local_marked_cap = 0;
+static int _gc_local_failed = 0;
+static unsigned _gc_local_quota_spans = 0;  /* EMPEROR_GC_LOCAL (spans; 0 = off) */
+uint64_t _gc_local_cycles = 0, _gc_local_freed_total = 0;
+
+static int gc_local_push(GCHeader* h) {
+    if (_gc_local_wl_top == _gc_local_wl_cap) {
+        size_t nc = _gc_local_wl_cap ? _gc_local_wl_cap * 2 : 256;
+        GCHeader** nw = (GCHeader**)realloc(_gc_local_wl, nc * sizeof(GCHeader*));
+        if (!nw) { _gc_local_failed = 1; return 0; }
+        _gc_local_wl = nw;
+        _gc_local_wl_cap = nc;
+    }
+    _gc_local_wl[_gc_local_wl_top++] = h;
+    if (_gc_local_marked_n == _gc_local_marked_cap) {
+        size_t nc = _gc_local_marked_cap ? _gc_local_marked_cap * 2 : 256;
+        GCHeader** nm = (GCHeader**)realloc(_gc_local_marked, nc * sizeof(GCHeader*));
+        if (!nm) { _gc_local_failed = 1; return 0; }
+        _gc_local_marked = nm;
+        _gc_local_marked_cap = nc;
+    }
+    _gc_local_marked[_gc_local_marked_n++] = h;
+    return 1;
+}
+
+/* Mark-dispatch target: USER is a RESOLVED heap object pointer. Shared ->
+ * opaque. Own span vs large object decided by the caller's resolution. */
+static void gc_local_mark_obj(void* user) {
+    GCHeader* h = (GCHeader*)((char*)user - sizeof(GCHeader));
+    if (h->shared || h->marked) return;
+    h->marked = 1;
+    gc_local_push(h);
+}
+
+/* Local leaf: candidate from a root slot or a body walk. */
+static void gc_local_leaf(void* candidate) {
+    if (!candidate) return;
+    void* own = NULL;
+    if (gt_span_of_arena(_gc_local_arena, candidate, &own)) {
+        gc_local_mark_obj(own);           /* own domain: mark unless shared */
+        return;
+    }
+    /* Not our span: another domain's slot (skip — Inv-S5 says our graph
+     * never reaches one; conservative roots may point at them, they stay
+     * their owner's business) or a malloc large object (traverse when
+     * unshared — hole 2). Span slots never live in the malloc index. */
+    void* owner = gc_resolve_block(candidate);
+    if (owner) gc_local_mark_obj(owner);
+}
+
+static EMPEROR_NO_ASAN void gc_local_body(GCHeader* h) {
+    if (h->is_string) return;
+    char* user = (char*)h + sizeof(GCHeader);
+    EmperorClassMetadata* meta = *(EmperorClassMetadata**)user;
+    const int32_t* map = meta ? meta->refmap : NULL;
+    if (map) {
+        _gc_walk_ctx = "local";
+        _gc_walk_local = 1;
+        gc_refmap_walk(map, 1, user, user, h->size, meta ? meta->name : NULL, 0);
+        _gc_walk_local = 0;
+        return;
+    }
+    void** ptr = (void**)user;
+    size_t word_count = (size_t)h->size / sizeof(void*);
+    for (size_t i = 0; i < word_count; i++) gc_local_leaf(ptr[i]);
+}
+
+/* Budget check for the refill slow path (gc_span.c): the count of spans
+ * refilled since the last local cycle vs the EMPEROR_GC_LOCAL quota. */
+void gc_local_check(GtArena* a) {
+    if (!_emperor_gc_region || !_gc_local_quota_spans) return;
+    /* Never fire inside a critical section: objects allocated there are
+       promoted only at crit_exit — mid-section a fresh object's sole
+       referent can be the (shared, opaque) payload, and a local sweep
+       would reclaim it (Inv-M2's premise covers the promotion, not the
+       window before it). */
+    if (a->crit_depth) return;
+    if ((unsigned)a->spans_since_local >= _gc_local_quota_spans)
+        gc_collect_local();
+}
+
+int gc_collect_local(void) {
+    if (!_emperor_gc_region || !_gc_local_quota_spans) return 0;    GtArena* a = gt_arena_thread();
+    if (!a) return 0;
+    if (__atomic_load_n(&_emperor_gc_collecting, __ATOMIC_ACQUIRE)) return 0;
+    __atomic_add_fetch(&_gc_local_active_count, 1, __ATOMIC_ACQ_REL);
+    if (__atomic_load_n(&_emperor_gc_collecting, __ATOMIC_ACQUIRE)) {
+        __atomic_sub_fetch(&_gc_local_active_count, 1, __ATOMIC_ACQ_REL);
+        return 0;   /* a global cycle started while we entered */
+    }
+    /* The large-object index may be STALE (allocations since the last
+       global refresh sit in the pending-append list): a large object the
+       resolver cannot see gets skipped by gc_local_leaf — and every span
+       object reachable ONLY through it dies. This was the self-compile
+       SIGSEGV (StringBuilder's grown buffer). Refresh before marking. */
+    if (!gc_refresh_sorted()) {
+        __atomic_sub_fetch(&_gc_local_active_count, 1, __ATOMIC_ACQ_REL);
+        return 0;   /* index rebuild failed: defer to the global cycle */
+    }
+    _gc_local_mode = 1;
+    _gc_local_arena = a;
+    _gc_local_wl_top = 0;
+    _gc_local_marked_n = 0;
+    _gc_local_failed = 0;
+    size_t base = _gc_local_wl_top;
+    jmp_buf reg_buf;
+    setjmp(reg_buf);
+    __asm__ volatile("" ::: "memory");
+
+    /* Roots — M4b (per-thread): global roots (leaf rule filters foreign
+     * objects), THIS thread's frame chain ONLY (_emperor_gc_frame_head is
+     * _Thread_local and already carries the current coroutine's chain when
+     * on one — other threads' chains are concurrently-written memory),
+     * THIS thread's scan regions, own quarantine ring, own main stack. */
+    for (int i = 0; i < _emperor_gc_global_root_count; i++)
+        gc_local_leaf(*_emperor_gc_global_roots[i]);
+    gc_mark_frame_chain(_emperor_gc_frame_head);
+    gc_scan_regions_mark_local(_emperor_gc_get_stack_pointer());
+    gc_quarantine_mark(a, NULL);
+    /* Local cycle = collect-now semantics for THIS arena's ring (mirrors
+     * the explicit global cycle): the live entries were just marked, the
+     * cover hands over to the conservative stack scan below. */
+    gc_quarantine_drop(a, NULL);
+    /* THIS thread's main-stack cover (M4b): the anchor is the thread's
+     * own scheduler slot (== _emperor_gc_stack_bottom on the main thread);
+     * on a coroutine the live portion is [bottom, watermark) — the
+     * coroutine stack itself is covered by its scan region above. */
+    {
+        char* bottom = (char*)_emperor_sched_my_stack_bottom();
+        if (!bottom) bottom = (char*)_emperor_gc_stack_bottom;
+        /* On a coroutine the SP belongs to the coroutine's heap stack —
+         * the main-stack cover must stop at the thread's watermark (the
+         * switch-away point recorded on the MAIN stack), mirroring the
+         * global driver; the coroutine stack itself is covered by its
+         * frame chain + scan region. */
+        char* top = (char*)_emperor_gc_get_stack_pointer();
+        if (_emperor_sched_am_on_coroutine() && _emperor_sched_main_watermark()) {
+            top = (char*)_emperor_sched_main_watermark();
+        }
+        if (bottom && top) {
+            _emperor_gc_mark_conservative(bottom, top);
+        }
+    }
+
+    while (_gc_local_wl_top > base && !_gc_local_failed) {
+        GCHeader* h = _gc_local_wl[--_gc_local_wl_top];
+        gc_local_body(h);
+    }
+    static int audit_n = 0;
+    if (getenv("EMPEROR_GC_LOCAL_AUDIT") && !_gc_local_failed
+        && ++audit_n <= 50) {
+        /* DIAGNOSTIC: full-process mark into the span bitmaps, then diff
+           against the local verdicts — any slot the full mark reaches
+           that local marking missed is a ROOT/CLOSURE GAP. Aborts with
+           the object's type name; this cycle then skips the sweep. */
+        jmp_buf ab; setjmp(ab); __asm__ volatile("" ::: "memory");
+        for (int i = 0; i < _emperor_gc_global_root_count; i++) {
+            void* o = gc_resolve_any(*(void**)_emperor_gc_global_roots[i]);
+            if (o) _emperor_gc_mark_object_raw(o);
+        }
+        gc_mark_frame_chain(_emperor_gc_frame_head);
+        _emperor_sched_each_frame_head(gc_mark_frame_chain);
+        gc_scan_regions_mark(_emperor_gc_get_stack_pointer());
+        gt_each_arena(gc_quarantine_mark, NULL);
+        _emperor_gc_mark_conservative(_emperor_gc_stack_bottom,
+                                      _emperor_gc_get_stack_pointer());
+        _emperor_sched_each_parked_main_stack(_emperor_gc_mark_conservative);
+        gc_mark_drain();
+        _gc_local_mode = 0;   /* the diff pass marks in GLOBAL mode */
+        gt_audit_local_gap(a);
+        gt_reset_marks();
+        _gc_local_mode = 1;
+        _gc_local_failed = 1;   /* skip this cycle's sweep (diagnostic) */
+    }
+    size_t freed = 0;
+    if (!_gc_local_failed) {
+        freed = gt_local_sweep(a);
+        /* NO _emperor_gc_total_allocated subtraction here: that counter is
+         * the MALLOC side only (span allocations never add to it); the
+         * span-side books live in _gt.heap_bytes_total/live_slot_bytes,
+         * which gt_local_sweep already folds. This was the LOCAL=8
+         * accounting overflow. */
+        a->spans_since_local = 0;   /* budget resets on a completed cycle */
+        _gc_local_cycles++;
+        _gc_local_freed_total += freed;
+    }
+    /* Reset marked on everything this cycle touched (the sweep already did
+     * the span slots; large objects and the failure path need this). */
+    for (size_t i = 0; i < _gc_local_marked_n; i++)
+        _gc_local_marked[i]->marked = 0;
+    _gc_local_mode = 0;
+    _gc_local_arena = NULL;
+    __atomic_sub_fetch(&_gc_local_active_count, 1, __ATOMIC_ACQ_REL);
+    return _gc_local_failed ? 0 : 1;
+}
+
+void gc_verify_shared_edges(void) {
+    /* malloc side: the allocation list carries the shared bit directly. */
+    for (GCHeader* h = _emperor_gc_allocation_list; h; h = h->next) {
+        if (h->shared) gc_verify_shared_body(h);
+    }
+    /* span side: nshared>0 spans only (the fast-path discriminator). */
+    gt_verify_shared_objects(&gc_verify_shared_body);
+}
+
 /* Drain the mark worklist. Every child pushed by gc_refmap_walk's mark path
  * (frame-chain struct slots) sits on the stack WITHOUT its body being
  * walked — only this loop expands a marked object's fields into marked
@@ -1072,6 +1516,10 @@ void gc_mark_drain(void) {
 
 static EMPEROR_NO_ASAN void _emperor_gc_mark_object(void* obj) {
     if (!obj || _emperor_gc_mark_failed) return;
+    /* Two-tier M4a: the local marker reuses every root path through this
+     * entry point — dispatch to the local mark instead (own span marks
+     * via header.marked, shared/foreign skip, large traverses). */
+    if (_gc_local_mode) { gc_local_leaf(obj); return; }
     /* Span-resident objects take the batched bitmap path — the slot grays
      * and gt_drain scans it later; the header is untouched (colors are
      * span-side). MUST precede the malloc tail: a span header interpreted
@@ -1163,6 +1611,36 @@ static int _emperor_gc_explicit_cycle = 0;
  * Conservative regions word-scan and mark every word that resolves to a
  * heap object. */
 
+/* Two-tier M4b: the local collector's region scan — same walk as
+ * gc_scan_regions_mark but ONLY this thread's regions (the other domains'
+ * coroutine stacks are concurrently live memory; reading them races their
+ * writers — only a full stop may do that). */
+static void gc_scan_regions_mark_local(void* raw_co_sp) {
+    int _on_co = _emperor_sched_am_on_coroutine();
+    int my = _emperor_sched_my_thread_index();
+    for (size_t r = 0; r < _emperor_gc_scan_region_count; r++) {
+        GCScanRegion* reg = &_emperor_gc_scan_regions[r];
+        if (reg->owner_thread != my) continue;
+        char* lo = reg->live_lo;
+        if (lo < reg->base) lo = reg->base;
+        char* raw_lo = (char*)raw_co_sp;
+        char* rend = reg->base + reg->bytes;
+        if (_on_co && raw_lo >= reg->base && raw_lo < rend && raw_lo < lo) {
+            lo = raw_lo;
+        }
+        lo = (char*)((uintptr_t)lo & ~((uintptr_t)sizeof(void*) - 1));
+        char** p = (char**)lo;
+        char** end = (char**)rend;
+        for (; p < end; p++) {
+            void* candidate = *p;
+            void* owner = gc_resolve_any(candidate);
+            if (owner) {
+                _emperor_gc_mark_object(owner);
+            }
+        }
+    }
+}
+
 static void gc_scan_regions_mark(void* raw_co_sp) {
     /* scheduler.c accessors: the flag is the COLLECTING thread's. */
     int _on_co = _emperor_sched_am_on_coroutine();
@@ -1213,6 +1691,13 @@ extern void _emperor_sched_perf_gc_end(void);
 static void gc_collect_greentea(void) {
     if (_emperor_gc_disabled) { gc_lower_poll_gate(); return; }
     if (!_emperor_gc_stack_bottom || _emperor_gc_collecting) return;
+    /* Two-tier M4: a local collection may be mid-flight on another domain
+     * (or this one) — its header.marked usage is exclusive with ours.
+     * Wait it out; this wait is part of the global STW arrival latency
+     * (plan §2.13). Local collections never allocate GC objects, so the
+     * wait is bounded. */
+    while (__atomic_load_n(&_gc_local_active_count, __ATOMIC_ACQUIRE))
+        sched_yield();
     _emperor_gc_collecting = 1;
     __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
     uint64_t _gc_st_t0 = 0;
@@ -1278,6 +1763,7 @@ static void gc_collect_greentea(void) {
      * large-object worklist. Ends with gray == black globally. */
     gt_drain();
     if (_emperor_gc_verify) gt_verify_invariants();
+    if (_emperor_gc_verify && _emperor_gc_region) gc_verify_shared_edges();
 
     if (_emperor_gc_mark_failed) {
         /* Partial marking happened — nothing may be swept this cycle. */
@@ -1449,6 +1935,20 @@ void _emperor_gc_init(void* stack_bottom) {
     if (young != NULL && young[0] != '\0') {
         unsigned long long b = strtoull(young, NULL, 10);
         if (b >= 64 * 1024) _gc_young_budget = (size_t)b;
+    }
+    /* Two-tier heap master switch: EMPEROR_GC_REGION=0 keeps today's exact
+     * single-heap behavior (promotion + crit tracking become no-ops). */
+    const char* region = getenv("EMPEROR_GC_REGION");
+    if (region != NULL && region[0] != '\0' && region[0] == '0') {
+        _emperor_gc_region = 0;
+    }
+    /* Two-tier M4a: the domain-local collection budget, in SPANS of churn
+     * (each unit ~8KiB of allocation). 0 (default for now) = local
+     * collection off; the global collector remains the only sweeper. */
+    const char* localq = getenv("EMPEROR_GC_LOCAL");
+    if (localq != NULL && localq[0] != '\0') {
+        unsigned long long q = strtoull(localq, NULL, 10);
+        if (q <= 1000000u) _gc_local_quota_spans = (unsigned)q;
     }
     const char* stress = getenv("EMPEROR_GC_STRESS_EVERY");
     if (stress != NULL && stress[0] != '\0') {
@@ -1681,6 +2181,7 @@ static void* gc_alloc_locked(int size, int is_string, GtArena* arena) {
     header->marked = 0;
     header->is_string = is_string;
     header->size = size;
+    header->shared = 0;   /* monotonic bit; M1 keeps it 0 (plan §2.2) */
     _emperor_gc_allocation_list = header;
     __atomic_add_fetch(&_emperor_gc_total_allocated, (size_t)total,
                        __ATOMIC_RELAXED);
@@ -1691,6 +2192,11 @@ static void* gc_alloc_locked(int size, int is_string, GtArena* arena) {
      * a full rebuild, and until then appends are skipped (nothing can go
      * missing: the rebuild walks the authoritative list). */
     gc_pending_append((char*)header + sizeof(GCHeader));
+
+    /* Two-tier M2: track malloc-path allocations made inside a critical
+     * section (same red line as the span fast path: +1 field read). */
+    if (_emperor_gc_region && arena && arena->crit_depth)
+        gt_crit_track(arena, (char*)header + sizeof(GCHeader));
 
     gt_quarantine_push(arena, (char*)header + sizeof(GCHeader));
 

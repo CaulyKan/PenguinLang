@@ -345,6 +345,7 @@ namespace __builtin {
         }
 
         fun complete(mut this, v: R) {
+            __builtin.__builtin.__gc_promote<R>(v);
             _sync_begin();
             this.result = new Option<R>.some(v);
             this.done = true;
@@ -453,6 +454,7 @@ namespace __builtin {
         }
 
         fun push(mut this, v: T) {
+            __builtin.__builtin.__gc_promote<T>(v);
             let node: mut _ChanNode<T> = new _ChanNode<T>(v);
             if (this.head.is_none()) {
                 this.head = new Option<_ChanNode<T>>.some(node);
@@ -1300,6 +1302,7 @@ namespace __builtin {
         }
 
         fun push(mut this, v: T) {
+            __builtin.__builtin.__gc_promote<T>(v);
             // Free form: the transaction commits inline — no delta rounds
             // exist to collapse across. Writers are still single-domain
             // (Pass 10), so arrival order remains the write order.

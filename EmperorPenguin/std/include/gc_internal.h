@@ -17,7 +17,18 @@ typedef struct GCHeader {
     int marked;
     int is_string;
     int size;
+    /* Two-tier heap (gc-two-tier-heap plan M1): set at the handoff/write
+     * points only, MONOTONIC (never cleared — demotion is rejected, plan
+     * D6). Eats the struct's 4B padding so the header stays 24B. Objects
+     * with this bit are opaque leaves to the local collector: never freed,
+     * never traversed by it (plan Inv-S8). */
+    int shared;
 } GCHeader;
+
+/* Layout guard: _emperor_gc_alloc_charge() and gc_torture's exact live/die
+ * delta assertions account every object with a 24B header — growing it
+ * invalidates all of that bookkeeping. */
+_Static_assert(sizeof(GCHeader) == 24, "GCHeader must stay 24 bytes");
 
 /* ---- Span-heap limits (layout constants shared by both units) ---- */
 
@@ -131,6 +142,30 @@ typedef struct GtArena {
                                       * last sweep (monotonic between
                                       * sweeps; folded into the global
                                       * heap-bytes sum) */
+    /* Two-tier heap M2 (gc-two-tier-heap plan §2.9 (a)-1): allocations made
+     * inside a Mutex.with critical section (crit_depth > 0) append to
+     * crit_arr and are PROMOTED (shared bit set over their ref-map closure,
+     * stopping at already-shared objects) when a critical section exits —
+     * inside the lock (Inv-M2). The deferred-list shape (not alloc-time
+     * stamping) is what makes construction-phase edges safe: the graph is
+     * complete before promotion walks it. The array grows on demand and
+     * stays allocated for reuse. */
+    unsigned crit_depth;
+    void** crit_arr;
+    size_t crit_n;
+    size_t crit_cap;
+    /* Two-tier M4: DOMAIN-BOUND span pools (plan §4 M4 design note 1).
+     * A span binds to the arena that classed it; retirement goes to THIS
+     * arena's pools and refill prefers them — only fully-empty spans ever
+     * return to the global pool. With Inv-S5 (unshared objects are never
+     * referenced from outside their domain) this means a local collection
+     * never touches another domain's spans. Opaque GtSpan* like current. */
+    void* dom_partial[GT_NCLASS];
+    void* dom_full[GT_NCLASS];
+    /* Two-tier M4: local-collection budget tracking — spans refilled since
+     * the last local collection, checked on the refill slow path against
+     * the EMPEROR_GC_LOCAL quota (gc.c; 0 = off). */
+    unsigned spans_since_local;
     int used;
 } GtArena;
 
@@ -235,5 +270,65 @@ uint64_t gt_last_freed(void);
 
 /* Test-only: the size-class slot SIZE would be charged (0 = large path). */
 unsigned gt_slot_size_for(int size);
+
+/* ---- Two-tier heap M2: write-point promotion (plan §2.9/§2.10) ----
+ * Master switch: EMPEROR_GC_REGION=0 (env) keeps today's exact single-heap
+ * behavior — promotion and critical-section tracking become no-ops. */
+extern int _emperor_gc_region;
+
+/* Promote OBJ's not-yet-shared closure: set the shared bit on every
+ * reachable object lacking it, stop at already-shared ones (Inv-S1's
+ * monotonic closure makes stopping sound). OBJ is a user pointer; foreign
+ * / non-GC values are ignored. Iterative (own worklist — deep graphs must
+ * not recurse). Returns the number of objects newly promoted. */
+size_t _emperor_gc_promote(void* obj);
+
+/* Cumulative promotion count (tests / gc_gt_stats). */
+size_t _emperor_gc_promoted_total(void);
+
+/* Critical-section bracket around Mutex.with callbacks. The innermost (and
+ * every) exit drains the arena's crit list: each tracked allocation is
+ * promoted inside the lock (Inv-M2). */
+void _emperor_gc_crit_enter(void);
+void _emperor_gc_crit_exit(void);
+
+/* gc_span.c: set the shared bit on a span-resident object and bump its
+ * span's nshared. Returns 1 when USER resolved to a span slot (shared set
+ * or already set), 0 when not span-resident (caller falls back to the
+ * malloc header). */
+int gt_promote_slot(void* user);
+
+/* gc_span.c: append USER to the arena's critical-section allocation list
+ * (allocation fast path, crit_depth > 0 only). */
+void gt_crit_track(GtArena* a, void* user);
+
+/* Two-tier M3 (GC_VERIFY, STW-time only): gc.c walks every shared object's
+ * body and aborts on an edge to an UNSHARED GC object (Inv-S1/S2). */
+void gc_verify_shared_edges(void);
+void gt_verify_shared_objects(void (*fn)(GCHeader*));
+
+/* ---- Two-tier M4a: domain-local collection (plan §2.5 / §4 M4) ----
+ * Marks via header.marked (NOT the span bitmaps — no cross-collector
+ * bitmap reuse), roots = the FULL root set with the leaf rule "unshared
+ * non-owning-domain span objects are skipped" (equivalent to exact local
+ * roots under Inv-S5), shared objects are opaque (Inv-S8), locally
+ * reachable large objects are traversed (hole 2) via a marked-guard
+ * worklist that is cleared before return. Sweeps ONLY this arena's
+ * domain pools + current spans: alloc & ~marked & ~shared, then resets
+ * marked on survivors. Mutually exclusive with the global collector
+ * both directions (active-count spin / collecting check). */
+int gc_collect_local(void);          /* returns 1 when a local cycle ran */
+void gc_local_check(GtArena* a);     /* refill-path quota check (gc_span.c
+                                        calls it; folds the spans count) */
+size_t gt_local_sweep(GtArena* a);   /* gc_span.c: sweep this arena's spans;
+                                        returns freed slot bytes; resets
+                                        marked on live slots */
+int gt_span_of_arena(GtArena* a, void* candidate, void** owner_out);
+
+/* DIAGNOSTIC (EMPEROR_GC_LOCAL_AUDIT, gc.c): report own-domain slots the
+ * full mark reaches but the local pass missed. */
+void gt_audit_local_gap(GtArena* a);
+/* Resolve candidate to its owning slot's user ptr ONLY when the span
+ * belongs to arena A (the local-marking leaf helper). */
 
 #endif

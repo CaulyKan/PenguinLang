@@ -36,6 +36,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <signal.h>
 #include "emperor_types.h"
 #include "emperor_gc.h"
 
@@ -45,6 +49,13 @@
 /* gc_span.c introspection (gc_internal.h — kept out of the public header
  * on purpose; the torture TU declares just what it reads). */
 extern uint64_t _emperor_gc_gt_stats(int which);
+/* Two-tier M2 (gc.c): write-point promotion + the critical-section
+ * bracket (gc_internal.h keeps these out of the public header too). */
+extern int _emperor_gc_region;
+extern size_t _emperor_gc_promote(void* obj);
+extern void _emperor_gc_crit_enter(void);
+extern void _emperor_gc_crit_exit(void);
+extern uint64_t _gc_local_cycles, _gc_local_freed_total;  /* gc.c M4a */
 /* core_builtin.c: native-array allocation (elements zero-filled, header
  * stamped). */
 extern void* _emperor_array_create(EmperorClassMetadata* meta, int64_t count, int64_t stride);
@@ -464,7 +475,15 @@ static int greentea_section(void) {
         wseed_obj = _emperor_array_create((EmperorClassMetadata*)&META_ARR, WSEED, 8);
         void** wseed = (void**)((char*)wseed_obj + 16); /* elements @+16 */
         _emperor_gc_add_root(&wseed_obj);
+        /* Two-tier M4: a local collection can fire on ANY refill — the
+         * allocation loop included, BEFORE the seeds reach wseed. Root
+         * each seed slot of this malloc array directly so the seeds are
+         * reachable at every collection moment (a bare malloc block is
+         * invisible to the markers; keeping it malloc avoids the
+         * conservative whole-body-scan amplification of a 1.6MB block). */
         BnNode** all = (BnNode**)malloc((size_t)WPAIRS * 2 * sizeof(BnNode*));
+        for (int s = 0; s < WSEED; s++) all[s] = NULL;
+        for (int s = 0; s < WSEED; s++) _emperor_gc_add_root((void**)&all[s]);
         for (int i = 0; i < WPAIRS * 2; i++) {
             /* 88B body: word0 metadata(NULL), word1 stamp, words2..5 edges,
              * words6..10 dead weight (span padding). Slot 112B. */
@@ -497,9 +516,11 @@ static int greentea_section(void) {
                 }
             }
         }
+        for (int s = 0; s < WSEED; s++) _emperor_gc_remove_root((void**)&all[s]);
         _emperor_gc_remove_root(&wseed_obj);
         wseed_obj = NULL;
         free(all);
+
     }
 
     /* Wholesale reclaim: drop the graph, exact return to baseline. The
@@ -541,6 +562,175 @@ static int greentea_section(void) {
            (unsigned long long)_emperor_gc_gt_stats(3),
            (unsigned long long)_emperor_gc_gt_stats(4),
            (unsigned long long)_emperor_gc_gt_stats(8));
+
+    /* ---- Two-tier M2: write-point promotion (gc-two-tier-heap §2.9) ----
+     * The 24B GCHeader's LAST int (user - 4) is the shared bit. Promote()
+     * must: set the bit over the pointer closure (conservative walk covers
+     * the 88B bodies' fields), be idempotent (stop at shared), leave
+     * unrelated objects alone, and NOT immortalize anything (the still-full
+     * collector must reclaim a dead shared graph — plan §2.6). crit_enter/
+     * exit must batch-promote the critical section's allocations. */
+    {
+        uint64_t promote_pre = _emperor_gc_info();
+        uint64_t* a = (uint64_t*)_emperor_gc_alloc(88, 0);
+        uint64_t* b = (uint64_t*)_emperor_gc_alloc(88, 0);
+        uint64_t* c = (uint64_t*)_emperor_gc_alloc(88, 0);
+        a[1] = 111; b[1] = 222; c[1] = 333;
+        ((void**)a)[2] = b;
+        ((void**)b)[2] = c;
+        /* foreign value: a stack address promotes nothing */
+        int stack_v = 0;
+        if (_emperor_gc_promote(&stack_v) != 0) {
+            fprintf(stderr, "FAIL gt: promote(foreign) != 0\n");
+            return 1;
+        }
+        size_t promoted = _emperor_gc_promote(a);
+        if (promoted != 3) {
+            fprintf(stderr, "FAIL gt: promote closure = %zu, expected 3\n", promoted);
+            return 1;
+        }
+        if (_emperor_gc_promote(a) != 0) {
+            fprintf(stderr, "FAIL gt: promote not idempotent\n");
+            return 1;
+        }
+        uint64_t* d = (uint64_t*)_emperor_gc_alloc(88, 0);
+        int shared_a = *(int*)((char*)a - 4);
+        int shared_b = *(int*)((char*)b - 4);
+        int shared_c = *(int*)((char*)c - 4);
+        int shared_d = *(int*)((char*)d - 4);
+        if (!shared_a || !shared_b || !shared_c || shared_d) {
+            fprintf(stderr, "FAIL gt: shared bits a=%d b=%d c=%d d=%d\n",
+                    shared_a, shared_b, shared_c, shared_d);
+            return 1;
+        }
+        /* crit bracket: allocations at depth>0 are promoted at exit */
+        _emperor_gc_crit_enter();
+        uint64_t* x = (uint64_t*)_emperor_gc_alloc(88, 0);
+        x[1] = 777;
+        ((void**)x)[2] = d;   /* closure reaches the unshared external d */
+        _emperor_gc_crit_exit();
+        int shared_x = *(int*)((char*)x - 4);
+        int shared_d2 = *(int*)((char*)d - 4);
+        if (!shared_x || !shared_d2) {
+            fprintf(stderr, "FAIL gt: crit promote x=%d d=%d\n", shared_x, shared_d2);
+            return 1;
+        }
+        /* shared is NOT immortal: drop every root, collect, heap must
+         * return to (or below) this section's baseline. */
+        *(volatile void**)&a = NULL;
+        *(volatile void**)&b = NULL;
+        *(volatile void**)&c = NULL;
+        *(volatile void**)&d = NULL;
+        *(volatile void**)&x = NULL;
+        (void)stack_v;
+        scrub();
+        CLEAR_CALLEE_SAVED();
+        /* Roll the fresh-object quarantine ring past this section's
+         * allocations (the ring is scanned as roots and never cleared —
+         * plan D5 — so its stale slots would otherwise keep the dead
+         * shared graph alive; a real program rolls it naturally). */
+        for (int i = 0; i < 600; i++) {
+            volatile void* t = _emperor_gc_alloc(32, 0);
+            (void)t;
+        }
+        _emperor_gc_collect();
+        _emperor_gc_collect();   /* second pass: first-cycle stale stack
+                                  * words settle; noise shrinks */
+        uint64_t promote_post = _emperor_gc_info();
+        /* Tolerance 256B: the conservative cover's stale stack/register
+         * words legitimately pin an unrelated dead slot or two for a cycle
+         * (observed +48). A REAL regression (shared objects immortal) would
+         * pin this section's five 112B slots = +560 and up. */
+        if (promote_post > promote_pre + 256) {
+            fprintf(stderr, "FAIL gt: shared graph immortal? post=%llu > pre=%llu\n",
+                    (unsigned long long)promote_post, (unsigned long long)promote_pre);
+            return 1;
+        }
+        printf("promote section: closure=3 idempotent, bits precise, crit batch, shared-not-immortal all pass\n");
+    }
+
+    /* ---- Two-tier M3: GC_VERIFY Inv-S1/S2 assertion ----
+     * Fork a child that plants a cross-color edge (shared -> unshared)
+     * and collects: the child must die on the GC_VERIFY violation. The
+     * parent ran the whole suite under GC_VERIFY with zero violations
+     * (no false positives) — this locks the catch side in. */
+    {
+        /* the assertion only exists under GC_VERIFY — mirror gc.c's env
+         * check (the flag itself is static there) */
+        const char* ve = getenv("GC_VERIFY");
+        int verify_on = ve != NULL && ve[0] != '\0' && ve[0] != '0';
+        if (!verify_on) {
+            printf("verify section: skipped (set GC_VERIFY=1 to run)\n");
+        } else {
+        fflush(stdout);
+        pid_t vpid = fork();
+        if (vpid == 0) {
+            /* child: silence, plant, collect, exit 0 only if NOT caught */
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); }
+            uint64_t* a = (uint64_t*)_emperor_gc_alloc(88, 0);
+            _emperor_gc_promote(a);
+            uint64_t* c = (uint64_t*)_emperor_gc_alloc(88, 0);
+            ((void**)a)[2] = c;
+            c = NULL;
+            _emperor_gc_collect();
+            _exit(0);   /* reached = verify FAILED to catch */
+        }
+        int vst = 0;
+        waitpid(vpid, &vst, 0);
+        if (!WIFSIGNALED(vst) || WTERMSIG(vst) != SIGABRT) {
+            fprintf(stderr, "FAIL gt: GC_VERIFY did not abort on a planted "
+                    "cross-color edge (child status %d)\n", vst);
+            return 1;
+        }
+        printf("verify section: planted cross-color edge aborts (Inv-S1/S2), no false positives\n");
+        }
+    }
+
+    /* ---- Two-tier M5: mixed spans under local collection ----
+     * A promoted object makes its span mixed (nshared>0) — the local
+     * sweep's slow path (per-slot header reads). With EMPEROR_GC_LOCAL on,
+     * local cycles fire mid-churn and must: keep the shared slot and its
+     * payload intact (Inv-S4/S8), keep a globally-rooted local object in
+     * the same size class alive, and keep running (cycles advance). */
+    {
+        uint64_t* shared_node = (uint64_t*)_emperor_gc_alloc(88, 0);
+        shared_node[1] = 4242;
+        _emperor_gc_promote(shared_node);
+        static uint64_t* m5_live;
+        m5_live = (uint64_t*)_emperor_gc_alloc(88, 0);
+        m5_live[1] = 5252;
+        _emperor_gc_add_root((void**)&m5_live);
+        /* same-size-class churn: lands in the same/adjacent spans, fires
+         * local cycles when the quota is on */
+        for (int i = 0; i < 20000; i++) {
+            uint64_t* junk = (uint64_t*)_emperor_gc_alloc(88, 0);
+            junk[1] = (uint64_t)i;
+        }
+        uint64_t cycles_after = _gc_local_cycles;
+        if (cycles_after > 0) {
+            if (*(int*)((char*)shared_node - 4) != 1) {
+                fprintf(stderr, "FAIL gt: M5 shared bit lost across local cycles\n");
+                return 1;
+            }
+            if (shared_node[1] != 4242) {
+                fprintf(stderr, "FAIL gt: M5 shared payload corrupted\n");
+                return 1;
+            }
+            printf("M5 section: mixed span survives %llu local cycles "
+                   "(shared slot + payload + same-class root intact)\n",
+                   (unsigned long long)cycles_after);
+        } else {
+            printf("M5 section: shared+root intact (set EMPEROR_GC_LOCAL to exercise local cycles)\n");
+        }
+        if (m5_live[1] != 5252) {
+            fprintf(stderr, "FAIL gt: M5 same-class rooted object corrupted\n");
+            return 1;
+        }
+        _emperor_gc_remove_root((void**)&m5_live);
+        m5_live = NULL;
+        *(volatile uint64_t**)&shared_node = NULL;
+    }
     return 0;
 }
 

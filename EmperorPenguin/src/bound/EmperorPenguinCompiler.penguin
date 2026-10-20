@@ -57,6 +57,7 @@ export class EmperorPenguinCompiler {
     // SemanticBindExpressions.bind_timer_wait) and runs Pass 10.
     enable_mt_scheduler: bool = false;
     warn_concurrency: bool = false;
+    strict_handoff: bool = false;
     // --meta-src / meta-sources: the explicit unit-B user file list
     // (main.penguin reads the listed files; seed_meta_engine hands them to
     // the MetaEngine for unit B inclusion).
@@ -124,6 +125,7 @@ export class EmperorPenguinCompiler {
         model.enable_coroutine = this.enable_coroutine;
         model.enable_mt_scheduler = this.enable_mt_scheduler;
         model.warn_concurrency = this.warn_concurrency;
+        model.strict_handoff = this.strict_handoff;
         model.meta_user_inputs = this.meta_user_inputs;
         model.is_unit_b = this.is_unit_b;
         model.top_level_in_global = this.top_level_in_global;

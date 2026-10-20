@@ -309,6 +309,22 @@ class IRGenerator {
             this.builder.emit_ret_void(func_loc);
             return;
         }
+        if (def.array_intrinsic == "gc_promote") {
+            // __gc_promote<T>(v: T) -> void — two-tier write-point promotion
+            // (plan §2.9). Reference-typed v: call the runtime's closure
+            // promotion. Primitive / function types carry no shareable
+            // reference graph: no code at all.
+            let p0: BoundFunctionParameter = def.parameters.at(cast<u64>(0)).some;
+            let is_prim: bool = p0.bound_type.kind is TypeKind.PrimitiveKind;
+            let is_fun: bool = p0.bound_type.kind is TypeKind.FunctionKind;
+            if (!is_prim && !is_fun) {
+                let cargs: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+                cargs.push(arg_regs.at(cast<u64>(0)).some);
+                let _: Option<IRValue> = this.builder.emit_call("_emperor_gc_promote", cargs, "void", func_loc);
+            }
+            this.builder.emit_ret_void(func_loc);
+            return;
+        }
         // Unknown intrinsic: leave a plain void return (should not happen — the
         // marker is only set for the six known names).
         this.builder.emit_ret_void(func_loc);

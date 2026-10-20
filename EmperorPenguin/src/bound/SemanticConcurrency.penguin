@@ -88,6 +88,13 @@ export class ConcurrencyAnalysisPass {
     stealable_ctx: mut _utils.List<string> = new _utils.List<string>();
     // -Wconcurrency: per-site diagnostics + a program summary.
     warn: mut bool = false;
+    // --strict-handoff (two-tier heap P1): non-Shareable channel payloads
+    // are E_HANDOFF_NOT_SHAREABLE; without it the same condition only
+    // warns under -Wconcurrency. Stdlib namespaces are exempt either way
+    // (their channel traffic is covered by the M0 audit table).
+    strict_handoff: mut bool = false;
+    // The definition currently being scanned (handoff-exemption context).
+    cur_def_full: mut string = "";
     stealable_sites: mut i64 = 0;
     pinned_sites: mut i64 = 0;
 
@@ -247,6 +254,25 @@ export class ConcurrencyAnalysisPass {
             this.scan_spawn_sites(d.namespace_def.children);
             return;
         }
+        // Two-tier P1: walk EVERY bound function body (not just spawn
+        // callbacks) — channel handoffs live in ordinary functions and
+        // initial blocks too. The walk's return value is the spawn-pin
+        // verdict; here we only care about its side effect
+        // (check_handoff_payload).
+        if (d is BoundDefinition.function_def) {
+            this.cur_def_full = d.function_def.full_name;
+            if (d.function_def.body.is_some()) {
+                let _: bool = this.walk_expr(d.function_def.body.some);
+            }
+            return;
+        }
+        if (d is BoundDefinition.initial_routine) {
+            this.cur_def_full = d.initial_routine.full_name;
+            if (d.initial_routine.body.is_some()) {
+                let _: bool = this.walk_expr(d.initial_routine.body.some);
+            }
+            return;
+        }
     }
 
     fun class_is_spawn_ctx(mut this, cls: BoundClassDefinition) -> bool {
@@ -375,6 +401,14 @@ export class ConcurrencyAnalysisPass {
             return;
         }
         if (fc.callee_symbol.is_none()) {
+            return;
+        }
+        // Guard the variant: a callee_symbol can hold a non-function
+        // payload (function-value calls bind the VARIABLE); unguarded
+        // .function_sym misread it. Surfaced by the P1 scan_one extension
+        // (walk_expr now runs over every function body, not just spawn
+        // callbacks).
+        if (!(fc.callee_symbol.some is BoundSymbol.function_sym)) {
             return;
         }
         let sym: BoundFunctionSymbol = fc.callee_symbol.some.function_sym;
@@ -581,9 +615,313 @@ export class ConcurrencyAnalysisPass {
         return dirty;
     }
 
-    fun walk_expr(mut this, e: BoundExpression) -> bool {
+    // Two-tier heap P1 (plan §3/P1): the §10.3 handoff points the TYPE
+    // system can see — channel writes (push / try_write) and the stealable
+    // spawn result container (complete). The payload's static type must be
+    // Shareable (Imm / value-share / Sync / Ownership), or the object
+    // crosses threads as an unsynchronized mutable graph. Default:
+    // -Wconcurrency warning; --strict-handoff promotes to
+    // E_HANDOFF_NOT_SHAREABLE. Stdlib namespaces are exempt (audited by
+    // the M0 table instead — their internal channel traffic is trusted).
+
+    // ---- Two-tier P5: the with()-callback escape check (Inv-M5) ----
+    // The callback receives the payload as `mut T` — a mutable alias.
+    // Writing through it is the point; letting the ALIAS (or a
+    // reference-typed field of it) escape the callback breaks the
+    // write-point promotion premise ("every write happens inside the
+    // lock"). Conservative, syntactic, decidable (plan §2.12):
+    //  E1 a reference rooted at the parameter passed as a call argument
+    //  E2 a reference rooted at the parameter assigned to a non-local
+    //     lvalue (global / static / another object's field)
+    //  E3 a reference rooted at the parameter returned
+    // Value-typed reads (v.count, primitives) pass — println(v.count)
+    // must keep compiling.
+    fun is_param_ident(mut this, e: BoundExpression, pname: string) -> bool {
         if (e is BoundExpression.identifier) {
-            let sym: Option<BoundSymbol> = e.identifier.symbol;
+            let s: Option<BoundSymbol> = e.identifier.symbol;
+            if (s.is_some() && s.some is BoundSymbol.variable) {
+                let vs: BoundVariableSymbol = s.some.variable;
+                if (vs.variable_kind is VariableSymbolKind.Param && vs.name == pname) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fun chain_rooted_at(mut this, e: BoundExpression, pname: string) -> bool {
+        if (this.is_param_ident(e, pname)) { return true; }
+        if (e is BoundExpression.member_access) {
+            if (e.member_access.base_expr.is_some()) {
+                return this.chain_rooted_at(e.member_access.base_expr.some, pname);
+            }
+        }
+        return false;
+    }
+
+    fun is_escape_ref(mut this, e: BoundExpression, pname: string) -> bool {
+        if (this.is_param_ident(e, pname)) { return true; }
+        if (e is BoundExpression.member_access) {
+            if (this.chain_rooted_at(e, pname)) { return true; }
+        }
+        return false;
+    }
+
+    fun report_escape(mut this, what: string, pname: string) {
+        let msg: string = "with() callback parameter '" + pname
+            + "' (or its reference-typed field) escapes " + what
+            + " — the write-point promotion premise requires every payload"
+            + " write inside the lock (Inv-M5)";
+        if (this.strict_handoff) {
+            this.model.some.report_error(new ErrorCode.E_HANDOFF_NOT_SHAREABLE(),
+                msg, new SourceLocation("", 0, 0));
+        } else if (this.warn) {
+            __builtin.eprintln("[concurrency] warning: " + msg);
+        }
+    }
+
+    fun esc_walk_expr(mut this, e: BoundExpression, pname: string) {
+        if (e is BoundExpression.function_call) {
+            let fc: BoundFunctionCallExpression = e.function_call;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fc.arguments.size())) {
+                if (this.is_escape_ref(fc.arguments.at(cast<u64>(i)).some, pname)) {
+                    this.report_escape("as a call argument", pname);
+                }
+                i = i + 1;
+            }
+            if (fc.callee.is_some()) { this.esc_walk_expr(fc.callee.some, pname); }
+            let j: mut i64 = 0;
+            while (j < cast<i64>(fc.arguments.size())) {
+                this.esc_walk_expr(fc.arguments.at(cast<u64>(j)).some, pname);
+                j = j + 1;
+            }
+            return;
+        }
+        if (e is BoundExpression.member_access) {
+            if (e.member_access.base_expr.is_some()) {
+                this.esc_walk_expr(e.member_access.base_expr.some, pname);
+            }
+            return;
+        }
+        if (e is BoundExpression.binary) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(e.binary.operands.size())) {
+                this.esc_walk_expr(e.binary.operands.at(cast<u64>(i)).some, pname);
+                i = i + 1;
+            }
+            return;
+        }
+        if (e is BoundExpression.unary) {
+            if (e.unary.operand.is_some()) {
+                this.esc_walk_expr(e.unary.operand.some, pname);
+            }
+            return;
+        }
+        if (e is BoundExpression.code_block) {
+            let s: mut i64 = 0;
+            while (s < cast<i64>(e.code_block.statements.size())) {
+                this.esc_walk_stmt(e.code_block.statements.at(cast<u64>(s)).some, pname);
+                s = s + 1;
+            }
+            if (e.code_block.trailing_expr.is_some()) {
+                if (this.is_escape_ref(e.code_block.trailing_expr.some, pname)) {
+                    this.report_escape("as the block result", pname);
+                }
+                this.esc_walk_expr(e.code_block.trailing_expr.some, pname);
+            }
+            return;
+        }
+        if (e is BoundExpression.lambda_expr) {
+            if (e.lambda_expr.body.is_some()) {
+                this.esc_walk_expr(e.lambda_expr.body.some, pname);
+            }
+            return;
+        }
+    }
+
+    fun esc_walk_stmt(mut this, st: BoundStatement, pname: string) {
+        if (st is BoundStatement.assignment) {
+            let a: BoundAssignmentStatement = st.assignment;
+            if (a.value.is_some()) {
+                if (this.is_escape_ref(a.value.some, pname)) {
+                    let tgt_local: mut bool = false;
+                    if (a.target_symbol.is_some() &&
+                        a.target_symbol.some is BoundSymbol.variable) {
+                        let k: VariableSymbolKind = a.target_symbol.some.variable.variable_kind;
+                        if (k is VariableSymbolKind.Local || k is VariableSymbolKind.Temp
+                            || k is VariableSymbolKind.Param) {
+                            tgt_local = true;
+                        }
+                    }
+                    if (!tgt_local) {
+                        this.report_escape("into a non-local lvalue", pname);
+                    }
+                }
+                this.esc_walk_expr(a.value.some, pname);
+            }
+            return;
+        }
+        if (st is BoundStatement.return_stmt) {
+            if (st.return_stmt.value.is_some()) {
+                if (this.is_escape_ref(st.return_stmt.value.some, pname)) {
+                    this.report_escape("as the return value", pname);
+                }
+                this.esc_walk_expr(st.return_stmt.value.some, pname);
+            }
+            return;
+        }
+        if (st is BoundStatement.expression) {
+            if (st.expression.expression.is_some()) {
+                this.esc_walk_expr(st.expression.expression.some, pname);
+            }
+            return;
+        }
+        if (st is BoundStatement.if_stmt) {
+            if (st.if_stmt.condition.is_some()) {
+                this.esc_walk_expr(st.if_stmt.condition.some, pname);
+            }
+            if (st.if_stmt.then_statement.is_some()) {
+                this.esc_walk_stmt(st.if_stmt.then_statement.some, pname);
+            }
+            if (st.if_stmt.else_statement.is_some()) {
+                this.esc_walk_stmt(st.if_stmt.else_statement.some, pname);
+            }
+            return;
+        }
+        if (st is BoundStatement.while_stmt) {
+            if (st.while_stmt.condition.is_some()) {
+                this.esc_walk_expr(st.while_stmt.condition.some, pname);
+            }
+            if (st.while_stmt.body.is_some()) {
+                this.esc_walk_stmt(st.while_stmt.body.some, pname);
+            }
+            return;
+        }
+    }
+
+    fun check_with_escape(mut this, fc: BoundFunctionCallExpression) {
+        // `m.with(f)` — receiver class Mutex, one lambda argument
+        if (fc.arguments.size() != 1) { return; }
+        if (!(fc.callee.is_some() && fc.callee.some is BoundExpression.member_access)) {
+            return;
+        }
+        let recv_expr: Option<BoundExpression> = fc.callee.some.member_access.base_expr;
+        if (recv_expr.is_none()) { return; }
+        let recv_cls: Option<BoundClassDefinition> = recv_expr.some.get_bound_type().class_def();
+        if (recv_cls.is_none()) { return; }
+        if (recv_cls.some.name != "Mutex") { return; }
+        let arg: BoundExpression = fc.arguments.at(cast<u64>(0)).some;
+        // EP reality: a lambda binds as a function-value OBJECT (new_expr)
+        // whose constructor argument 0 is an identifier of the synthesized
+        // function — locate that def in the index and walk ITS body.
+        let pname: mut string = "";
+        let body: mut Option<BoundExpression> = new Option<BoundExpression>.none();
+        let have_body: mut bool = false;
+        if (arg is BoundExpression.lambda_expr) {
+            let lam: BoundLambdaExpression = arg.lambda_expr;
+            if (cast<i64>(lam.parameters.size()) >= 1) {
+                pname = lam.parameters.at(cast<u64>(0)).some.name;
+                body = new Option<BoundExpression>.some(lam.body.some);
+                have_body = true;
+            }
+        } else if (arg is BoundExpression.new_expr) {
+            let ne: BoundNewExpression = arg.new_expr;
+            if (cast<i64>(ne.arguments.size()) >= 1) {
+                let a0: BoundExpression = ne.arguments.at(cast<u64>(0)).some;
+                if (a0 is BoundExpression.identifier && a0.identifier.symbol.is_some()
+                    && a0.identifier.symbol.some is BoundSymbol.function_sym) {
+                    let want: string = a0.identifier.symbol.some.function_sym.full_name;
+                    let k: mut i64 = 0;
+                    while (k < cast<i64>(this.fn_names.size())) {
+                        if (this.fn_names.at(cast<u64>(k)).some == want) {
+                            let fd: BoundFunctionDefinition = this.fn_defs.at(cast<u64>(k)).some;
+                            if (cast<i64>(fd.parameters.size()) >= 1) {
+                                pname = fd.parameters.at(cast<u64>(0)).some.name;
+                                body = fd.body;
+                                have_body = body.is_some();
+                            }
+                            break;
+                        }
+                        k = k + 1;
+                    }
+                }
+            }
+        }
+        if (string_length(pname) == 0) { return; }
+        // stdlib exemption as in check_handoff_payload
+        if (string_find(this.cur_def_full, "scheduler") >= 0) { return; }
+        if (string_find(this.cur_def_full, "_utils") >= 0) { return; }
+        if (string_find(this.cur_def_full, "__builtin") >= 0) { return; }
+        if (have_body && body.is_some()) {
+            this.esc_walk_expr(body.some, pname);
+        }
+    }
+
+    fun check_handoff_payload(mut this, fc: BoundFunctionCallExpression) {
+        let name: mut string = "";
+        if (fc.callee_symbol.is_some() &&
+            fc.callee_symbol.some is BoundSymbol.function_sym) {
+            name = fc.callee_symbol.some.function_sym.name;
+        } else if (fc.callee.is_some() && fc.callee.some is BoundExpression.member_access) {
+            // Virtual interface call: the callee_symbol may be unset; the
+            // callee member-access carries the method name.
+            let m: Option<BoundSymbol> = fc.callee.some.member_access.member_symbol;
+            if (m.is_some() && m.some is BoundSymbol.function_sym) {
+                name = m.some.function_sym.name;
+            }
+        }
+        if (name != "write" && name != "try_write" && name != "push"
+            && name != "complete") { return; }
+        if (fc.arguments.size() < 1) { return; }   // the payload
+        if (!(fc.callee.is_some() && fc.callee.some is BoundExpression.member_access)) {
+            return;
+        }
+        let recv_expr: Option<BoundExpression> = fc.callee.some.member_access.base_expr;
+        if (recv_expr.is_none()) { return; }
+        let recv_t: BoundType = recv_expr.some.get_bound_type();
+        // channel/future shape: the receiver's class implements IChannel /
+        // ISink, or is the __Spawn*Future result-container family
+        let recv_cls: Option<BoundClassDefinition> = recv_t.class_def();
+        if (recv_cls.is_none()) { return; }
+        let cls_name: string = recv_cls.some.name;
+        let is_future: bool = string_starts_with(cls_name, "__Spawn");
+        let is_channel: mut bool = false;
+        if (!is_future) {
+            let m: mut i64 = 0;
+            while (m < cast<i64>(recv_cls.some.interface_impls.size())) {
+                let impld: BoundDefinition = recv_cls.some.interface_impls.at(cast<u64>(m)).some;
+                if (impld is BoundDefinition.impl_def) {
+                    let iname: string = impld.impl_def.interface_type.display_name();
+                    // display_name carries generic args (e.g. "ISink<!mut T>")
+                    // — match by containment, not suffix.
+                    if (string_find(iname, "IChannel") >= 0 || string_find(iname, "ISink") >= 0) {
+                        is_channel = true;
+                    }
+                }
+                m = m + 1;
+            }
+        }
+        if (!is_channel && !is_future) { return; }
+        // stdlib exemption (the M0 audit table covers scheduler traffic)
+        if (string_find(this.cur_def_full, "scheduler") >= 0) { return; }
+        if (string_find(this.cur_def_full, "_utils") >= 0) { return; }
+        if (string_find(this.cur_def_full, "__builtin") >= 0) { return; }
+        let pay_t: BoundType = fc.arguments.at(cast<u64>(0)).some.get_bound_type();
+        if (this.type_shareable(pay_t)) { return; }
+        let msg: string = "handoff payload type '" + pay_t.display_name()
+            + "' is not Shareable (need Imm / value-share / Sync / Ownership) — "
+            + name + "() is a cross-thread handoff point (two-tier heap P1)";
+        if (this.strict_handoff) {
+            this.model.some.report_error(new ErrorCode.E_HANDOFF_NOT_SHAREABLE(),
+                msg, new SourceLocation("", 0, 0));
+        } else if (this.warn) {
+            __builtin.eprintln("[concurrency] warning: " + msg);
+        }
+    }
+
+    fun walk_expr(mut this, e: BoundExpression) -> bool {
+        if (e is BoundExpression.identifier) {            let sym: Option<BoundSymbol> = e.identifier.symbol;
             if (sym.is_some()) {
                 if (sym.some is BoundSymbol.variable) {
                     let kind: VariableSymbolKind = sym.some.variable.variable_kind;
@@ -643,6 +981,10 @@ export class ConcurrencyAnalysisPass {
         }
         if (e is BoundExpression.function_call) {
             let fc: BoundFunctionCallExpression = e.function_call;
+            // Two-tier P1: channel/future payload Shareability
+            this.check_handoff_payload(fc);
+            // Two-tier P5: with()-callback escape check (Inv-M5)
+            this.check_with_escape(fc);
             // Arguments first (side effects live there too).
             let i: mut i64 = 0;
             while (i < cast<i64>(fc.arguments.size())) {
@@ -671,6 +1013,13 @@ export class ConcurrencyAnalysisPass {
             if (fc.callee_symbol.is_none()) {
                 this.debug_why = "unresolved call";
                 return true;
+            }
+            if (!(fc.callee_symbol.some is BoundSymbol.function_sym)) {
+                // function-value call through a VARIABLE callee: not a
+                // known meta/extern target — treat as clean (the same
+                // guard as check_handoff_payload; exposed by the P1
+                // every-function walk).
+                return false;
             }
             let sym: BoundFunctionSymbol = fc.callee_symbol.some.function_sym;
             if (sym.is_meta) {

@@ -100,6 +100,11 @@ Pass 10（封闭性分析，见[绑定模型](./26_EmperorPenguinBound.md)）在
 - **没有虚拟时钟**：没有可推进的 tick、没有定时器表；`wait n;`（n > 0）在运行期被拒绝（没有可等的 tick——改等 Event、future 或 AsyncQueue）；`wait;` / `wait 0;` 停靠一个收敛回合，负数 `wait` 是纯让出，与 sim-mt 完全一致。
 - **组件立即化**：Signal/Fifo/LatestChannel/Event 内联提交并唤醒——写操作的效果在被唤醒的读取者的**同一**收敛回合内可见（sim-mt 的延迟提交层被反转；边界上没有东西可提交）。
 - **跨线程结构**走 `AsyncQueue<T>`：由 AtomicBool 自旋锁保护的 MPMC 队列（test-and-set 失败就以纯让出退避——绝不跨停靠持锁）；取空者作为条件等待者停靠、由入队唤醒。它实现 `ISync`，因此持有它的协程是 Pass 10 可窃取的，在 `EMPEROR_THREADS` 下真正跑在不同线程；立即的 Signal/Fifo/Latest/Event 保持单域（Pass 10 钉住其持有者，与 sim-mt 同一格）。
+
+**移交点已被强制（2026-10-19）**：通道 `write`/`try_write`/`push` 与结果容器 `complete()`
+的载荷 Shareable 检查已上线（`--strict-handoff` 硬错误 / `-Wconcurrency` 警告——见规范 07 的
+`ISync` 契约）；写点提升（`__gc_promote` intrinsic）接入了全部移交点（实现笔记 29 §11.5、
+设计文档 §10.12）。`AsyncQueue` 的载荷同通道规则。
 - 边界只保留：欠账/可运行检查 → 非阻塞 fd 探测 → 只剩 fd 等待者时阻塞 poll → 所有协程结束才退出，否则按设计挂起（决策 E；`EMPEROR_IDLE_DUMP` 负责报告）。
 
 对不使用仿真时间的程序，free-mt 与 sim-mt 行为一致——free-mt 的存在让服务不必为虚拟时钟付费，也让 `wait n` 大声失败而不是默默排在一个永不推进的 tick 上。测试：`Tests/FreeMtTest/`（仅 Pass3）。

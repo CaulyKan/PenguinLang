@@ -308,6 +308,7 @@ class LLVMEmitter {
     array_meta_entries: mut _utils.List<ArrayMetaEntry> = new _utils.List<ArrayMetaEntry>();
     needs_array_create: mut bool = false;
     needs_array_ops: mut bool = false;
+    needs_gc_promote: mut bool = false;
     enum_layouts: mut _utils.List<EnumLayout> = new _utils.List<EnumLayout>();
     // Completion order of layout building (leaves finish first). LLVM textual
     // IR requires a named struct to be DEFINED before it is referenced by
@@ -853,6 +854,7 @@ class LLVMEmitter {
         this.array_meta_entries = new _utils.List<ArrayMetaEntry>();
         this.needs_array_create = false;
         this.needs_array_ops = false;
+        this.needs_gc_promote = false;
         this.enum_layouts = new _utils.List<EnumLayout>();
         this.tmp_counter = 0;
         this.has_iref_class = false;
@@ -1330,6 +1332,11 @@ class LLVMEmitter {
         if (this.needs_array_ops) {
             target.append("declare void @_emperor_array_fill(ptr, ptr)\n");
             target.append("declare void @_emperor_array_copy_range(ptr, ptr, i64)\n");
+        }
+        if (this.needs_gc_promote) {
+            // Two-tier M2: write-point promotion runtime entry (lowered from
+            // the __gc_promote intrinsic for reference-typed arguments).
+            target.append("declare void @_emperor_gc_promote(ptr)\n");
         }
         if (this.needs_gc_pin_refmap) {
             target.append("@_emperor_gc_pin_refmap = external global [1 x i32]\n");
@@ -4741,6 +4748,11 @@ class LLVMEmitter {
     fun emit_call_void(mut this, inst: IRCallVoid) {
         if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_call_void(inst=" + inst.display() + ")");
  }
+        // Two-tier M2: the __gc_promote intrinsic lowers to this runtime
+        // call — mark the declaration as needed.
+        if (inst.func_name == "_emperor_gc_promote") {
+            this.needs_gc_promote = true;
+        }
         // Native-array extern helpers (lowered from the __array_fill /
         // __array_copy_range intrinsics). Fixed C ABI: the element VALUE is
         // passed by address (any element type), so materialize a slot for it.

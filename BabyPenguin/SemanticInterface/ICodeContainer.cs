@@ -2554,6 +2554,21 @@ namespace BabyPenguin.SemanticInterface
             => text is "create_array" or "create_array_with"
                 || text is "__builtin.create_array" or "__builtin.create_array_with";
 
+        /// <summary>Two-tier M2: the write-point promotion intrinsic
+        /// (`__gc_promote` / `__builtin.__gc_promote`) — a no-op on the
+        /// single-threaded BP VM, emitted for real only by EmperorPenguin's
+        /// IRGenerator.</summary>
+        private static bool IsGcPromoteCall(FunctionCallExpression exp)
+        {
+            var text = exp.Callee switch
+            {
+                PrimaryExpression pe when pe.IsSimple => pe.Text,
+                MemberAccessExpression ma => ma.Text,
+                _ => "",
+            };
+            return text is "__gc_promote" or "__builtin.__gc_promote";
+        }
+
         private static (ITypeNode elemNode, IType elemImmutable)? ArrayElementOf(IType? type)
         {
             if (type != null && type.Type == TypeEnum.Array && type.TypeNode is ArrayTypeNode an)
@@ -2860,6 +2875,19 @@ namespace BabyPenguin.SemanticInterface
                 var arrayResult = AddArrayCallExpression(arrayCall, isVariableInitialize, targetSymbol);
                 if (arrayResult != null)
                     return arrayResult;
+            }
+
+            // Two-tier heap M2: `__builtin.__gc_promote(v)` (mirrored from
+            // EmperorPenguin's core_builtin — the BP VM compiles the SAME
+            // source in pass1). BabyPenguin is single-threaded with no
+            // shared-side concept: evaluate the argument (no side effects in
+            // the handoff shapes, but stay uniform) and emit NOTHING.
+            if (expression is FunctionCallExpression gcCall && IsGcPromoteCall(gcCall))
+            {
+                var gcArg = gcCall.ArgumentsExpression.Select(a => AddExpression(a, false)).ToList();
+                if (gcArg.Count != 1)
+                    throw new BabyPenguinException("'__gc_promote' expects exactly 1 argument", gcCall.SourceLocation, code: ErrorCode.E_TYPE_MISMATCH);
+                return gcArg[0];
             }
 
             ISymbol to;

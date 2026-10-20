@@ -657,6 +657,10 @@ class BuildScopesPass {
         if (def.name == "__array_len") { result.array_intrinsic = "len"; }
         if (def.name == "__array_fill") { result.array_intrinsic = "fill"; }
         if (def.name == "__array_copy_range") { result.array_intrinsic = "copy_range"; }
+        // Two-tier heap M2: write-point promotion intrinsic (plan §2.9) —
+        // IRGenerator lowers it to _emperor_gc_promote for reference-typed
+        // arguments, nothing for primitives/functions.
+        if (def.name == "__gc_promote") { result.array_intrinsic = "gc_promote"; }
         scope.add_symbol(new BoundSymbol.function_sym(sym));
         return new Option<BoundDefinition>.some(new BoundDefinition.function_def(result));
     }

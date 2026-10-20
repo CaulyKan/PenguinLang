@@ -89,6 +89,22 @@ Several interfaces in the type system have no methods and act as markers (see [D
 * `ICopy<T>` — opt-in copy semantics with an `extern fun copy(this: T) -> T`.
 * `IHash`, `IUniqueMangleName`, `ISynchronizable` — library contracts (hashing, unique mangling for value template args, thread-safe reference sharing).
 
+**The `ISync` two-tier contract (2026-10-19)**: implementing `ISync`
+means "fields live on the shared side + every mutation happens under a
+lock". **Payload rule**: the payload of a cross-thread channel
+(`write`/`try_write`/`push`) or result-container `complete()` must be
+Shareable (deeply-immutable `Imm` / value-shareable / `Sync` /
+`Ownership`) — under `--strict-handoff` a violation is the
+`E_HANDOFF_NOT_SHAREABLE` compile error (by default, a `-Wconcurrency`
+warning). Note: after an `Imm` object is shared by reference, the
+receiver MAY store it in a local container (the reverse edge is legal;
+the global full marking backs it).
+**Forbidden**: depending on cross-thread object identity (hashing by
+address, `__object_id` comparison) — cross-domain `Ownership` copies
+on the receiving side and value payloads do not preserve identity;
+identity being unobservable is part of the sharing semantics (P3 audit
+conclusion).
+
 ## Orphan Rule and Default Methods
 
 An `impl X for Y` block must be in the same file as either `X` or `Y` (the orphan rule, checked at compile time). A method omitted from an `impl` block falls back to the interface's default implementation. There is currently no syntax to invoke a default implementation from inside an overriding method — referencing the interface method directly (`IBook.get_language(this)`) is rejected because an interface method has no single implementation; reference it through a concrete class instead.

@@ -385,14 +385,27 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
 * 平台：linux x86_64 + aarch64，`CROSS=win64`（llvm-mingw）。仅有的架构
   敏感点是栈指针 asm 和计时时钟（QPC vs `clock_gettime`）。
 
+## 11.5 两层堆（two-tier heap，2026-10-19）
+
+对象头带一个 `shared` 位（仍在 24 B 内；span 头带 `uint8_t nshared`，仍在 128 B 内）：
+移交点（通道 `write/try_write/push`、结果容器 `complete`、`Mutex` 构造/set）经
+`__gc_promote` intrinsic 做**写点提升**——从新值出发、遇已带位即停地把闭包置位；
+`Mutex.with` 用临界区配额列表批量提升（锁内完成）。带位对象对本地回收器是不透明
+叶子（不当根、不穿透、不回收——归全局），本地回收器（`gc_collect_local`）以
+`header.marked` 标记（不碰 span 位图）、全套根 + "非本域未带位跳过"叶子规则，
+只清扫本域 span 池。`GC_VERIFY` 在全局 STW 期断言无跨色边（共享 → 未共享）。
+`EMPEROR_GC_REGION=0` 一键回退单堆。详见设计文档 `wip/concurrent_scheduler.md` §10.9–10.12。
+
 ## 12. 未来工作
 
 - **SIMD 位图内核**：用 AVX-512/GFNI 块计算 `gray & ~black`，CPUID 门控
   加标量内核回退。
 - **无头部槽位**：从 span 推导尺寸/class——每
   对象收回 24 B。
-- **本地/共享域拆分**：调度器交接点上带晋升的每 arena 本地收集器，取代
-  对所有 arena 的一次全局 stop-the-world 遍历。
+- **本地/共享域拆分**：已按"逻辑分区（逐对象 `shared` 位）"落地设计并分阶段实现
+  （设计文档 §10.2–10.12，`.agents/plans/gc-two-tier-heap.md`）：全局收集器保持全量
+  标记清扫（收益取频率），域本地回收器按 `EMPEROR_GC_LOCAL` 配额触发（默认关闭）；
+  剩余：按域停止协议（poll gate 分域化，M4b）与 P5 逃逸检查。
 - **退役安全网**：隔离环与保守栈覆盖可以在 `GC_VERIFY` 于全集上长期跑
   干净后收缩。
 - **并发标记**：只在多 OS 线程下有意义；会重新引入写屏障——不在范围内。
