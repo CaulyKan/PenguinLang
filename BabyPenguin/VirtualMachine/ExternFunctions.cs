@@ -231,6 +231,16 @@ namespace BabyPenguin.VirtualMachine
                     items.Add(store(args[1]));
                 });
 
+                // Bare element access (no Option boxing) for hot loops; mirrors
+                // the Penguin-side at_unchecked in EmperorPenguin/src/utils.penguin.
+                vm.Global.RegisterExternFunction(listType.FullName() + ".at_unchecked", (result, args) =>
+                {
+                    var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();
+                    var items = (list.ExternImplenmentationValue as List<IRuntimeValue>)!;
+                    var index = (int)args[1].As<BasicRuntimeValue>().U64Value;
+                    result!.AssignFrom(extract(items[index], listType));
+                });
+
                 vm.Global.RegisterExternFunction(listType.FullName() + ".pop", (result, args) =>
                 {
                     var list = args[0].As<ReferenceRuntimeValue>().Fields["__impl"].As<ReferenceRuntimeValue>();

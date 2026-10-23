@@ -77,6 +77,21 @@ namespace BabyPenguin.Parser
 
             ScopeStack.Push(scope);
         }
+
+        /// <summary>
+        /// Mint a rewrite-time scope: a fresh scope id parented to PARENT_ID.
+        /// Syntax rewrites that SYNTHESIZE a code block (the async-spawn
+        /// rewrite) must give it its own scope instead of reusing the spawn
+        /// expression's — closure capture treats the surrounding locals as
+        /// strict ancestors of the block, so a borrowed scope id silently
+        /// dropped every local declared next to the expression.
+        /// </summary>
+        public static uint MintChildScope(uint parentId)
+        {
+            var id = (uint)Interlocked.Increment(ref scopeIdCounter);
+            ScopeParentMap[id] = parentId;
+            return id;
+        }
     }
 
     public enum SyntaxScopeType

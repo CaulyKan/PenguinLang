@@ -31,6 +31,23 @@ export class BoundCompilationUnit {
     // the plain sequential main regardless of --enable-coroutine, keeping
     // bootstrap md5 convergence flag-independent.
     has_suspension: mut bool = false;
+    // Lazy full_name -> flat-index hash maps for the two hot def lookups in
+    // BindExpressionsPass (try_infer_generic_call / find_function_return_type).
+    // The old recursive linear walks cost O(all defs) per lookup and dominated
+    // the pass-8 profile. TWO maps because the two walks cover different
+    // scopes: the find-family walk skips enum interface_impls, the
+    // return-type walk includes them — sharing one map would change which def
+    // a lookup resolves. Each map is built lazily on first use over the whole
+    // definition tree (preorder, first-wins — same winner as the linear walk)
+    // and extended incrementally as monomorphize/catch_up append new
+    // TOP-LEVEL defs (nested trees never change after pass 1), so a miss is
+    // definitive.
+    func_def_index: mut _utils.StrMap = new _utils.StrMap();
+    func_defs_flat: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    func_defs_indexed_upto: mut i64 = 0;
+    func_ret_index: mut _utils.StrMap = new _utils.StrMap();
+    func_ret_flat: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
+    func_ret_indexed_upto: mut i64 = 0;
 
     fun new(mut this, location: SourceLocation) {
         this.location = location;

@@ -318,6 +318,21 @@ typedef struct EmperorCoroutine {
     void (*entry)(void*); /* consumed at the coroutine's first switch */
     void* entry_arg;
     struct EmperorCoroutine* qnext; /* spawn inbox / fd-woken list link */
+    struct EmperorCoroutine* gcnext; /* GC-VALVE-list link — exclusive with
+                                       qnext for the same reason onext/fnext
+                                       exist: a coroutine parked on the GC
+                                       valve (STW escalation / hard-cap) can
+                                       ALSO be registered in the futures set
+                                       (it parked mid-do_wait), and the
+                                       delivery kick that wakes it pushes a
+                                       run-queue entry — clobbering qnext and
+                                       TRUNCATING the valve chain. Every
+                                       coroutine below the stale entry was
+                                       then never released by the boundary:
+                                       parked CO_COND, in no list, the lost
+                                       -wake hang (the co2 of the
+                                       MtGcFrameChainRace forensics,
+                                       2026-10-23). */
     struct EmperorCoroutine* onext; /* OWED-list link — exclusive with
                                        qnext by construction: the owed list
                                        and the run queues used to share qnext
@@ -1605,14 +1620,37 @@ static int mt_dbg = 0;
  * allocation hard cap park here (CO_COND via mt_park_begin — NOT
  * runnable; their parking is part of what converges the delta). The
  * boundary, already the stop-the-world point, drains the forced
- * collection and then releases them into the next delta. qnext links the
- * list, exactly like the future-waiter set. The MINIMUM pending charge
+ * collection and then releases them into the next delta. gcnext links the
+ * list (NOT qnext — see the field comment). The MINIMUM pending charge
  * feeds the boundary's OOM predicate (gc.c _emperor_gc_cap_blocks): when
  * even the smallest parked allocation cannot fit the live set, no
  * collection can ever unblock anyone. */
 static EmperorCoroutine* mt_gc_parked_head = NULL;
 static int64_t mt_gc_parked_count = 0;
 static size_t mt_gc_parked_min_charge = (size_t)-1; /* SIZE_MAX = none */
+
+/* Unlink CO from the GC valve (glock held). A coroutine parked on the
+ * valve can be woken by an EXTERNAL source (the futures kick of its
+ * still-registered do_wait, mt_wake_locked below) — that wake is correct,
+ * but the valve entry goes stale: the boundary release would re-wake it
+ * (spurious, absorbed) and, with the shared-qnext corruption fixed by
+ * gcnext, no longer truncates the chain. Unlinking here keeps the valve
+ * semantics clean: a woken coroutine is no longer parked-on-GC. Also the
+ * re-park path (stw_park called twice without an intervening release)
+ * uses it to avoid double-linking itself into the chain. */
+static void mt_valve_unlink_locked(EmperorCoroutine* co) {
+    EmperorCoroutine** pp = &mt_gc_parked_head;
+    while (*pp) {
+        if (*pp == co) {
+            *pp = co->gcnext;
+            co->gcnext = NULL;
+            mt_gc_parked_count--;
+            return;
+        }
+        pp = &(*pp)->gcnext;
+    }
+}
+
 /* Set by any mt-kernel entry (mt_glock_init): the valve parks only under
  * the mt scheduler — the classic scheduler's CO_PARKED has different
  * wake semantics (auto re-queue next round) and its inline collections
@@ -2160,6 +2198,14 @@ static void mt_switch_away(void) {
  * CO_COND entry can still carry an earlier wake's phantom queue entry
  * (queued=1) — that entry IS this wake's filing. */
 static void mt_wake_locked(EmperorCoroutine* co) {
+    mt_valve_unlink_locked(co);
+    if (getenv("EMPEROR_VTRACE")) {
+        int on_valve = 0;
+        for (EmperorCoroutine* v = mt_gc_parked_head; v; v = v->qnext) {
+            if (v == co) { on_valve = 1; break; }
+        }
+        fprintf(stderr, "[vt] wake co=%d on_valve=%d\n", co->seq, on_valve);
+    }
     mt_st_inc(&mt_st_wake_effective);
     mt_qlog_add(co, 0, 0, 10); /* wake took effect */
     co_state_set(co, CO_RUNNABLE);
@@ -2192,6 +2238,10 @@ void _emperor_mt_wake(void* handle) {
     }
     mt_qlog_add(co, 0, 0, 11); /* wake no-op (state not CO_COND) */
     mt_st_inc(&mt_st_wake_noop);
+    if (getenv("EMPEROR_WAKE_TRACE"))
+        fprintf(stderr, "[wake-noop] co=%d state=%d lib_park=%d future_park=%d in_fut=%d queued=%d from t%d\n",
+                co->seq, co_state_get(co), co->lib_park, co->future_park,
+                co->in_futures, co->queued, tls_thread_index);
     MT_UNLOCK(mt_glock);
 }
 
@@ -2325,6 +2375,8 @@ void _emperor_mt_kick_key(int64_t key) {
         }
     }
     MT_UNLOCK(mt_glock);
+    if (getenv("EMPEROR_BTRACE"))
+        fprintf(stderr, "[bk] kick_key fid=%lld n=%lld\n", (long long)key, (long long)kicked);
     if (kicked > 0) mt_trace("kick_key %lld n=%lld", (long long)key, (long long)kicked);
 }
 
@@ -2384,16 +2436,19 @@ int _emperor_sched_alloc_park(size_t charge) {
     mt_park_begin();
     mt_glock_init();
     MT_LOCK(mt_glock);
-    self->qnext = mt_gc_parked_head;
+    mt_valve_unlink_locked(self);
+    self->gcnext = mt_gc_parked_head;
     mt_gc_parked_head = self;
     mt_gc_parked_count++;
     if (charge < mt_gc_parked_min_charge) {
         mt_gc_parked_min_charge = charge;
     }
     MT_UNLOCK(mt_glock);
+    if (getenv("EMPEROR_VTRACE"))
+        fprintf(stderr, "[vt] alloc_park co=%d t%d\n", self->seq, tls_thread_index);
     mt_switch_away();
-    /* Resumed: the boundary's unpark already unlinked us (mt_gc_parked
-     * is empty of us — nothing to clean up). */
+    if (getenv("EMPEROR_VTRACE"))
+        fprintf(stderr, "[vt] alloc_park resumed co=%d t%d\n", self->seq, tls_thread_index);
     return 1;
 #else
     return 0; /* sequential fallback: mt_switch_away cannot really park */
@@ -2418,11 +2473,16 @@ int _emperor_sched_stw_park(void) {
     mt_park_begin();
     mt_glock_init();
     MT_LOCK(mt_glock);
-    self->qnext = mt_gc_parked_head;
+    mt_valve_unlink_locked(self);
+    self->gcnext = mt_gc_parked_head;
     mt_gc_parked_head = self;
     mt_gc_parked_count++;
     MT_UNLOCK(mt_glock);
+    if (getenv("EMPEROR_VTRACE"))
+        fprintf(stderr, "[vt] stw_park co=%d t%d\n", self->seq, tls_thread_index);
     mt_switch_away();
+    if (getenv("EMPEROR_VTRACE"))
+        fprintf(stderr, "[vt] stw_park resumed co=%d t%d\n", self->seq, tls_thread_index);
     return 1;
 #else
     return 0;
@@ -2484,6 +2544,7 @@ int64_t _emperor_mt_fire_due(int64_t now) {
         }
     }
     MT_UNLOCK(mt_glock);
+    if (getenv("EMPEROR_BTRACE")) fprintf(stderr, "[bk] fire_due\n");
     if (fired > 0) mt_trace("fire_due now=%lld fired=%lld", (long long)now,
                             (long long)fired);
     while (due_head) {
@@ -2689,7 +2750,7 @@ void _emperor_mt_dump_parked(const char* reason) {
             }
         }
         if (!found) {
-            for (EmperorCoroutine* c = mt_gc_parked_head; c; c = c->qnext) {
+            for (EmperorCoroutine* c = mt_gc_parked_head; c; c = c->gcnext) {
                 if (c == co) { snprintf(where, sizeof where, "gc_valve"); found = 1; break; }
             }
         }
@@ -2707,9 +2768,10 @@ void _emperor_mt_dump_parked(const char* reason) {
             snprintf(where, sizeof where, "%s",
                      co_state_get(co) == CO_COND ? "NOWHERE(lost wake?)" : "nowhere");
         }
-        fprintf(stderr, "[idle-dump] co=%d state=%s owner=%d queued=%d steal=%d at=%s\n",
+        fprintf(stderr, "[idle-dump] co=%d state=%s owner=%d queued=%d steal=%d at=%s [lib_park=%d future_park=%d wake_key=%lld]\n",
                 co->seq, mt_co_state_name(co_state_get(co)), co_owner_get(co), co->queued,
-                co->stealable, where);
+                co->stealable, where, co->lib_park, co->future_park,
+                (long long)co->wake_key);
     }
     MT_UNLOCK(mt_glock);
     /* Queued-flag audit tail: the last MT_QLOG transitions, oldest first
@@ -3433,8 +3495,11 @@ int64_t _emperor_mt_run_delta(void) {
             mt_gc_parked_min_charge = (size_t)-1;
             MT_UNLOCK(mt_glock);
             while (head) {
-                EmperorCoroutine* next = head->qnext;
-                head->qnext = NULL;
+                EmperorCoroutine* next = head->gcnext;
+                head->gcnext = NULL;
+                if (getenv("EMPEROR_VTRACE"))
+                    fprintf(stderr, "[vt] release co=%d state=%d queued=%d\n",
+                            head->seq, co_state_get(head), head->queued);
                 _emperor_mt_wake(head);
                 head = next;
             }
@@ -3468,7 +3533,7 @@ static int mt_co_findable_locked(EmperorCoroutine* co) {
     for (MtTimer* t = mt_timers; t; t = t->next) {
         if (t->co == co) return 1;
     }
-    for (EmperorCoroutine* c = mt_gc_parked_head; c; c = c->qnext) {
+    for (EmperorCoroutine* c = mt_gc_parked_head; c; c = c->gcnext) {
         if (c == co) return 1;
     }
     for (EmperorFdWaiter* w = fd_waiters; w; w = w->next) {

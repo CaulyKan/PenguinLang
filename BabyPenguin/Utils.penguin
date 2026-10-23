@@ -61,6 +61,9 @@ namespace _utils {
         __impl: __builtin.__ExternImpl = new __builtin.__ExternImpl();
         extern fun new(mut this);
         extern fun at(this, index: u64) -> __builtin.Option<T>;
+        // Bare element access for hot loops (no bounds branch, no Option
+        // boxing); mirrors EmperorPenguin/src/utils.penguin — keep in sync.
+        extern fun at_unchecked(this, index: u64) -> T;
         extern fun remove(mut this, index: u64);
         extern fun push(mut this, value: T);
         extern fun pop(mut this) -> __builtin.Option<T>;
@@ -116,12 +119,12 @@ namespace _utils {
 
         fun get(this, key: string) -> i64 {
             let b: i64 = this.hash(key) & 255;
-            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
             while (i >= 0) {
-                if (this.keys.at(cast<u64>(i)).some == key) {
-                    return this.vals.at(cast<u64>(i)).some;
+                if (this.keys.at_unchecked(cast<u64>(i)) == key) {
+                    return this.vals.at_unchecked(cast<u64>(i));
                 }
-                i = this.next.at(cast<u64>(i)).some;
+                i = this.next.at_unchecked(cast<u64>(i));
             }
             return -1;
         }
@@ -129,17 +132,17 @@ namespace _utils {
         // NOTE: `this` (not `mut this`) — see EmperorPenguin/src/utils.penguin.
         fun set(this, key: string, val: i64) {
             let b: i64 = this.hash(key) & 255;
-            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
             while (i >= 0) {
-                if (this.keys.at(cast<u64>(i)).some == key) {
+                if (this.keys.at_unchecked(cast<u64>(i)) == key) {
                     this.vals.set(cast<u64>(i), val);
                     return;
                 }
-                i = this.next.at(cast<u64>(i)).some;
+                i = this.next.at_unchecked(cast<u64>(i));
             }
             this.keys.push(key);
             this.vals.push(val);
-            this.next.push(this.heads.at(cast<u64>(b)).some);
+            this.next.push(this.heads.at_unchecked(cast<u64>(b)));
             this.heads.set(cast<u64>(b), this.count);
             this.count = this.count + 1;
         }

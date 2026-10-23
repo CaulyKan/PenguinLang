@@ -2245,7 +2245,15 @@ static void _emperor_gc_poll_slow(void) {
      * plain accesses here are write-write/read-write races by construction
      * (TSan flagged the whole family when the back-edge safepoint made
      * polls ubiquitous). All bookkeeping: RELAXED is the right order. */
-    if (_gc_timing) __atomic_fetch_add(&_gc_st_polls, 1, __ATOMIC_RELAXED);
+    if (_gc_timing) {
+        /* Sampled (1 in 4096 poll calls, per thread), reported as its
+         * multiple: an exact counter here is one shared RMW per safepoint
+         * from every thread — profiling must not change the program it
+         * measures. */
+        static _Thread_local unsigned _tl_poll_tick;
+        if ((++_tl_poll_tick & 0xFFFu) == 0)
+            __atomic_fetch_add(&_gc_st_polls, 4096, __ATOMIC_RELAXED);
+    }
     if (_emperor_gc_collecting ||
         !_emperor_gc_stack_bottom || _emperor_gc_disabled) {
         return;
@@ -2278,28 +2286,46 @@ static void _emperor_gc_poll_slow(void) {
          * which now resets the clock exactly when it lowers the gate. */
         return;
     }
-    __atomic_store_n(&_emperor_gc_last_collect_site, __builtin_return_address(0), __ATOMIC_RELAXED);
     if (_emperor_sched_parallel_active()) {
+        /* Deferred to the boundary: a parallel delta holds the coroutine
+         * stacks, so collecting here would race the mutators. The poll's
+         * ONLY job for the whole gate-up window (request raised -> the
+         * boundary collect) is the STW escalation, and that check is
+         * RATE-LIMITED: the gate stays up for up to EMPEROR_GC_STW_MS, every
+         * safepoint on every mutator lands here, and the per-poll clock pair
+         * this used to run (plus the diagnostic store) was pure overhead —
+         * 4096 polls between checks add far under a millisecond of latency
+         * against a 250ms budget. */
         int64_t stw_ms = __atomic_load_n(&_gc_stw_ms, __ATOMIC_RELAXED);
         if (stw_ms < 0) {
             const char* v = getenv("EMPEROR_GC_STW_MS");
             stw_ms = (v && v[0] != '\0') ? atoll(v) : 250;
             __atomic_store_n(&_gc_stw_ms, stw_ms, __ATOMIC_RELAXED);
         }
-        if (stw_ms > 0) {
-            int64_t first = __atomic_load_n(&_gc_stw_first_seen, __ATOMIC_RELAXED);
-            if (first == 0) {
-                __atomic_store_n(&_gc_stw_first_seen, _gc_stw_now_ms(), __ATOMIC_RELAXED);
-            } else if (_gc_stw_now_ms() - first > stw_ms) {
-                extern int _emperor_sched_stw_park(void);
-                if (_emperor_sched_stw_park()) {
-                    /* Resumed by the boundary's post-collection unpark. */
-                }
-                __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED); /* re-arm (flag may still be set —
-                                               the next poll re-ages it) */
+        if (stw_ms <= 0) return;   /* escalation off: nothing to do per poll */
+        static _Thread_local unsigned _tl_poll_age;
+        if ((++_tl_poll_age & 0xFFFu) != 0) return;
+        if (_gc_timing) {
+            /* Collect-site attribution rides the same rate limit. */
+            __atomic_store_n(&_emperor_gc_last_collect_site,
+                             __builtin_return_address(0), __ATOMIC_RELAXED);
+        }
+        int64_t first = __atomic_load_n(&_gc_stw_first_seen, __ATOMIC_RELAXED);
+        if (first == 0) {
+            __atomic_store_n(&_gc_stw_first_seen, _gc_stw_now_ms(), __ATOMIC_RELAXED);
+        } else if (_gc_stw_now_ms() - first > stw_ms) {
+            extern int _emperor_sched_stw_park(void);
+            if (_emperor_sched_stw_park()) {
+                /* Resumed by the boundary's post-collection unpark. */
             }
+            __atomic_store_n(&_gc_stw_first_seen, 0, __ATOMIC_RELAXED); /* re-arm (flag may still be set —
+                                           the next poll re-ages it) */
         }
         return; /* deferred to the boundary (escalation parks + returns) */
+    }
+    if (_gc_timing) {
+        __atomic_store_n(&_emperor_gc_last_collect_site,
+                         __builtin_return_address(0), __ATOMIC_RELAXED);
     }
     gc_collect_auto();
 }

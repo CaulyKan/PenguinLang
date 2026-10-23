@@ -2551,8 +2551,35 @@ namespace BabyPenguin.SemanticInterface
         }
 
         private static bool IsArrayCtorName(string text)
-            => text is "create_array" or "create_array_with"
-                || text is "__builtin.create_array" or "__builtin.create_array_with";
+            => ParseArrayCtorCallee(text) != null;
+
+        /// <summary>
+        /// Parse an array-constructor callee, optionally carrying an EXPLICIT
+        /// element type in angle brackets: `create_array&lt;S&gt;(len, fill)` →
+        /// ("create_array", "S"). Nested element generics keep their brackets
+        /// (`create_array&lt;array&lt;u8&gt;&gt;` → elemText "array&lt;u8&gt;"); a leading `mut `
+        /// on the element is dropped (element mutability is not part of the
+        /// array reference type). Null when the text is not an array
+        /// constructor — the historical bare spellings return a null
+        /// elemText and keep the target/fill inference path.
+        /// </summary>
+        private static (string ctorName, string? elemText)? ParseArrayCtorCallee(string text)
+        {
+            var bare = text.StartsWith("__builtin.") ? text["__builtin.".Length..] : text;
+            var lt = bare.IndexOf('<');
+            string name = bare;
+            string? elemText = null;
+            if (lt >= 0 && bare.EndsWith('>'))
+            {
+                elemText = bare[(lt + 1)..^1].Trim();
+                if (elemText.StartsWith("mut "))
+                    elemText = elemText["mut ".Length..].Trim();
+                name = bare[..lt];
+            }
+            return name is "create_array" or "create_array_with"
+                ? (name, elemText)
+                : null;
+        }
 
         /// <summary>Two-tier M2: the write-point promotion intrinsic
         /// (`__gc_promote` / `__builtin.__gc_promote`) — a no-op on the
@@ -2671,15 +2698,18 @@ namespace BabyPenguin.SemanticInterface
                     return to;
                 }
 
-                // --- 3a. qualified constructors `__builtin.create_array(...)` ---
-                if (IsArrayCtorName(ma.Text))
-                    return AddArrayCtorCall(exp, ma.Text.Split('.')[^1], targetSymbol);
+                // --- 3a. qualified constructors `__builtin.create_array(...)`
+                // (the explicit-element spelling `create_array<S>(...)` lands
+                // here too — the identifier's raw text carries the arg list) ---
+                if (ParseArrayCtorCallee(ma.Text) is { } qctor)
+                    return AddArrayCtorCall(exp, qctor.ctorName, targetSymbol, qctor.elemText);
                 return null;
             }
 
-            // --- 3b. bare constructors `create_array(...)` ---
-            if (exp.Callee is PrimaryExpression pe2 && pe2.IsSimple && IsArrayCtorName(pe2.Text))
-                return AddArrayCtorCall(exp, pe2.Text.Split('.')[^1], targetSymbol);
+            // --- 3b. bare constructors `create_array(...)` /
+            // `create_array<S>(...)` ---
+            if (exp.Callee is PrimaryExpression pe2 && pe2.IsSimple && ParseArrayCtorCallee(pe2.Text) is { } ctor)
+                return AddArrayCtorCall(exp, ctor.ctorName, targetSymbol, ctor.elemText);
 
             return null;
         }
@@ -2790,15 +2820,22 @@ namespace BabyPenguin.SemanticInterface
             }
         }
 
-        private ISymbol? AddArrayCtorCall(FunctionCallExpression exp, string ctorName, ISymbol? targetSymbol)
+        private ISymbol? AddArrayCtorCall(FunctionCallExpression exp, string ctorName, ISymbol? targetSymbol, string? explicitElemText = null)
         {
             var loc = exp.SourceLocation;
-            // Element type: from the typed assignment target when available;
+            // Element type: EXPLICIT angle-bracket argument first
+            // (`create_array<S>(...)` — the user named it, no inference
+            // needed); then the typed assignment target when available;
             // otherwise (nested constructor as an argument) from the fill
             // argument's own type (create_array only — create_array_with's
             // function argument does not pin the element type).
             ITypeNode? elemNode = null;
-            if (targetSymbol != null && ArrayElementOf(targetSymbol.TypeInfo) is { } targetElem)
+            if (explicitElemText != null)
+            {
+                elemNode = Model.ResolveType(explicitElemText, scope: this)?.TypeNode
+                    ?? throw new BabyPenguinException($"Cant resolve explicit element type '{explicitElemText}' of '{ctorName}'", loc, code: ErrorCode.E_RESOLVE_TYPE);
+            }
+            else if (targetSymbol != null && ArrayElementOf(targetSymbol.TypeInfo) is { } targetElem)
                 elemNode = targetElem.elemNode;
             else if (ctorName == "create_array"
                 && TryResolveExpressionTypeQuiet(exp.ArgumentsExpression.Skip(1).FirstOrDefault()) is IType fillType
@@ -2861,7 +2898,17 @@ namespace BabyPenguin.SemanticInterface
                 };
             }
 
-            // create_array(_with): element type not inferable from callee alone
+            // create_array(_with): element type not inferable from the callee
+            // alone — EXCEPT the explicit spelling `create_array<S>(...)`,
+            // whose angle bracket names it (nested type sniffing and
+            // argument conversion resolve the call's type without a target).
+            if (exp.Callee is PrimaryExpression peCtor && peCtor.IsSimple
+                && ParseArrayCtorCallee(peCtor.Text) is { } ctor && ctor.elemText != null)
+            {
+                var explicitElem = Model.ResolveType(ctor.elemText, scope: this)?.TypeNode;
+                if (explicitElem != null)
+                    return Model.GetArrayTypeNode(explicitElem).ToType(Mutability.Mutable);
+            }
             return null;
         }
 

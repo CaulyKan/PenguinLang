@@ -1,0 +1,69 @@
+// tbm_live — scenario 3: mark-heavy. Each worker first builds a private
+// 65536-node forest (one long chain) that stays live on its frame for the
+// whole run, then churns 8-node chains on top. The live set (~262k nodes
+// total) is re-marked by EVERY global cycle, so mark_ms dominates the
+// collector: this is where parallel marking has to show its value.
+class Node {
+    impl __builtin.IReferenceType;
+    v: mut i64 = 0;
+    n1: mut __builtin.Option<Node> = new __builtin.Option<Node>.none();
+}
+
+fun chain(base: i64, n: i64) -> mut Node {
+    let head: mut Node = new Node();
+    head.v = base;
+    let cur: mut Node = head;
+    let i: mut i64 = 1;
+    while (i < n) {
+        let x: mut Node = new Node();
+        x.v = base + i;
+        cur.n1 = new __builtin.Option<Node>.some(x);
+        cur = x;
+        i = i + 1;
+    }
+    return head;
+}
+
+fun chain_sum(h: mut Node) -> i64 {
+    let acc: mut i64 = 0;
+    let cur: mut Node = h;
+    let alive: mut bool = true;
+    while (alive) {
+        acc = acc + cur.v;
+        if (cur.n1.is_some()) {
+            cur = cast<mut Node>(cur.n1.some);
+        } else {
+            alive = false;
+        }
+    }
+    return acc;
+}
+
+fun worker(id: i64, rounds: i64) -> i64 {
+    // long-lived forest: stays reachable from this frame until return
+    let forest: mut Node = chain(id * 100000000, 65536);
+    let fsum: i64 = chain_sum(forest);
+    let i: mut i64 = 0;
+    let acc: mut i64 = 0;
+    while (i < rounds) {
+        let h: mut Node = chain(i * 8 + id * 100000000, 8);
+        acc = acc + chain_sum(h);
+        i = i + 1;
+    }
+    return acc + fsum;
+}
+
+initial {
+    let t0: i64 = __builtin.now_ms();
+    let w0 = async worker(0, 480000);
+    let w1 = async worker(1, 480000);
+    let w2 = async worker(2, 480000);
+    let w3 = async worker(3, 480000);
+    let s0: i64 = wait w0;
+    let s1: i64 = wait w1;
+    let s2: i64 = wait w2;
+    let s3: i64 = wait w3;
+    let t1: i64 = __builtin.now_ms();
+    println("tbm_live elapsed_ms=" + cast<string>(t1 - t0)
+        + " checksum=" + cast<string>(s0 + s1 + s2 + s3));
+}

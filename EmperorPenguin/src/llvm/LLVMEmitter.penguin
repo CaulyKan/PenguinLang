@@ -241,6 +241,10 @@ class LLVMEmitter {
     // and simply ignores the extra register argument under the SysV/AAPCS
     // calling conventions. One IR, both link targets.
     string_lits: mut _utils.List<StringLitEntry> = new _utils.List<StringLitEntry>();
+    // value -> string_lits index. find_string_lit used to linear-scan every
+    // entry per lookup (O(n^2) over a whole-module collection pass; 2.7% of
+    // the bootstrap profile).
+    string_lit_index: mut _utils.StrMap = new _utils.StrMap();
     next_str_id: mut i64 = 0;
     reg_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
     reg_type_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
@@ -849,6 +853,7 @@ class LLVMEmitter {
  }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Starting LLVM lowering..."); }
         this.string_lits = new _utils.List<StringLitEntry>();
+        this.string_lit_index = new _utils.StrMap();
         this.next_str_id = 0;
         this.class_layouts = new _utils.List<ClassLayout>();
         this.array_meta_entries = new _utils.List<ArrayMetaEntry>();
@@ -1018,10 +1023,11 @@ class LLVMEmitter {
             let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
             if (this.is_string_type(gv.ir_type) && gv.initializer_value != "null" && gv.initializer_value != "") {
                 let val: string = this.strip_string_quotes(gv.initializer_value);
-                if (!this.find_string_lit(val).is_some()) {
+                if (this.find_string_lit(val).is_none()) {
                     let id: i64 = this.next_str_id;
                     this.next_str_id = this.next_str_id + 1;
                     this.string_lits.push(new StringLitEntry(id, val));
+                    this.string_lit_index.set(val, cast<i64>(this.string_lits.size()) - 1);
                 }
             }
             gi = gi + 1;
@@ -1039,10 +1045,11 @@ class LLVMEmitter {
                 if (this.is_string_type(ir_type)) {
                     let raw_val: string = inst.const_inst.value;
                     let val: string = this.strip_string_quotes(raw_val);
-                    if (!this.find_string_lit(val).is_some()) {
+                    if (this.find_string_lit(val).is_none()) {
                         let id: i64 = this.next_str_id;
                         this.next_str_id = this.next_str_id + 1;
                         this.string_lits.push(new StringLitEntry(id, val));
+                        this.string_lit_index.set(val, cast<i64>(this.string_lits.size()) - 1);
                     }
                 }
             }
@@ -1053,13 +1060,9 @@ class LLVMEmitter {
     fun find_string_lit(this, value: string) -> Option<StringLitEntry> {
         if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_string_lit(value=" + cast<string>(value) + ")");
  }
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.string_lits.size())) {
-            let entry: StringLitEntry = this.string_lits.at(cast<u64>(i)).some;
-            if (entry.value == value) {
-                return new Option<StringLitEntry>.some(entry);
-            }
-            i = i + 1;
+        let idx: i64 = this.string_lit_index.get(value);
+        if (idx >= 0) {
+            return new Option<StringLitEntry>.some(this.string_lits.at_unchecked(cast<u64>(idx)));
         }
         return new Option<StringLitEntry>.none();
     }
@@ -1759,11 +1762,51 @@ class LLVMEmitter {
         // Restore sb and emit: entry_allocas first, then the GC frame
         // descriptor (slot collection continues through body emission —
         // struct temps create entry allocas along the way), then body.
+        //
+        // The rets were emitted BEFORE that final slot set was known, so
+        // emit_gc_frame_unlink writes the unlink unconditionally. A function
+        // whose only slots appeared during body emission (or in the entry
+        // parameter setup — e.g. a native `array<T>` parameter, which the
+        // pre-scan prediction cannot classify) still gets a descriptor here,
+        // so the unlinks are WANTED; one that ends with no slots gets them
+        // stripped. Deciding it here is what makes every ret consistent:
+        // deciding at ret-emission time leaked the descriptor onto the frame
+        // chain forever, and later calls then chained their `prev` through
+        // the dead, stack-reused frame (the corrupt-ref-map / lost-wake mt
+        // crash family).
         this.sb = saved_sb;
         this.sb.append(this.entry_allocas.to_string());
-        this.emit_gc_frame_descriptor();
-        this.sb.append(this.body_sb.to_string());
+        let framed: bool = this.emit_gc_frame_descriptor();
+        if (framed) {
+            this.sb.append(this.body_sb.to_string());
+        } else {
+            this.sb.append(this.strip_gc_frame_unlinks(this.body_sb.to_string()));
+        }
         this.sb.append("}\n\n");
+    }
+
+    // Remove the optimistic ret-side unlinks from a body whose function
+    // ended up with no frame descriptor. The two lines are identified by
+    // content — `%__gcf.prev` and `_emperor_gc_frame_set` occur in the body
+    // only as an unlink pair (the entry link lives in the descriptor block,
+    // which is emitted before this body).
+    fun strip_gc_frame_unlinks(this, body: string) -> string {
+        let out: mut StringBuilder = new StringBuilder();
+        let pos: mut i64 = 0;
+        let total: i64 = string_length(body);
+        while (pos < total) {
+            let nl: mut i64 = string_find_from(body, "\n", pos);
+            if (nl < 0) { nl = total; }
+            let line: string = string_substring(body, pos, nl - pos);
+            pos = nl + 1;
+            if (string_find_from(line, "%__gcf.prev", 0) >= 0
+                || string_find_from(line, "@_emperor_gc_frame_set", 0) >= 0) {
+                continue;
+            }
+            out.append(line);
+            out.append("\n");
+        }
+        return out.to_string();
     }
 
     // GC v2: the frame descriptor — { prev, slot_count, slots } linked onto
@@ -1771,11 +1814,11 @@ class LLVMEmitter {
     // referenced allocas and their zero-initializers precede it), every ret
     // restores the head from prev (the try/throw path restores it from the
     // try frame — scheduler.c).
-    fun emit_gc_frame_descriptor(mut this) {
+    fun emit_gc_frame_descriptor(mut this) -> bool {
         // Predicted functions get a frame even with zero slots: their rets
         // already emitted the unlink (slot discovery finishes after the
         // body), so the frame local must exist regardless.
-        if (cast<i64>(this.gc_frame_slots.size()) == 0 && !this.gc_frame_predicted) { return; }
+        if (cast<i64>(this.gc_frame_slots.size()) == 0 && !this.gc_frame_predicted) { return false; }
         let nslots: i64 = cast<i64>(this.gc_frame_slots.size());
         let ftype: string = "{ ptr, i32, [" + cast<string>(nslots) + " x { ptr, ptr }] }";
         this.sb.append("  %__gcf = alloca " + ftype + "\n");
@@ -1796,6 +1839,7 @@ class LLVMEmitter {
         }
         this.gc_frame_local = "%__gcf";
         this.gc_frame_prev_gep = "%__gcf.prev";
+        return true;
     }
 
     fun emit_main(mut this, module: IRModule) {
@@ -4573,10 +4617,19 @@ class LLVMEmitter {
     // chain before leaving (the entry-block gep of prev dominates every
     // ret block). The exception path is covered by the try frame's saved
     // head (scheduler.c restores it on throw).
+    //
+    // Emitted UNCONDITIONALLY: whether this function will have a descriptor
+    // is only known after the whole body is emitted (struct temps add frame
+    // slots from inside body emission), so the decision is deferred to
+    // emit_gc_frame_descriptor, which strips these lines when the descriptor
+    // turned out not to exist. Gating on the prediction here was the source
+    // of the leaked-frame mt crash family.
     fun emit_gc_frame_unlink(mut this) {
-        if (string_length(this.gc_frame_local) == 0) { return; }
         let restored: string = this.next_tmp();
-        this.emit_line("  " + restored + " = load ptr, ptr " + this.gc_frame_prev_gep);
+        // The literal gep name: gc_frame_prev_gep may still be empty here
+        // (prediction false) even though the descriptor will exist; the
+        // descriptor always defines this exact name.
+        this.emit_line("  " + restored + " = load ptr, ptr %__gcf.prev");
         this.emit_line("  call void @_emperor_gc_frame_set(ptr " + restored + ")");
     }
 

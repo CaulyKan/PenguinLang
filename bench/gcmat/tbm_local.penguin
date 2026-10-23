@@ -1,0 +1,67 @@
+// tbm_local — scenario 1: pure per-worker garbage, zero sharing.
+// Every worker builds a private chain, walks it, drops it. No channels,
+// no globals: 100% of churn is own-domain garbage. This is the load the
+// domain-local collector exists for: with LOCAL on, global cycles should
+// nearly vanish; with LOCAL off (or REGION=0) every byte pays the full
+// mark+sweep cycle.
+class Node {
+    impl __builtin.IReferenceType;
+    v: mut i64 = 0;
+    n1: mut __builtin.Option<Node> = new __builtin.Option<Node>.none();
+}
+
+fun chain(base: i64, n: i64) -> mut Node {
+    let head: mut Node = new Node();
+    head.v = base;
+    let cur: mut Node = head;
+    let i: mut i64 = 1;
+    while (i < n) {
+        let x: mut Node = new Node();
+        x.v = base + i;
+        cur.n1 = new __builtin.Option<Node>.some(x);
+        cur = x;
+        i = i + 1;
+    }
+    return head;
+}
+
+fun chain_sum(h: mut Node) -> i64 {
+    let acc: mut i64 = 0;
+    let cur: mut Node = h;
+    let alive: mut bool = true;
+    while (alive) {
+        acc = acc + cur.v;
+        if (cur.n1.is_some()) {
+            cur = cast<mut Node>(cur.n1.some);
+        } else {
+            alive = false;
+        }
+    }
+    return acc;
+}
+
+fun worker(id: i64, rounds: i64) -> i64 {
+    let i: mut i64 = 0;
+    let acc: mut i64 = 0;
+    while (i < rounds) {
+        let h: mut Node = chain(i * 16 + id * 100000000, 16);
+        acc = acc + chain_sum(h);
+        i = i + 1;
+    }
+    return acc;
+}
+
+initial {
+    let t0: i64 = __builtin.now_ms();
+    let w0 = async worker(0, 500000);
+    let w1 = async worker(1, 500000);
+    let w2 = async worker(2, 500000);
+    let w3 = async worker(3, 500000);
+    let s0: i64 = wait w0;
+    let s1: i64 = wait w1;
+    let s2: i64 = wait w2;
+    let s3: i64 = wait w3;
+    let t1: i64 = __builtin.now_ms();
+    println("tbm_local elapsed_ms=" + cast<string>(t1 - t0)
+        + " checksum=" + cast<string>(s0 + s1 + s2 + s3));
+}

@@ -599,7 +599,14 @@ namespace BabyPenguin.VirtualMachine
                     case IRGlobalStoreInst gi:
                         {
                             var val = Resolve(gi.Value);
-                            if (Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
+                            // Reference values (a native array object, ...) have no
+                            // BasicRuntimeValue representation: routing them through
+                            // the pre-registered symbol's AssignFrom always threw
+                            // "Cannot assign type X to type X". Store them the way
+                            // the not-yet-registered branch does — a SimpleRuntimeSymbol
+                            // wrapping the reference (loads read .Value, and array
+                            // writes go through the referenced object).
+                            if (val is BasicRuntimeValue && Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
                                 globalSym.AssignFrom(val);
                             else
                                 Global.GlobalVariables[gi.GlobalName] = new SimpleRuntimeSymbol(val, Model);
@@ -1128,7 +1135,14 @@ namespace BabyPenguin.VirtualMachine
                     case IRGlobalStoreInst gi:
                         {
                             var val = Resolve(gi.Value);
-                            if (Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
+                            // Reference values (a native array object, ...) have no
+                            // BasicRuntimeValue representation: routing them through
+                            // the pre-registered symbol's AssignFrom always threw
+                            // "Cannot assign type X to type X". Store them the way
+                            // the not-yet-registered branch does — a SimpleRuntimeSymbol
+                            // wrapping the reference (loads read .Value, and array
+                            // writes go through the referenced object).
+                            if (val is BasicRuntimeValue && Global.GlobalVariables.TryGetValue(gi.GlobalName, out var globalSym))
                                 globalSym.AssignFrom(val);
                             else
                                 Global.GlobalVariables[gi.GlobalName] = new SimpleRuntimeSymbol(val, Model);

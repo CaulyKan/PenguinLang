@@ -1,0 +1,85 @@
+// tbm_large — scenario 4: large-object churn on the malloc path.
+// Each worker mixes 4-node span chains (small slots) with 192KiB buffers
+// kept in a 2-slot rotation (live large blocks) and a transient 32KiB
+// buffer every 4th round. Large blocks never touch the span heap: they
+// exercise the malloc large-object path, the incremental sorted index,
+// and the per-worker parallel sweep shards.
+class Node {
+    impl __builtin.IReferenceType;
+    v: mut i64 = 0;
+    n1: mut __builtin.Option<Node> = new __builtin.Option<Node>.none();
+}
+
+fun chain(base: i64, n: i64) -> mut Node {
+    let head: mut Node = new Node();
+    head.v = base;
+    let cur: mut Node = head;
+    let i: mut i64 = 1;
+    while (i < n) {
+        let x: mut Node = new Node();
+        x.v = base + i;
+        cur.n1 = new __builtin.Option<Node>.some(x);
+        cur = x;
+        i = i + 1;
+    }
+    return head;
+}
+
+fun chain_sum(h: mut Node) -> i64 {
+    let acc: mut i64 = 0;
+    let cur: mut Node = h;
+    let alive: mut bool = true;
+    while (alive) {
+        acc = acc + cur.v;
+        if (cur.n1.is_some()) {
+            cur = cast<mut Node>(cur.n1.some);
+        } else {
+            alive = false;
+        }
+    }
+    return acc;
+}
+
+fun worker(id: i64, rounds: i64) -> i64 {
+    let i: mut i64 = 0;
+    let acc: mut i64 = 0;
+    let c16: mut i64 = 0;
+    let c4: mut i64 = 0;
+    let cur: mut array<u8> = create_array<u8>(196608, 1);
+    let prev: mut array<u8> = create_array<u8>(196608, 2);
+    while (i < rounds) {
+        let h: mut Node = chain(i * 4 + id * 100000000, 4);
+        acc = acc + chain_sum(h);
+        c4 = c4 + 1;
+        if (c4 == 4) {
+            c4 = 0;
+            let t: mut array<u8> = create_array<u8>(32768, 9);
+            acc = acc + cast<i64>(t.at(cast<u64>(500)).value_or(0));
+        }
+        c16 = c16 + 1;
+        if (c16 == 16) {
+            c16 = 0;
+            prev = cur;
+            cur = create_array<u8>(196608, 3);
+            acc = acc + cast<i64>(cur.at(cast<u64>(1000)).value_or(0))
+                + cast<i64>(prev.at(cast<u64>(2000)).value_or(0));
+        }
+        i = i + 1;
+    }
+    return acc;
+}
+
+initial {
+    let t0: i64 = __builtin.now_ms();
+    let w0 = async worker(0, 32000);
+    let w1 = async worker(1, 32000);
+    let w2 = async worker(2, 32000);
+    let w3 = async worker(3, 32000);
+    let s0: i64 = wait w0;
+    let s1: i64 = wait w1;
+    let s2: i64 = wait w2;
+    let s3: i64 = wait w3;
+    let t1: i64 = __builtin.now_ms();
+    println("tbm_large elapsed_ms=" + cast<string>(t1 - t0)
+        + " checksum=" + cast<string>(s0 + s1 + s2 + s3));
+}

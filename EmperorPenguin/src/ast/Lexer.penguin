@@ -62,6 +62,8 @@ namespace emperor {
                     continue;
                 }
 
+                // keyword fast-reject guard (see starts_any_keyword)
+                if (this.starts_any_keyword()) {
                 if (this.match_keyword("__yield_not_finished_return")) {
                     tokens.push(new Token(new TokenType.InternalYield_not_finished_return(), "__yield_not_finished_return", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 27;
@@ -194,12 +196,15 @@ namespace emperor {
                     this.advance_chars(6);
                     continue;
                 }
+                } // keyword fast-reject guard
                 if (this.match_string("!async")) {
                     tokens.push(new Token(new TokenType.NotAsync(), "!async", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 6;
                     this.advance_chars(6);
                     continue;
                 }
+                // keyword fast-reject guard
+                if (this.starts_any_keyword()) {
                 if (this.match_keyword("while")) {
                     tokens.push(new Token(new TokenType.While(), "while", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
@@ -236,12 +241,15 @@ namespace emperor {
                     this.advance_chars(5);
                     continue;
                 }
+                } // keyword fast-reject guard
                 if (this.match_string("!pure")) {
                     tokens.push(new Token(new TokenType.NotPure(), "!pure", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
                     this.advance_chars(5);
                     continue;
                 }
+                // keyword fast-reject guard
+                if (this.starts_any_keyword()) {
                 if (this.match_keyword("false")) {
                     tokens.push(new Token(new TokenType.False(), "false", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 5;
@@ -278,12 +286,15 @@ namespace emperor {
                     this.advance_chars(4);
                     continue;
                 }
+                } // keyword fast-reject guard
                 if (this.match_string("!mut")) {
                     tokens.push(new Token(new TokenType.NotMut(), "!mut", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
                     this.advance_chars(4);
                     continue;
                 }
+                // keyword fast-reject guard
+                if (this.starts_any_keyword()) {
                 if (this.match_keyword("auto")) {
                     tokens.push(new Token(new TokenType.AutoKw(), "auto", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 4;
@@ -404,6 +415,7 @@ namespace emperor {
                     this.advance_chars(3);
                     continue;
                 }
+                } // keyword fast-reject guard
                 if (this.match_string("...")) {
                     tokens.push(new Token(new TokenType.Ellipsis(), "...", new SourceLocation(this.filename, this.line, this.col)));
                     this.col = this.col + 3;
@@ -836,6 +848,26 @@ namespace emperor {
                 }
             }
             return string_substring(this.source, start, this.pos - start);
+        }
+
+        // First-character membership test for the keyword set (61 keywords,
+        // first chars: _ S a-f i l-p r-w y). Guarding the long keyword if-runs
+        // in tokenize with this costs one comparison per position but skips
+        // ~54 match_keyword calls whenever the char cannot start any keyword
+        // (uppercase identifiers like BoundType, g/h/j/k/q/x/z-initial
+        // names, ...). KEEP IN SYNC with the keyword literals below — a new
+        // keyword whose first char is absent here would never tokenize, which
+        // the test suite catches loudly.
+        fun starts_any_keyword(this) -> bool {
+            if (this.pos >= this.source_len) { return false; }
+            let c: i64 = string_char_code_at(this.source, this.pos);
+            if (c == 95 || c == 83) { return true; }
+            if (c >= 97 && c <= 102) { return true; }
+            if (c == 105) { return true; }
+            if (c >= 108 && c <= 112) { return true; }
+            if (c >= 114 && c <= 119) { return true; }
+            if (c == 121) { return true; }
+            return false;
         }
 
         fun match_keyword(this, keyword: string) -> bool {

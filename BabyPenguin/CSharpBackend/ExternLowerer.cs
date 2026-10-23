@@ -126,6 +126,7 @@ namespace BabyPenguin.CSharpBackend
                 ("list", "new") => "a_0.__impl = new __builtin___ExternImpl(); a_0.__impl.__backing = new System.Collections.Generic.List<object>();",
                 ("list", "push") => $"((System.Collections.Generic.List<object>)a_0.__impl.__backing).Add({ValueArgCopy(info, 1)});",
                 ("list", "at") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count){__r._value=0; __r._containing_value=" + ElemExtract(info) + "(L[i]);} else __r._value=1;"),
+                ("list", "at_unchecked") => "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; return (" + _emitter.CsType(info.RetIrType) + ")" + ElemExtract(info) + "(L[(int)a_1]);",
                 ("list", "pop") => OptionReturn(info, "var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; if (L.Count>0){var v=L[L.Count-1]; L.RemoveAt(L.Count-1); __r._value=0; __r._containing_value=v;} else __r._value=1;"),
                 ("list", "remove") => "{ var L=(System.Collections.Generic.List<object>)a_0.__impl.__backing; int i=(int)a_1; if (i>=0 && i<L.Count) L.RemoveAt(i); }",
                 ("list", "size") => "return (ulong)((System.Collections.Generic.List<object>)a_0.__impl.__backing).Count;",

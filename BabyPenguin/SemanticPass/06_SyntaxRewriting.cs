@@ -492,7 +492,14 @@ namespace BabyPenguin.SemanticPass
                     {
                         var codeBlock = new CodeBlockExpression
                         {
-                            ScopeId = spawnAsyncExp.ScopeId,
+                            // OWN child scope of the spawn site: closure capture
+                            // (IsFromOuterScope) requires captured locals to live
+                            // in a STRICT ancestor of this block. Reusing the
+                            // spawn expression's ScopeId made every local declared
+                            // next to the `async` uncapturable — the generated
+                            // lambda class kept the reference and failed to
+                            // resolve it.
+                            ScopeId = SyntaxWalker.MintChildScope(spawnAsyncExp.ScopeId),
                             SourceLocation = spawnAsyncExp.SourceLocation
                         };
                         var statement = new Statement

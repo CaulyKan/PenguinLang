@@ -106,6 +106,13 @@ namespace _utils {
             return new __builtin.Option<T>.some(__builtin.__array_get<T>(this.buf, index));
         }
 
+        // Unchecked bare access for hot loops with a known-in-range index: no
+        // bounds branch and no Option<T> boxing (a boxed Option per element
+        // used to dominate profile time in map probes and linear walks).
+        fun at_unchecked(this, index: u64) -> T {
+            return __builtin.__array_get<T>(this.buf, index);
+        }
+
         fun set(mut this, index: u64, value: T) {
             if (index >= this.len) {
                 return;
@@ -186,12 +193,12 @@ namespace _utils {
 
         fun get(this, key: string) -> i64 {
             let b: i64 = this.hash(key) & 255;
-            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
             while (i >= 0) {
-                if (this.keys.at(cast<u64>(i)).some == key) {
-                    return this.vals.at(cast<u64>(i)).some;
+                if (this.keys.at_unchecked(cast<u64>(i)) == key) {
+                    return this.vals.at_unchecked(cast<u64>(i));
                 }
-                i = this.next.at(cast<u64>(i)).some;
+                i = this.next.at_unchecked(cast<u64>(i));
             }
             return -1;
         }
@@ -203,17 +210,17 @@ namespace _utils {
         // cascade `mut` through the whole predicate call graph.
         fun set(this, key: string, val: i64) {
             let b: i64 = this.hash(key) & 255;
-            let i: mut i64 = this.heads.at(cast<u64>(b)).some;
+            let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
             while (i >= 0) {
-                if (this.keys.at(cast<u64>(i)).some == key) {
+                if (this.keys.at_unchecked(cast<u64>(i)) == key) {
                     this.vals.set(cast<u64>(i), val);
                     return;
                 }
-                i = this.next.at(cast<u64>(i)).some;
+                i = this.next.at_unchecked(cast<u64>(i));
             }
             this.keys.push(key);
             this.vals.push(val);
-            this.next.push(this.heads.at(cast<u64>(b)).some);
+            this.next.push(this.heads.at_unchecked(cast<u64>(b)));
             this.heads.set(cast<u64>(b), this.count);
             this.count = this.count + 1;
         }

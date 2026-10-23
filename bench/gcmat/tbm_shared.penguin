@@ -1,0 +1,91 @@
+// tbm_shared — scenario 2: everything crosses threads.
+// 4 producers build 8-node graphs and push them through backpressure
+// channels (cap 64) to 4 consumers that read the payload and drop it.
+// Every graph goes through write-point promotion onto the SHARED side,
+// so the local collector has nothing to reclaim — this isolates (a) the
+// promotion write-path cost vs REGION=0, and (b) parallel global
+// mark+sweep vs PAR_MARK=0.
+class Node {
+    impl __builtin.IReferenceType;
+    v: mut i64 = 0;
+    n1: mut __builtin.Option<Node> = new __builtin.Option<Node>.none();
+}
+
+fun chain(base: i64, n: i64) -> mut Node {
+    let head: mut Node = new Node();
+    head.v = base;
+    let cur: mut Node = head;
+    let i: mut i64 = 1;
+    while (i < n) {
+        let x: mut Node = new Node();
+        x.v = base + i;
+        cur.n1 = new __builtin.Option<Node>.some(x);
+        cur = x;
+        i = i + 1;
+    }
+    return head;
+}
+
+fun chain_sum(h: mut Node) -> i64 {
+    let acc: mut i64 = 0;
+    let cur: mut Node = h;
+    let alive: mut bool = true;
+    while (alive) {
+        acc = acc + cur.v;
+        if (cur.n1.is_some()) {
+            cur = cast<mut Node>(cur.n1.some);
+        } else {
+            alive = false;
+        }
+    }
+    return acc;
+}
+
+fun producer(id: i64, rounds: i64, ch: mut __builtin.Fifo<mut Node>) -> i64 {
+    let i: mut i64 = 0;
+    while (i < rounds) {
+        let h: mut Node = chain(i * 8 + id * 100000000, 8);
+        ch.write(h);
+        i = i + 1;
+    }
+    return id;
+}
+
+fun consumer(id: i64, rounds: i64, ch: mut __builtin.Fifo<mut Node>) -> i64 {
+    let got: mut i64 = 0;
+    let acc: mut i64 = 0;
+    while (got < rounds) {
+        let v: mut Node = wait ch;
+        acc = acc + chain_sum(v);
+        got = got + 1;
+    }
+    return acc;
+}
+
+initial {
+    let t0: i64 = __builtin.now_ms();
+    let c0: mut __builtin.Fifo<mut Node> = new __builtin.Fifo<mut Node>(64, new __builtin.FifoPolicy.backpressure());
+    let c1: mut __builtin.Fifo<mut Node> = new __builtin.Fifo<mut Node>(64, new __builtin.FifoPolicy.backpressure());
+    let c2: mut __builtin.Fifo<mut Node> = new __builtin.Fifo<mut Node>(64, new __builtin.FifoPolicy.backpressure());
+    let c3: mut __builtin.Fifo<mut Node> = new __builtin.Fifo<mut Node>(64, new __builtin.FifoPolicy.backpressure());
+    let R: i64 = 240000;
+    let p0 = async producer(0, R, c0);
+    let p1 = async producer(1, R, c1);
+    let p2 = async producer(2, R, c2);
+    let p3 = async producer(3, R, c3);
+    let k0 = async consumer(0, R, c0);
+    let k1 = async consumer(1, R, c1);
+    let k2 = async consumer(2, R, c2);
+    let k3 = async consumer(3, R, c3);
+    let a0: i64 = wait p0;
+    let a1: i64 = wait p1;
+    let a2: i64 = wait p2;
+    let a3: i64 = wait p3;
+    let s0: i64 = wait k0;
+    let s1: i64 = wait k1;
+    let s2: i64 = wait k2;
+    let s3: i64 = wait k3;
+    let t1: i64 = __builtin.now_ms();
+    println("tbm_shared elapsed_ms=" + cast<string>(t1 - t0)
+        + " checksum=" + cast<string>(a0 + a1 + a2 + a3 + s0 + s1 + s2 + s3));
+}

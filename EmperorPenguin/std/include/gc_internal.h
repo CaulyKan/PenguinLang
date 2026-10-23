@@ -66,12 +66,11 @@ extern size_t _emperor_gc_mark_stack_top; /* shared worklist depth (gt_drain) */
  * self-compile's wall time. Non-zero routes to gc.c's slow path.
  *
  * Writers: gc_request_collect() below (a collection is wanted) and gc.c's
- * init (the env-derived TIMING/STRESS bits). The collect driver lowers the
+ * init (the env-derived STRESS bit). The collect driver lowers the
  * word once per cycle; a mark-failed cycle deliberately keeps WORK raised so
  * the next poll retries, mirroring _emperor_gc_want_collect. A disabled
  * runtime never raises it — explicit gc_collect() bypasses the gate. */
 #define GC_GATE_WORK   1   /* a collection is wanted */
-#define GC_GATE_TIMING 2   /* _gc_timing on: the slow path counts the poll */
 #define GC_GATE_STRESS 4   /* EMPEROR_GC_STRESS_EVERY is live */
 extern int _emperor_gc_poll_gate;
 /* Non-static so the gate can be re-derived after the stress budget ends. */
@@ -80,17 +79,30 @@ extern unsigned _emperor_gc_stress_every;
 /* The bits that are up for the whole run once init has parsed the env:
  * identical in every thread, so raisers may store them back verbatim without
  * a read-modify-write (and without the cache-line RMW traffic a fetch_or
- * would add on the allocation path). */
+ * would add on the allocation path).
+ *
+ * GC_PROFILE's TIMING bit used to live here to count EVERY poll. That made
+ * the profiled runs a different program: with the gate permanently up every
+ * safepoint took the slow path, and on allocation-heavy workloads the
+ * "timing" runs measured seconds of their own overhead. The poll count is
+ * sampled now (gc.c), so profiling no longer forces the slow path at all. */
 static inline int gc_poll_gate_static_bits(void) {
-    return (_gc_timing ? GC_GATE_TIMING : 0)
-         | (_emperor_gc_stress_every ? GC_GATE_STRESS : 0);
+    return _emperor_gc_stress_every ? GC_GATE_STRESS : 0;
 }
 
 /* Raise a collection request: _emperor_gc_want_collect (declared in
  * emperor_gc.h — include it before this header) AND the gate, in that order,
- * so a poll that wins the race still finds the flag set. */
+ * so a poll that wins the race still finds the flag set.
+ *
+ * Idempotent while a request is outstanding: the gate stays up until the
+ * collect driver drains it, and the allocators keep calling this on EVERY
+ * allocation past the heap goal for that whole window. Unconditional stores
+ * here dirtied two shared cache lines per allocation from every thread —
+ * under the mt scheduler's deferred window that is tens of millions of
+ * inter-core invalidations per cycle. */
 static inline void gc_request_collect(void) {
     if (_emperor_gc_disabled) return;
+    if (__atomic_load_n(&_emperor_gc_want_collect, __ATOMIC_RELAXED)) return;
     __atomic_store_n(&_emperor_gc_want_collect, 1, __ATOMIC_RELAXED);
     __atomic_store_n(&_emperor_gc_poll_gate,
                      GC_GATE_WORK | gc_poll_gate_static_bits(),

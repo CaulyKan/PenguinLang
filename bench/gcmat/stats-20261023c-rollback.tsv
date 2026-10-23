@@ -1,0 +1,13 @@
+scenario	sched	fulls	mark_ms	sweep_ms	gc_ms	alloc_MB	live_peak_MB
+tbm_local	classic	163	2.362	3.800	6.167	1953	0.0
+tbm_shared	classic	66	4.224	1.542	5.768	791	0.2
+tbm_live	classic	79	109.058	2.757	111.818	954	4.0
+tbm_large	classic	228	4.823	1.967	6.803	2534	3.0
+tbm_app	classic	177	8.411	1.353	9.770	1984	1.1
+tbm_local	mt4	11	0.749	23.315	24.065	1953	0.1
+tbm_shared	mt4	3	0.232	5.109	5.341	530	0.1
+tbm_live	mt4	6	28.640	9.520	38.160	954	16.1
+tbm_large	mt4	4	1.976	59.098	61.074	2534	11.1
+tbm_app	mt4	CRASH(63)	-	-	-	-	-
+tbm_live	mt8	5	28.229	11.724	39.954	954	16.1
+tbm_app	mt8	6	1.057	19.126	20.183	1968	1.1

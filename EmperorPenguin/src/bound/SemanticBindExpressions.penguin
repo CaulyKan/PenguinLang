@@ -1309,13 +1309,38 @@ class BindExpressionsPass {
     }
 
     // TypeSpecifier text for a bound type (ctx class field types). Handles
-    // primitives and class/enum/interface definitions with type generic args;
-    // mutability is preserved (`mut T` fields for mutable values).
+    // primitives, native arrays and class/enum/interface definitions with
+    // type generic args; mutability is preserved (`mut T` fields for mutable
+    // values).
     fun spawn_type_spec(mut this, bt: BoundType) -> TypeSpecifier {
+        // The public entry forces mutability: every caller names a
+        // spawn-context FIELD, and the site block assigns those after
+        // construction (field mutability, not value semantics, is what the
+        // assignment check reads).
+        return this.spawn_type_spec_ex(bt, true);
+    }
+
+    fun spawn_type_spec_ex(mut this, bt: BoundType, force_mut: bool) -> TypeSpecifier {
         let m: mut SemanticModel = this.model.some;
         let ts: mut TypeSpecifier = new TypeSpecifier();
         if (bt.kind is TypeKind.PrimitiveKind) {
             ts.name = primitive_type_to_string(bt.primitive);
+        } else if (bt.kind is TypeKind.ArrayKind) {
+            // Native array<T> has NO type_definition and no def full name —
+            // the definition branch below synthesized an empty name and the
+            // call site then failed with E_ASYNC_INVALID + a "mut <mut T>"
+            // specifier text (spawn of a call with an array parameter, wait
+            // on Fifo<array<u8>>, ...). Arrays resolve from the reserved
+            // "array" wrapper + the element arg, exactly like the parsed
+            // spelling. The ELEMENT keeps its own mutability (arrays are
+            // references; the element-mutability rule must not flip).
+            ts.name = "array";
+            if (cast<i64>(bt.generic_args.size()) > 0) {
+                let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(0)).some;
+                if (arg is BoundTypeArg.type_arg) {
+                    ts.generic_args.push(this.spawn_type_spec_ex(arg.type_arg.bound_type, false));
+                }
+            }
         } else if (bt.kind is TypeKind.FunctionKind) {
             // fun/async_fun type: generic_args[0] = return, rest = params (the
             // resolve side reads function_params in exactly this order).
@@ -1325,7 +1350,7 @@ class BindExpressionsPass {
             while (fgi < cast<i64>(bt.generic_args.size())) {
                 let farg: BoundTypeArg = bt.generic_args.at(cast<u64>(fgi)).some;
                 if (farg is BoundTypeArg.type_arg) {
-                    ts.function_params.push(this.spawn_type_spec(farg.type_arg.bound_type));
+                    ts.function_params.push(this.spawn_type_spec_ex(farg.type_arg.bound_type, false));
                 }
                 fgi = fgi + 1;
             }
@@ -1373,15 +1398,22 @@ class BindExpressionsPass {
             while (gi < cast<i64>(bt.generic_args.size())) {
                 let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(gi)).some;
                 if (arg is BoundTypeArg.type_arg) {
-                    ts.generic_args.push(this.spawn_type_spec(arg.type_arg.bound_type));
+                    ts.generic_args.push(this.spawn_type_spec_ex(arg.type_arg.bound_type, false));
                 }
                 gi = gi + 1;
             }
         }
         // Ctx fields are always mutable: the site block assigns them after
         // construction (field mutability, not value semantics, is what the
-        // assignment check reads).
-        ts.is_mutable = true;
+        // assignment check reads). NESTED specifiers (generic args, fun
+        // params, array elements) keep the bound type's own mutability —
+        // forcing it there invented `array<mut u8>`/`<mut S>` element types
+        // the source never wrote.
+        if (force_mut) {
+            ts.is_mutable = true;
+        } else {
+            ts.is_mutable = bt.mutability is Mutability.Mutable;
+        }
         return ts;
     }
 
@@ -2120,33 +2152,71 @@ class BindExpressionsPass {
     // Find the BoundFunctionDefinition for a symbol's full name (top-level,
     // namespace, class methods, impl methods — the search_return_type walker's
     // shape, returning the def instead of its return type).
-    fun find_function_def_in_defs(this, target_full_name: string, defs: _utils.List<BoundDefinition>) -> Option<BoundDefinition> {
+    // Indexed full_name -> function def lookup (was a recursive linear walk
+    // over the whole definition tree per call — O(all defs) per generic-call
+    // inference, 13% of the bootstrap profile). The unit-level index is
+    // built lazily in the same preorder the walk used (first-wins) and
+    // extended incrementally as monomorphize/catch_up append new TOP-LEVEL
+    // defs (each new def's whole subtree is collected — specialized classes
+    // carry their methods nested). Defs injected INSIDE an already-indexed
+    // def (rare bind-time impl injections) stay invisible to the index on
+    // purpose: the linear fallback below still sees them, so a miss is
+    // answered exactly like the old walk. This lookup covers
+    // namespace/class (methods, constructors, interface_impls)/impl_for/impl
+    // — it does NOT descend into enum interface_impls; keep that difference
+    // from the return-type index.
+    fun find_function_def_in_defs(this, unit: BoundCompilationUnit, target_full_name: string) -> Option<BoundDefinition> {
+        this.ensure_func_def_index(unit);
+        let idx: i64 = unit.func_def_index.get(target_full_name);
+        if (idx >= 0) {
+            return new Option<BoundDefinition>.some(unit.func_defs_flat.at_unchecked(cast<u64>(idx)));
+        }
+        return this.find_function_def_linear(target_full_name, unit.definitions);
+    }
+
+    fun ensure_func_def_index(this, unit: BoundCompilationUnit) {
+        let defs_len: i64 = cast<i64>(unit.definitions.size());
+        if (unit.func_defs_indexed_upto == 0) {
+            this.collect_function_defs(unit.definitions, unit);
+            unit.func_defs_indexed_upto = defs_len;
+        } else if (defs_len > unit.func_defs_indexed_upto) {
+            let i: mut i64 = unit.func_defs_indexed_upto;
+            while (i < defs_len) {
+                this.collect_function_defs_one(unit.definitions.at_unchecked(cast<u64>(i)), unit);
+                i = i + 1;
+            }
+            unit.func_defs_indexed_upto = defs_len;
+        }
+    }
+
+    fun find_function_def_linear(this, target_full_name: string, defs: _utils.List<BoundDefinition>) -> Option<BoundDefinition> {
         let i: mut i64 = 0;
-        while (i < cast<i64>(defs.size())) {
-            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+        let n: i64 = cast<i64>(defs.size());
+        while (i < n) {
+            let def: BoundDefinition = defs.at_unchecked(cast<u64>(i));
             if (def is BoundDefinition.function_def) {
                 if (def.function_def.full_name == target_full_name) {
                     return new Option<BoundDefinition>.some(def);
                 }
             }
             if (def is BoundDefinition.namespace_def) {
-                let r: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.namespace_def.children);
+                let r: Option<BoundDefinition> = this.find_function_def_linear(target_full_name, def.namespace_def.children);
                 if (r.is_some()) { return r; }
             }
             if (def is BoundDefinition.class_def) {
-                let rm: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.class_def.methods);
+                let rm: Option<BoundDefinition> = this.find_function_def_linear(target_full_name, def.class_def.methods);
                 if (rm.is_some()) { return rm; }
-                let rc: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.class_def.constructors);
+                let rc: Option<BoundDefinition> = this.find_function_def_linear(target_full_name, def.class_def.constructors);
                 if (rc.is_some()) { return rc; }
-                let ri: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.class_def.interface_impls);
+                let ri: Option<BoundDefinition> = this.find_function_def_linear(target_full_name, def.class_def.interface_impls);
                 if (ri.is_some()) { return ri; }
             }
             if (def is BoundDefinition.impl_for_def) {
-                let rf: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.impl_for_def.methods);
+                let rf: Option<BoundDefinition> = this.find_function_def_linear(target_full_name, def.impl_for_def.methods);
                 if (rf.is_some()) { return rf; }
             }
             if (def is BoundDefinition.impl_def) {
-                let r2: Option<BoundDefinition> = this.find_function_def_in_defs(target_full_name, def.impl_def.methods);
+                let r2: Option<BoundDefinition> = this.find_function_def_linear(target_full_name, def.impl_def.methods);
                 if (r2.is_some()) { return r2; }
             }
             i = i + 1;
@@ -2154,13 +2224,70 @@ class BindExpressionsPass {
         return new Option<BoundDefinition>.none();
     }
 
+    fun register_func_def(this, full_name: string, def: BoundDefinition, index: mut _utils.StrMap, flat: mut _utils.List<BoundDefinition>) {
+        if (index.get(full_name) < 0) {
+            flat.push(def);
+            index.set(full_name, cast<i64>(flat.size()) - 1);
+        }
+    }
+
+    fun collect_function_defs(this, defs: _utils.List<BoundDefinition>, unit: BoundCompilationUnit) {
+        let i: mut i64 = 0;
+        let n: i64 = cast<i64>(defs.size());
+        while (i < n) {
+            this.collect_function_defs_one(defs.at_unchecked(cast<u64>(i)), unit);
+            i = i + 1;
+        }
+    }
+
+    fun collect_function_defs_one(this, def: BoundDefinition, unit: BoundCompilationUnit) {
+        if (def is BoundDefinition.function_def) {
+            this.register_func_def(def.function_def.full_name, def, unit.func_def_index, unit.func_defs_flat);
+        }
+        if (def is BoundDefinition.namespace_def) {
+            this.collect_function_defs(def.namespace_def.children, unit);
+        }
+        if (def is BoundDefinition.class_def) {
+            this.collect_function_defs(def.class_def.methods, unit);
+            this.collect_function_defs(def.class_def.constructors, unit);
+            this.collect_function_defs(def.class_def.interface_impls, unit);
+        }
+        if (def is BoundDefinition.impl_for_def) {
+            this.collect_function_defs(def.impl_for_def.methods, unit);
+        }
+        if (def is BoundDefinition.impl_def) {
+            this.collect_function_defs(def.impl_def.methods, unit);
+        }
+    }
+
     // Infer a template callee's type args from the bound arguments and return
     // the SPECIALIZED function's symbol (existing or created on demand).
     // out_types receives the solved types in generic_params order.
+    // Resolve an EXPLICIT-<...> generic call to its specialization. The
+    // mangled name names the specialization directly; when pass 3's fixpoint
+    // has not created it yet (it only collects INFERENCE call sites — a
+    // global initializer, an initial block or a constructor body can bind
+    // before any such site exists), create it on demand, the same tail
+    // try_infer_generic_call uses. A missing template def, or a type arg that
+    // is still a template param (create_array's own __array_new<T> call),
+    // returns none so the caller keeps the historical unspecialized fallback
+    // (the enclosing body's specialization rewrites it later).
+    fun try_explicit_generic_specialization(mut this, sym: BoundFunctionSymbol, type_args: _utils.List<BoundTypeArg>, scope: mut BoundScope) -> Option<BoundFunctionSymbol> {
+        let mangled: string = MonomorphizePass.mangle_generic_name(sym.full_name, type_args);
+        let found: Option<BoundSymbol> = scope.lookup_symbol(mangled);
+        if (found.is_some() && found.some is BoundSymbol.function_sym) {
+            return new Option<BoundFunctionSymbol>.some(found.some.function_sym);
+        }
+        if (this.model.some.current_unit.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
+        let tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(this.model.some.current_unit.some, sym.full_name);
+        if (tmpl_def.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
+        return this.model.some.monomorphize_pass.ensure_function_specialization_now(tmpl_def.some, type_args, this.model.some.current_unit.some);
+    }
+
     fun try_infer_generic_call(mut this, sym: BoundFunctionSymbol, args: _utils.List<BoundExpression>, skip_this: bool, scope: mut BoundScope, out_types: mut _utils.List<BoundType>) -> Option<BoundFunctionSymbol> {
         let m: mut SemanticModel = this.model.some;
         if (m.current_unit.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
-        let tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(sym.full_name, m.current_unit.some.definitions);
+        let tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(m.current_unit.some, sym.full_name);
         if (tmpl_def.is_none()) { return new Option<BoundFunctionSymbol>.none(); }
         if (!(tmpl_def.some is BoundDefinition.function_def)) { return new Option<BoundFunctionSymbol>.none(); }
         let tf: BoundFunctionDefinition = tmpl_def.some.function_def;
@@ -4728,7 +4855,7 @@ class BindExpressionsPass {
             return sym.resolved_return_type.some;
         }
         if (this.model.some.current_unit.is_some()) {
-            let found: BoundType = this.search_function_return_type_in_defs(sym.full_name, this.model.some.current_unit.some.definitions);
+            let found: BoundType = this.search_function_return_type_in_defs(this.model.some.current_unit.some, sym.full_name);
             if (found.kind is TypeKind.PrimitiveKind) {
                 let pt: PrimitiveType = found.primitive;
                 if (pt is PrimitiveType.VoidType) {
@@ -4762,32 +4889,65 @@ class BindExpressionsPass {
     }
 
 
-    fun search_function_return_type_in_defs(this, target_full_name: string, defs: mut _utils.List<BoundDefinition>) -> BoundType {
+    // Indexed counterpart of the old recursive return-type walk. That walk
+    // returned the first matching def's return_type but SKIPPED void-typed
+    // matches (the caller-side is_nonvoid_type check made the parent keep
+    // searching sibling subtrees), so registering only non-void defs
+    // reproduces exactly that: the first non-void match wins, an all-void or
+    // absent name resolves through the linear fallback below (same walk as
+    // the index build, so nested late injections stay visible). The index
+    // covers one more scope than func_def_index above: enum interface_impls.
+    fun search_function_return_type_in_defs(this, unit: BoundCompilationUnit, target_full_name: string) -> BoundType {
         _utils.trace_enter("Enter search_function_return_type_in_defs");
+        this.ensure_func_ret_index(unit);
+        let idx: i64 = unit.func_ret_index.get(target_full_name);
+        if (idx >= 0) {
+            return unit.func_ret_flat.at_unchecked(cast<u64>(idx)).function_def.return_type;
+        }
+        return this.search_ret_type_linear(target_full_name, unit.definitions);
+    }
+
+    fun ensure_func_ret_index(this, unit: BoundCompilationUnit) {
+        let defs_len: i64 = cast<i64>(unit.definitions.size());
+        if (unit.func_ret_indexed_upto == 0) {
+            this.collect_ret_type_defs(unit.definitions, unit);
+            unit.func_ret_indexed_upto = defs_len;
+        } else if (defs_len > unit.func_ret_indexed_upto) {
+            let i: mut i64 = unit.func_ret_indexed_upto;
+            while (i < defs_len) {
+                this.collect_ret_type_defs_one(unit.definitions.at_unchecked(cast<u64>(i)), unit);
+                i = i + 1;
+            }
+            unit.func_ret_indexed_upto = defs_len;
+        }
+    }
+
+    fun search_ret_type_linear(this, target_full_name: string, defs: mut _utils.List<BoundDefinition>) -> BoundType {
         let i: mut i64 = 0;
-        while (i < cast<i64>(defs.size())) {
-            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+        let n: i64 = cast<i64>(defs.size());
+        while (i < n) {
+            let def: BoundDefinition = defs.at_unchecked(cast<u64>(i));
             if (def is BoundDefinition.function_def) {
                 if (def.function_def.full_name == target_full_name) {
                     return def.function_def.return_type;
                 }
             }
             if (def is BoundDefinition.namespace_def) {
-                let ns_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.namespace_def.children);
+                let ns_result: BoundType = this.search_ret_type_linear(target_full_name, def.namespace_def.children);
                 if (this.is_nonvoid_type(ns_result)) {
                     return ns_result;
                 }
             }
             if (def is BoundDefinition.class_def) {
-                let cls_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.class_def.methods);
+                let cls_result: BoundType = this.search_ret_type_linear(target_full_name, def.class_def.methods);
                 if (this.is_nonvoid_type(cls_result)) {
                     return cls_result;
                 }
-                let ctor_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.class_def.constructors);
+                let ctor_result: BoundType = this.search_ret_type_linear(target_full_name, def.class_def.constructors);
                 if (this.is_nonvoid_type(ctor_result)) {
                     return ctor_result;
                 }
-                let cls_impl_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.class_def.interface_impls);
+                let cls_impl_result: BoundType = this.search_ret_type_linear(target_full_name, def.class_def.interface_impls);
                 if (this.is_nonvoid_type(cls_impl_result)) {
                     return cls_impl_result;
                 }
@@ -4799,19 +4959,19 @@ class BindExpressionsPass {
             // the methods recovers the authoritative type regardless of object
             // identity/sharing between the registry and the definition.
             if (def is BoundDefinition.impl_for_def) {
-                let impl_for_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.impl_for_def.methods);
+                let impl_for_result: BoundType = this.search_ret_type_linear(target_full_name, def.impl_for_def.methods);
                 if (this.is_nonvoid_type(impl_for_result)) {
                     return impl_for_result;
                 }
             }
             if (def is BoundDefinition.impl_def) {
-                let impl_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.impl_def.methods);
+                let impl_result: BoundType = this.search_ret_type_linear(target_full_name, def.impl_def.methods);
                 if (this.is_nonvoid_type(impl_result)) {
                     return impl_result;
                 }
             }
             if (def is BoundDefinition.enum_def) {
-                let enum_impl_result: BoundType = this.search_function_return_type_in_defs(target_full_name, def.enum_def.interface_impls);
+                let enum_impl_result: BoundType = this.search_ret_type_linear(target_full_name, def.enum_def.interface_impls);
                 if (this.is_nonvoid_type(enum_impl_result)) {
                     return enum_impl_result;
                 }
@@ -4819,6 +4979,47 @@ class BindExpressionsPass {
             i = i + 1;
         }
         return this.model.some.type_registry.void_type;
+    }
+
+    fun register_ret_type_def(this, def: BoundDefinition, unit: BoundCompilationUnit) {
+        if (this.is_nonvoid_type(def.function_def.return_type)) {
+            if (unit.func_ret_index.get(def.function_def.full_name) < 0) {
+                unit.func_ret_flat.push(def);
+                unit.func_ret_index.set(def.function_def.full_name, cast<i64>(unit.func_ret_flat.size()) - 1);
+            }
+        }
+    }
+
+    fun collect_ret_type_defs(this, defs: _utils.List<BoundDefinition>, unit: BoundCompilationUnit) {
+        let i: mut i64 = 0;
+        let n: i64 = cast<i64>(defs.size());
+        while (i < n) {
+            this.collect_ret_type_defs_one(defs.at_unchecked(cast<u64>(i)), unit);
+            i = i + 1;
+        }
+    }
+
+    fun collect_ret_type_defs_one(this, def: BoundDefinition, unit: BoundCompilationUnit) {
+        if (def is BoundDefinition.function_def) {
+            this.register_ret_type_def(def, unit);
+        }
+        if (def is BoundDefinition.namespace_def) {
+            this.collect_ret_type_defs(def.namespace_def.children, unit);
+        }
+        if (def is BoundDefinition.class_def) {
+            this.collect_ret_type_defs(def.class_def.methods, unit);
+            this.collect_ret_type_defs(def.class_def.constructors, unit);
+            this.collect_ret_type_defs(def.class_def.interface_impls, unit);
+        }
+        if (def is BoundDefinition.impl_for_def) {
+            this.collect_ret_type_defs(def.impl_for_def.methods, unit);
+        }
+        if (def is BoundDefinition.impl_def) {
+            this.collect_ret_type_defs(def.impl_def.methods, unit);
+        }
+        if (def is BoundDefinition.enum_def) {
+            this.collect_ret_type_defs(def.enum_def.interface_impls, unit);
+        }
     }
 
 
@@ -5103,9 +5304,9 @@ class BindExpressionsPass {
                                     wi = wi + 1;
                                 }
                                 let mangled: string = MonomorphizePass.mangle_generic_name(sym.function_sym.full_name, type_arg_wrap);
-                                let spec_sym: Option<BoundSymbol> = scope.lookup_symbol(mangled);
-                                if (spec_sym.is_some() && spec_sym.some is BoundSymbol.function_sym) {
-                                    let spec_func_sym: mut BoundFunctionSymbol = spec_sym.some.function_sym;
+                                let spec_fn: Option<BoundFunctionSymbol> = this.try_explicit_generic_specialization(sym.function_sym, type_arg_wrap, scope);
+                                if (spec_fn.is_some()) {
+                                    let spec_func_sym: mut BoundFunctionSymbol = spec_fn.some;
                                     let bt: mut BoundType = this.find_function_return_type(spec_func_sym);
                                     let result: mut BoundFunctionCallExpression = new BoundFunctionCallExpression(bt, callee, id_expr.symbol, args, false, resolved_generic_args, true);
                                     return new Option<BoundExpression>.some(new BoundExpression.function_call(result));
@@ -5262,7 +5463,7 @@ class BindExpressionsPass {
                                 // returned a MapIterator whose spec class exists only
                                 // since this expression) were never collected by the
                                 // pass-3 fixpoint — create the specialization now.
-                                let gen_tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(gen_callee.full_name, this.model.some.current_unit.some.definitions);
+                                let gen_tmpl_def: Option<BoundDefinition> = this.find_function_def_in_defs(this.model.some.current_unit.some, gen_callee.full_name);
                                 if (gen_tmpl_def.is_some() && this.model.some.current_unit.is_some()) {
                                     let ensured2: Option<BoundFunctionSymbol> = this.model.some.monomorphize_pass.ensure_function_specialization_now(gen_tmpl_def.some, type_arg_wrap, this.model.some.current_unit.some);
                                     if (ensured2.is_some()) {
