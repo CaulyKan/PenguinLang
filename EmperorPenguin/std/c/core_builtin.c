@@ -1467,17 +1467,37 @@ int8_t _emperor_atomic_bool_swap(int64_t h, int8_t v) {
 }
 
 /* ---- Mutex (two-tier heap P6; .agents/plans/gc-two-tier-heap.md §2.12) ----
- * The pthread_mutex_t lives OUTSIDE the GC heap (plain malloc keyed by the
+ * The mutex lives OUTSIDE the GC heap (plain malloc keyed by the
  * u64 handle in the Penguin wrapper), the same trade-off as the atomic
  * cells and std.io.File handles: an unreachable mutex leaks to process
- * exit (the GC finalizer machinery is retired). pthreads work on linux
- * (glibc) and windows (llvm-mingw winpthreads) alike.
+ * exit (the GC finalizer machinery is retired). SRWLOCK on windows —
+ * program links carry no winpthread (the no-winpthread link constraint,
+ * see scheduler.c's cross-platform mutex layer); both primitives are
+ * non-recursive, matching the wrapper's nesting rules.
  *
  * The wrapper's METHODS (with/set) run the whole critical section —
  * callback included — between lock and unlock, so every payload write is
  * covered by the write-point promotion that M2 hooks into with/set
  * (plan Inv-M2: promotion completes inside the lock). */
 
+#if defined(EMPEROR_WIN) || defined(_WIN32)
+/* SRWLOCK like io_line_mutex above; no destroy call exists (or is needed —
+ * the handle leaks to process exit by design). */
+uint64_t _emperor_mutex_new(void) {
+    SRWLOCK* m = (SRWLOCK*)malloc(sizeof(SRWLOCK));
+    EMPEROR_ASSERT(m, "mutex alloc");
+    InitializeSRWLock(m);
+    return (uint64_t)(uintptr_t)m;
+}
+
+void _emperor_mutex_lock(uint64_t h) {
+    AcquireSRWLockExclusive((SRWLOCK*)(uintptr_t)h);
+}
+
+void _emperor_mutex_unlock(uint64_t h) {
+    ReleaseSRWLockExclusive((SRWLOCK*)(uintptr_t)h);
+}
+#else
 #include <pthread.h>
 
 uint64_t _emperor_mutex_new(void) {
@@ -1494,3 +1514,4 @@ void _emperor_mutex_lock(uint64_t h) {
 void _emperor_mutex_unlock(uint64_t h) {
     pthread_mutex_unlock((pthread_mutex_t*)(uintptr_t)h);
 }
+#endif

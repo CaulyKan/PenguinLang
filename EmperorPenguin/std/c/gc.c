@@ -41,9 +41,15 @@
 #include <stdio.h>
 #include <time.h>
 #include <setjmp.h>
-#include <sched.h>
 #if defined(_WIN32)
 #  include <windows.h>
+/* No sched_yield on this side of the no-winpthread link constraint (see
+ * scheduler.c's cross-platform layer): SwitchToThread yields the
+ * hyperthread to another runnable thread instead. */
+#  define GC_YIELD() SwitchToThread()
+#else
+#  include <sched.h>
+#  define GC_YIELD() sched_yield()
 #endif
 
 /* Conservative stack/region scanning reads every word in range, including
@@ -1697,7 +1703,7 @@ static void gc_collect_greentea(void) {
      * (plan §2.13). Local collections never allocate GC objects, so the
      * wait is bounded. */
     while (__atomic_load_n(&_gc_local_active_count, __ATOMIC_ACQUIRE))
-        sched_yield();
+        GC_YIELD();
     _emperor_gc_collecting = 1;
     __atomic_fetch_add(&_emperor_gc_collect_count, 1, __ATOMIC_RELAXED);
     uint64_t _gc_st_t0 = 0;
