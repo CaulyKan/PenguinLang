@@ -4,7 +4,7 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 
 ## Markdown 测试套件（`Tests/`）
 
-42 个类别目录、713 例（`Tests/<Category>/<Name>.md`），由 `Tests/PenguinTestRunner.csproj` 驱动——一个普通 `net10.0` 控制台 exe，全部实现是 **`Tests/Program.cs`（3005 行，无测试 SDK）**。格式参考：`Tests/Readme.md`。
+42 个类别目录、727 例（`Tests/<Category>/<Name>.md`），由 `Tests/PenguinTestRunner.csproj` 驱动——一个普通 `net10.0` 控制台 exe，全部实现是 **`Tests/Program.cs`（3005 行，无测试 SDK）**。格式参考：`Tests/Readme.md`。
 
 ### 用例格式
 

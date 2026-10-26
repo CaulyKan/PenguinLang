@@ -352,11 +352,18 @@ allocation site. The steady state reads ONE word — the poll gate (bit
 layout in `gc_internal.h`): zero returns, non-zero enters the slow path.
 Every "this poll has something to do" condition is folded into that word:
 collection requests go through `gc_request_collect()` (the semantic flag
-`_emperor_gc_want_collect` and the gate rise together), the env-derived
-stress / poll-counter bits are lit at init, the collect driver lowers the
-gate once per cycle, and the STW age-clock re-arm moved into the driver
-along with it — so the fast path is one relaxed load and a not-taken
-branch, with no store at all; it used to read five separate globals here.
+`_emperor_gc_want_collect` and the gate rise together — and while a
+request is outstanding the raiser returns after one relaxed load: the
+allocators re-raise on EVERY allocation past the heap goal for the whole
+gate-up window, and unconditional stores would dirty two shared cache
+lines per allocation from every thread), the env-derived stress bit is
+lit at init, the collect driver lowers the gate once per cycle, and the
+STW age-clock re-arm moved into the driver along with it — so the fast
+path is one relaxed load and a not-taken branch, with no store at all.
+`GC_PROFILE` does not touch the gate: its poll counter is sampled in the
+slow path (one shared increment per 4096 entries per thread, reported as
+the multiple), so a profiled run takes the same fast path as an
+unprofiled one.
 When `_emperor_gc_want_collect` is raised (by either allocation side
 crossing the goal) the poll runs the full cycle. The stress knobs
 (`EMPEROR_GC_STRESS_EVERY` / `_MAX`) force a collect every Nth poll for
@@ -369,14 +376,23 @@ While the mt scheduler runs a parallel delta (`_emperor_sched_parallel_active`),
 workers hold coroutine stacks mid-flight and no thread may collect:
 allocation-side triggers only raise the flag, polls defer, and the
 **scheduler boundary** (every worker parked — stop-the-world by
-construction) drains it via `_emperor_gc_collect_now`. A flag the
+construction) drains it via `_emperor_gc_collect_now`. For the whole
+gate-up window the poll's only job is the STW escalation, and that check
+is rate-limited: one clock pair per 4096 polls per thread, far under a
+millisecond of added latency against the 250 ms budget — every safepoint
+of every mutator lands in the slow path for that window. A flag the
 boundary cannot drain (a busy service inside a perpetual delta)
 escalates after `EMPEROR_GC_STW_MS` (default 250 ms, 0 = off): the
 polling coroutine files onto the hard-cap valve's parked list, forcing
 the convergence the boundary needs. The age clock starts at the first
-poll that observes the flag and re-arms whenever the flag is down; the
-re-arm is a conditional store because the drained steady state is the
-per-back-edge hot path of every coroutine.
+checked poll that observes the flag, resets after a park (the flag may
+still be up — the next check re-ages it) and is re-armed by the collect
+driver when it lowers the gate. The valve's list links through the
+coroutine's dedicated `gcnext` field, never the run-queue's `qnext`: a
+coroutine parked on the valve can simultaneously sit in the futures set
+(it parked mid-`do_wait`), and the delivery kick that wakes it files a
+run-queue entry — `mt_wake_locked` unlinks the coroutine from the valve
+before waking, so an external wake cleanly cancels the park.
 
 ## 8. Introspection
 
@@ -392,8 +408,13 @@ per-back-edge hot path of every coroutine.
 ## 9. Emitted-code ABI
 
 * Safepoint polls (`_emperor_gc_poll`) before every call and allocation;
-  frame-chain link/unlink per function; ref-map programs and metadata
-  globals per type (arrays included: one REFARR node per element type).
+  frame-chain link/unlink per function — whether a function carries a
+  frame descriptor is decided only after its whole body is emitted (the
+  entry parameter setup and struct temps add frame slots during body
+  emission), so every `ret` emits the unlink unconditionally and the
+  emitter strips those lines from functions that ended up with no
+  descriptor; ref-map programs and metadata globals per type (arrays
+  included: one REFARR node per element type).
 * The runtime ABI tag `_emperor_runtime_abi == "emperor-rt-gc3-gt3"` is
   compared on mixed dynlib builds so an emission never meets a foreign
   runtime silently.
@@ -440,6 +461,16 @@ is set).
   gc_torture in release and drives the six deterministic workloads
   (churn / ptrdense / container / deepsurvive / mixed512),
   tabulating the `GC_PROFILE` phase-timing line per workload.
+* **`bench/gcmat/`** (GC performance matrix testbed): five scenario
+  programs (`tbm_local` private churn, `tbm_shared` producer/consumer
+  channels, `tbm_live` a large resident forest, `tbm_large` big-buffer
+  rotation, `tbm_app` a composite app shape — each with a deterministic
+  checksum) × scheduler (classic / mt4 / mt8) × GC configuration
+  (tight-heap / NOGC / RELAX), driven by `matrix.sh` with per-cell
+  medians of 3 and NO `GC_PROFILE` (profiling must not slow the
+  measured program); `aggregate.py` folds the medians with the
+  stats-probe counts. Timing cells are meaningless when the probe's
+  fulls counter is 0 — the workload never triggered a collection.
 * **`Tests/GcTest/*.md`**: the cross-compiler e2e guards — enum globals
   and payloads under churn, native-array element tracing, container
   reclamation, write-chain/parameter rooting, span-stats introspection.

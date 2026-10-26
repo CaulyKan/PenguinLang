@@ -90,8 +90,8 @@ Pass 10（封闭性分析，见[绑定模型](./26_EmperorPenguinBound.md)）在
 - **确定性 OOM（退出码 62），不是皮带**：边界收集后若"活集 + 最小待决 charge"仍放不下（`_emperor_gc_cap_blocks`，停靠表跟踪最小 charge），任何收集都永远无法解除阻塞——经 `exit()` 通道报告并停止。判定必须含 charge：`活集 > 上限` 单独不够，停靠者会卡在"活集"与"活集+charge"的缝隙里（实测一个保活循环恰好停在 cap−48 处永久停靠、每次收集零释放）。单次分配本身就大于上限同理立即 62。
 - 作用域：阀门只在 mt 内核下停靠；经典调度器 / 主栈策略代码 / 顺序回退平台上分配照常进行（上限在那里只是名义值，增长仍由既有内联应急收集与目标节奏约束——经典路径行为与改动前逐字节一致，`MtGcHardCapClassicAdvisory` 钉住）。分配检查在分配器锁之外（并发的越限余量 = 每线程一个在飞 charge，阀门语义可接受）。
 - 顺带修复：8×目标应急收集在并行窗口内不再内联执行（内联标记会与 worker 变更器竞争）——推迟到边界，窗口内的增长由硬上限约束。
-- 轮询侧 STW 升级（`EMPEROR_GC_STW_MS`，默认 250 毫秒，0 = 关闭）：边界排不掉的 want_collect——delta 永不收敛（忙服务在永恒 delta 里持续搅动）——会升级：轮询协程把自己挂到硬上限阀的停靠列表上，逼出边界收集所需的收敛。没有它，永恒 delta 会把收集一直压到堆爬到硬上限——健全，但堆顶在上限而不是目标值。计时钟从第一次观察到标志的轮询开始计时，标志落下即重新武装。
-- 测试：`MtGcHardCapParkCollect`（4 路并行 churn 穿过 256KB 上限正常完成、校验和不変）、`MtGcHardCapOom`（保活 62）、`MtGcHardCapSingleAllocOom`（单次超限 62）、`MtGcHardCapZeroUnlimited`（显式 0 = 不限）。
+- 轮询侧 STW 升级（`EMPEROR_GC_STW_MS`，默认 250 毫秒，0 = 关闭）：边界排不掉的 want_collect——delta 永不收敛（忙服务在永恒 delta 里持续搅动）——会升级：轮询协程把自己挂到硬上限阀的停靠列表上，逼出边界收集所需的收敛。没有它，永恒 delta 会把收集一直压到堆爬到硬上限——健全，但堆顶在上限而不是目标值。升级检查是限速的（每线程每 4096 次轮询做一次时钟对）；计时钟从首个命中检查且观察到标志的轮询开始计时，park 恢复后归零，收集驱动降门时重新武装。阀的列表经协程专用的 `gcnext` 字段链接（不用运行队列的 `qnext`），`mt_wake_locked` 唤醒前先把协程从阀上摘链——在 `do_wait` 中途挂驻、又被 futures 投递踢醒的协程干净醒来，不留过期阀条目。
+- 测试：`MtGcHardCapParkCollect`（4 路并行 churn 穿过 256KB 上限正常完成、校验和不変）、`MtGcHardCapOom`（保活 62）、`MtGcHardCapSingleAllocOom`（单次超限 62）、`MtGcHardCapZeroUnlimited`（显式 0 = 不限）、`MtGcFrameChainRace`（mt 下高频全局收集，4 个 handler 搅动 + 轮转长寿命数组帧局部 + 共享 Fifo logger；用跨乱序 delta 的校验和断言精确帧链遍历与阀的唤醒/摘链纪律）。
 
 ## 自由形态运行时（`--enable-multithread-scheduler`）
 

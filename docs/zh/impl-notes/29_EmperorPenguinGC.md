@@ -304,10 +304,14 @@ goal = max(EMPEROR_GC_MIN_HEAP, EMPEROR_GC_GOAL_FACTOR × combined_live)
 **一个词**——轮询门（poll gate，位定义在 `gc_internal.h`）：零即返回，
 非零才进慢路径。凡是"这次轮询该做点什么"的条件都折进这一个字：收集请
 求经 `gc_request_collect()` 统一抬升（语义标志 `_emperor_gc_want_collect`
-与门同步），stress / 轮询计数这些 env 派生的位在 init 点亮，收集驱动每
+与门同步——且请求在途期间抬升方一次宽松读后即返回：分配器在整个门升
+窗口内每次越过堆目标都要重新抬升，无条件 store 会让每线程每次分配都弄
+脏两条共享缓存行），stress 这个 env 派生的位在 init 点亮，收集驱动每
 轮降门，STW 年龄时钟的重新武装也一并搬进驱动——于是快路径是一次宽松读
-加一个不跳转的分支，连一个 store 都没有；此前同一处要读五个不同的全局
-量。`_emperor_gc_want_collect` 被抬升时（任一分配侧越过目标）运行完整
+加一个不跳转的分支，连一个 store 都没有。`GC_PROFILE` 不碰门：它的轮
+询计数在慢路径里采样（每线程每 4096 次进入做一次共享自增，按倍数报
+出），profile 运行与无 profile 运行走同样的快路径。`_emperor_gc_want_collect`
+被抬升时（任一分配侧越过目标）运行完整
 周期。压力旋钮（`EMPEROR_GC_STRESS_EVERY` / `_MAX`）强制每第 N
 次轮询收集一次，用于正确性锤击。malloc 路径在 8× 目标处额外内联收集
 ——应对没有轮询在望的 C 密集段落。
@@ -317,11 +321,18 @@ goal = max(EMPEROR_GC_MIN_HEAP, EMPEROR_GC_GOAL_FACTOR × combined_live)
 mt 调度器运行并行 delta 期间（`_emperor_sched_parallel_active`），
 worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触发只抬标志，轮
 询推迟，**调度器边界**（每个 worker 停驻——按构造即 stop-the-world）经
-`_emperor_gc_collect_now` 排干。边界排不掉的标志（永动 delta 里的繁忙
+`_emperor_gc_collect_now` 排干。整个门升窗口内轮询唯一的活是 STW 升
+级，而该项检查是限速的：每线程每 4096 次轮询做一次时钟对，对 250 ms
+预算只添远低于一毫秒的延迟——这个窗口内每个 mutator 的每个安全点都落
+在慢路径。边界排不掉的标志（永动 delta 里的繁忙
 服务）在 `EMPEROR_GC_STW_MS`（默认 250 ms，0 = 关闭）后升级：轮询中的
-协程把自己挂到硬上限阀的停驻列表，强制边界需要的收敛。年龄时钟在首次看
-到标志的轮询处启动，标志落下即重置；重置是条件写，因为排干后的稳态是每
-个协程每次回边的热路径。
+协程把自己挂到硬上限阀的停驻列表，强制边界需要的收敛。年龄时钟在首个
+命中检查且看到标志的轮询处启动，park 恢复后归零（标志可能仍设着——下
+次检查重新计时），收集驱动降门时也会重新武装它。阀的列表经协程专用的
+`gcnext` 字段链接，绝不用运行队列的 `qnext`：挂在阀上的协程可能同时待
+在 futures 集合里（它在 `do_wait` 中途挂起），投递唤醒会为它补一个运行
+队列条目——`mt_wake_locked` 唤醒前先把协程从阀上摘链，外部唤醒因此干
+净地取消这次挂驻。
 
 ## 8. 自省
 
@@ -337,8 +348,10 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
 ## 9. 发射代码 ABI
 
 * 每次调用与分配前的安全点轮询（`_emperor_gc_poll`）；每函数的帧链
-  挂接/摘除；每类型的 ref-map 程序与元数据全局（数组含在内：每个元素
-  类型一个 REFARR 节点）。
+  挂接/摘除——函数是否携带帧描述符只在函数体全部发射后决定（入口参数
+  建立与结构体临时量会在体发射期间补进帧槽位），因此每个 `ret` 无条件
+  发射摘除代码，发射器再从最终没有描述符的函数里剥掉这些行；每类型的
+  ref-map 程序与元数据全局（数组含在内：每个元素类型一个 REFARR 节点）。
 * 运行时 ABI 标签 `_emperor_runtime_abi == "emperor-rt-gc3-gt3"` 在混
   合 dynlib 构建上被比较，发射代码不会悄悄遇到外来运行时。
 * JIT 模块与 dynlib 消费者经 `-rdynamic` 从宿主可执行文件绑定分配器/
@@ -377,6 +390,14 @@ worker 持有飞行中的协程栈，任何线程都不能收集：分配侧触�
   gc_torture 并驱动六个确定性负载（churn / ptrdense / container /
   deepsurvive / mixed512），按负载制表 `GC_PROFILE` 阶段耗时
   行。
+* **`bench/gcmat/`**（GC 性能矩阵测试床）：五个场景程序（`tbm_local`
+  私有搅动、`tbm_shared` 生产者/消费者通道、`tbm_live` 大型常驻森林、
+  `tbm_large` 大缓冲轮转、`tbm_app` 综合应用形态——各自带确定性
+  checksum）× 调度器（classic / mt4 / mt8）× GC 配置（紧凑堆 / NOGC /
+  RELAX），由 `matrix.sh` 驱动；计时格子 3 次取中位、不带 `GC_PROFILE`
+  （profile 不能拖慢被测程序），`aggregate.py` 把中位与探针统计计数
+  折算汇总。探针的 fulls 计数为 0 的计时格子没有意义——该负载根本没
+  触发过收集。
 * **`Tests/GcTest/*.md`**：跨编译器端到端守卫——搅动下的枚举全局与
   payload、原生数组元素追踪、容器回收、写链/参数置根、span 统计
   自省。
