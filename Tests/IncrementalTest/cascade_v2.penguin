@@ -1,0 +1,4 @@
+initial {
+    let mut h = new app.Holder<i32>();
+    println(h.stamp(41));
+}

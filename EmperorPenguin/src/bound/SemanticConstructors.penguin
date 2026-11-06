@@ -13,15 +13,23 @@ class ConstructorsPass {
         this.model = new Option<SemanticModel>.some(model);
     }
 
-    // 唯一入口：原 pass_constructors
+    // 唯一入口：原 pass_constructors。Batch 3.3a: per-file segment walk (same
+    // flattened sequence as the historical flat definitions walk).
     fun run(mut this, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_constructors");
-        let i: mut i64 = 0;
-        while (i < cast<i64>(result.definitions.size())) {
-            let def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
-            let updated: BoundDefinition = this.init_constructors_for_def(def, def_lookup_scope(def, result.global_scope));
-            result.definitions.set(cast<u64>(i), updated);
-            i = i + 1;
+        let m: mut SemanticModel = this.model.some;
+        let s: mut i64 = 0;
+        while (s < cast<i64>(m.def_seg_files.size())) {
+            let start: i64 = m.def_seg_starts.at(cast<u64>(s)).some;
+            let count: i64 = m.def_seg_counts.at(cast<u64>(s)).some;
+            let k: mut i64 = 0;
+            while (k < count) {
+                let def: BoundDefinition = result.definitions.at(cast<u64>(start + k)).some;
+                let updated: BoundDefinition = this.init_constructors_for_def(def, def_lookup_scope(def, result.global_scope));
+                result.definitions.set(cast<u64>(start + k), updated);
+                k = k + 1;
+            }
+            s = s + 1;
         }
         let j: mut i64 = 0;
         while (j < cast<i64>(result.definitions.size())) {
@@ -33,17 +41,18 @@ class ConstructorsPass {
 
     fun init_constructors_for_def(mut this, def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter init_constructors_for_def");
-        if (this.model.some.already_processed(def)) { return def; }
+        // Batch 3.3a: per-processor guard (pass 5).
+        if (BoundDefinition.get_pass_index(def) >= 5) { return def; }
         if (def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = def.class_def;
             this.init_class_constructor(cls, global_scope);
-            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(def, 5);
             return new BoundDefinition.class_def(cls);
         }
         if (def is BoundDefinition.interface_def) {
             let iface: mut BoundInterfaceDefinition = def.interface_def;
             this.init_interface_constructor(iface, global_scope);
-            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(def, 5);
             return new BoundDefinition.interface_def(iface);
         }
         if (def is BoundDefinition.namespace_def) {
@@ -54,10 +63,10 @@ class ConstructorsPass {
                 ns.children.set(cast<u64>(k), updated);
                 k = k + 1;
             }
-            BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(def, 5);
             return new BoundDefinition.namespace_def(ns);
         }
-        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(def, 5);
         return def;
     }
 

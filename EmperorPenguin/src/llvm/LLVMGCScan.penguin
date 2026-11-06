@@ -1,0 +1,1182 @@
+// GC scan concern of the LLVM emitter (batch 0.1 split): the pre-emission
+// scans over each IR function — write chains, alias assigns, sret elision,
+// mutable registers, precise frame-slot classification and chain-pin mirrors.
+namespace emperor {
+
+class LLVMGCScan {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    fun is_gc_only_reg(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.gc_only_regs.size())) {
+            if (em.gc_only_regs.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // --- Type mapping ---
+
+    // Pre-scan a function for RVO / sret-elision opportunities: a CALL that
+    // returns an aggregate via sret, immediately followed by an ASSIGN whose
+    // source is exactly that CALL's result register (`let x = func()`). For each
+    // such pair we record the destination register so emit_call can pass the
+    // destination's storage directly as the sret buffer, and the dispatch loop
+    // can skip the now-redundant ASSIGN. Must run before scan_mutable_regs so the
+    // mutable-reg alloca can be sized to fit the sret return type.
+    fun scan_sret_elision(mut this, func: IRFunction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter scan_sret_elision");
+        em.sret_elision_map = new _utils.List<SretElision>();
+        em.elided_assigns = new _utils.List<i64>();
+        let n: i64 = cast<i64>(func.instructions.size());
+        let i: mut i64 = 0;
+        while (i < n - 1) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(i)).some;
+            let next: IRInstruction = func.instructions.at(cast<u64>(i + 1)).some;
+            if (inst is IRInstruction.call) {
+                if (next is IRInstruction.assign) {
+                    let call_result: string = inst.call.result_value.display();
+                    let assign_dest: string = next.assign.dest.display();
+                    let assign_src: string = next.assign.src.display();
+                    if (assign_src == call_result) {
+                        if (em.types.needs_sret(inst.call.ret_type)) {
+                            let sret_type: string = em.types.get_sret_llvm_type(inst.call.ret_type);
+                            em.sret_elision_map.push(new SretElision(call_result, assign_dest, i + 1, sret_type));
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // Find the sret-elision record (if any) whose CALL result matches result_name.
+    fun find_sret_elision(this, result_name: string) -> Option<SretElision> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_sret_elision(result_name=" + cast<string>(result_name) + ")");
+ }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.sret_elision_map.size())) {
+            let e: SretElision = em.sret_elision_map.at(cast<u64>(i)).some;
+            if (e.call_result == result_name) { return new Option<SretElision>.some(e); }
+            i = i + 1;
+        }
+        return new Option<SretElision>.none();
+    }
+
+    // Find the sret-elision record (if any) whose destination register is dest_reg.
+    // Used by scan_mutable_regs to size an RVO destination's alloca to fit the
+    // callee's sret return type.
+    fun sret_elision_for_dest(this, dest_reg: string) -> Option<SretElision> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter sret_elision_for_dest(dest_reg=" + cast<string>(dest_reg) + ")");
+ }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.sret_elision_map.size())) {
+            let e: SretElision = em.sret_elision_map.at(cast<u64>(i)).some;
+            if (e.dest_reg == dest_reg) { return new Option<SretElision>.some(e); }
+            i = i + 1;
+        }
+        return new Option<SretElision>.none();
+    }
+
+    // True if the instruction at `index` is an ASSIGN that RVO has elided.
+    fun is_elided_assign(this, index: i64) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_elided_assign(index=" + cast<string>(index) + ")");
+ }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.elided_assigns.size())) {
+            if (em.elided_assigns.at(cast<u64>(i)).some == index) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun scan_mutable_regs(mut this, func: IRFunction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter scan_mutable_regs(func=" + func.to_string() + ")");
+ }
+        // Collect all register names that appear as definition targets. Kinds
+        // are tracked alongside: a TEMP register ("%t2" = temp index 2) and a
+        // NAMED register (user variable "t2") share a DISPLAY name but are
+        // distinct registers — a name defined by BOTH kinds is "mixed" and
+        // must not get struct-sized storage (the defs disagree on type; the
+        // pre-existing ptr-slot model is the only consistent lowering).
+        //
+        // Two passes with all bookkeeping in the smr_name_flags hash (bits:
+        // 1=temp def seen, 2=named def seen, 4=mixed, 8=2+ defs) and
+        // first-occurrence order in smr_first_names — the old implementation
+        // rescanned the growing def list per definition (O(n²) string
+        // compares) and re-walked ALL instructions per mutable register to
+        // find its definitions (O(m·n)). The per-dup best-type candidates
+        // are collected in the second pass; the finalize loop iterates
+        // first-occurrence order so mutable_regs / alloca_map keep their
+        // exact previous ordering (.ll-identical output).
+        em.smr_first_names = new _utils.List<string>();
+        em.smr_name_flags = new _utils.StrMap<i64>();
+        em.smr_ord_map = new _utils.StrMap<i64>();
+        em.smr_cand_best_llvm = new _utils.List<string>();
+        em.smr_cand_best_ir = new _utils.List<string>();
+        em.smr_cand_best_size = new _utils.List<i64>();
+        em.smr_cand_line = new _utils.List<i64>();
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is IRInstruction.const_inst || inst is IRInstruction.assign) {
+                let res: IRValue = if (inst is IRInstruction.const_inst) { inst.const_inst.result } else { inst.assign.dest };
+                let dname: string = res.display();
+                let kindbit: i64 = if (res is IRValue.temp_reg) { 1 } else { 2 };
+                let fl: mut i64 = em.smr_name_flags.get(dname, -1);
+                if (fl < 0) {
+                    fl = 0;
+                    em.smr_first_names.push(dname);
+                } else {
+                    fl = fl | 8; // second definition of this display name
+                    if ((fl & (3 - kindbit)) != 0) { fl = fl | 4; } // mixed kinds
+                }
+                fl = fl | kindbit;
+                em.smr_name_flags.set(dname, fl);
+            }
+            ii = ii + 1;
+        }
+
+        // Second pass: best-type candidate per DUP name (max LLVM size over
+        // all its const/assign definitions, first named-def line) — the same
+        // per-def computation the old per-mutable instruction re-walk did,
+        // fused into one walk. Mixed-kind names skip the value-class struct
+        // widening (defs disagree on type).
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(pi)).some;
+            if (inst is IRInstruction.const_inst || inst is IRInstruction.assign) {
+                let res: IRValue = if (inst is IRInstruction.const_inst) { inst.const_inst.result } else { inst.assign.dest };
+                let dname: string = res.display();
+                let fl: i64 = em.smr_name_flags.get(dname, -1);
+                if ((fl & 8) == 0) { pi = pi + 1; continue; }
+                let ordp: mut i64 = em.smr_ord_map.get(dname, -1);
+                if (ordp <= 0) {
+                    ordp = cast<i64>(em.smr_cand_best_llvm.size()) + 1;
+                    em.smr_ord_map.set(dname, ordp);
+                    em.smr_cand_best_llvm.push("ptr");
+                    em.smr_cand_best_ir.push("ptr");
+                    em.smr_cand_best_size.push(0);
+                    em.smr_cand_line.push(-1);
+                }
+                let ord: i64 = ordp - 1;
+                let it: string = res.get_ir_type();
+                let lt: mut string = em.types.ir_type_to_llvm(it);
+                // A value-class mutable binding's alloca holds the STRUCT
+                // (value-copy semantics: reassignment stores the whole
+                // struct), not a pointer to it. Mixed-kind display names
+                // (temp + named register collision) are excluded — their
+                // defs disagree on type.
+                if (lt == "ptr" && (fl & 4) == 0) {
+                    let vc: string = em.types.value_class_struct_type(it);
+                    if (string_length(vc) > 0) { lt = vc; }
+                }
+                let sz: i64 = em.types.llvm_type_size(lt);
+                if (sz > em.smr_cand_best_size.at(cast<u64>(ord)).some) {
+                    em.smr_cand_best_llvm.set(cast<u64>(ord), lt);
+                    em.smr_cand_best_size.set(cast<u64>(ord), sz);
+                    em.smr_cand_best_ir.set(cast<u64>(ord), it);
+                }
+                if (em.smr_cand_line.at(cast<u64>(ord)).some < 0) {
+                    if (res is IRValue.named_reg) {
+                        em.smr_cand_line.set(cast<u64>(ord), res.named_reg.location.line);
+                    }
+                }
+            }
+            pi = pi + 1;
+        }
+
+        // Finalize in first-occurrence order: dup names become the mutable
+        // registers, each with its alloca and best type (an RVO/sret-elision
+        // destination also considers the callee's sret type — elision wins
+        // size ties, matching the previous check-order).
+        em.mutable_regs = new _utils.List<string>();
+        em.mutable_reg_ir_types = new _utils.List<string>();
+        em.mutable_reg_lines = new _utils.List<i64>();
+        em.alloca_map = new _utils.List<RegMapping>();
+        em.alloca_idx_map = new _utils.StrMap<i64>();
+        let u: mut i64 = 0;
+        while (u < cast<i64>(em.smr_first_names.size())) {
+            let name: string = em.smr_first_names.at(cast<u64>(u)).some;
+            let fl: i64 = em.smr_name_flags.get(name, -1);
+            if ((fl & 8) == 0) { u = u + 1; continue; }
+            em.mutable_regs.push(name);
+            em.mut_reg_map.set(name, 1);
+            let ord: i64 = em.smr_ord_map.get(name, -1) - 1;
+            let alloca_name: string = name + ".addr";
+            em.alloca_map.push(new RegMapping(name, alloca_name));
+            em.alloca_idx_map.set(name, cast<i64>(em.alloca_map.size()) - 1);
+
+            let best_llvm: mut string = em.smr_cand_best_llvm.at(cast<u64>(ord)).some;
+            let best_size: mut i64 = em.smr_cand_best_size.at(cast<u64>(ord)).some;
+            let best_ir_type: mut string = em.smr_cand_best_ir.at(cast<u64>(ord)).some;
+            let mr_line: mut i64 = em.smr_cand_line.at(cast<u64>(ord)).some;
+            if (mr_line < 0) { mr_line = 0; }
+            let elision_for_dest: Option<SretElision> = this.sret_elision_for_dest(name);
+            if (elision_for_dest.is_some()) {
+                let st: string = elision_for_dest.some.callee_sret_llvm_type;
+                let sz: i64 = em.types.llvm_type_size(st);
+                if (sz > 0 && sz >= best_size) {
+                    best_llvm = st;
+                    best_size = sz;
+                    best_ir_type = elision_for_dest.some.callee_sret_llvm_type;
+                }
+            }
+            em.values.register_llvm_type(name, best_llvm);
+            em.mutable_reg_ir_types.push(best_ir_type);
+            em.mutable_reg_lines.push(mr_line);
+            u = u + 1;
+        }
+    }
+
+    fun is_mutable_reg(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_mutable_reg(name=" + cast<string>(name) + ")");
+ }
+        // Hash membership (maintained beside every mutable_regs/gc_only_regs
+        // push) — this predicate gates every def-site/use-site lowering and
+        // the old double linear scan paid a string compare per element.
+        if (em.mut_reg_map.get(name, -1) == 1) { return true; }
+        return false;
+    }
+
+    // ---- GC v2 phase 2: precise frame-root slots ----
+
+    // The ref-map operand describing one slot's contents: "ptr null" = a
+    // bare pointer home, "ptr @X_refmap" = an inline struct home, "" = the
+    // type cannot hold GC references (or its layout is unresolvable at scan
+    // time — such registers stay SSA and keep their conservative-scan
+    // coverage; GC_VERIFY's differential makes any gap visible).
+    // The ref-map operand for parameter slots — the param's storage is
+    // guaranteed by the prologue (a value-class copy alloca, or the byval
+    // pointer to the caller's storage), so struct homes are safe here.
+    // "ptr null" = bare pointer home, "ptr @X_refmap" = struct home, "" =
+    // cannot hold references.
+    fun gc_param_slot_for_ir_type(mut this, it: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let t: string = em.types.strip_mut_ir_prefix(it);
+        if (em.string_starts_with(t, "array<")) { return "ptr null"; }
+        if (em.string_starts_with(t, "enum<")) {
+            let ename: string = em.types.extract_type_name(t);
+            this.ensure_gc_layout(ename, false);
+            let efound: Option<EnumLayout> = em.types.find_enum_layout(ename);
+            if (efound.is_some()) {
+                // The layout's OWN name — ir-type names resolve through
+                // suffix matching ("Holder" → "_ns_file.Holder"), the refmap
+                // global is emitted under the layout name.
+                return "ptr @" + efound.some.type_name + "_refmap";
+            }
+            return "";
+        }
+        if (em.types.is_string_type(it)) { return "ptr null"; }
+        if (!em.types.is_ref_type(it)) {
+            // Bare / fully-qualified class spellings root like their ref<>
+            // twins (see gc_slot_for_ir_type) — a SourceLocation or BoundType
+            // PARAMETER is exactly as reference-carrying as a ref<>-spelled
+            // one. Reference classes are pointers in the LLVM signature; a
+            // value class only qualifies when it is >16B (byval — the param
+            // IS the pointer to the caller's copy): a small struct arrives
+            // BY VALUE as a first-class value and cannot be walked as
+            // storage.
+            if (!this.maybe_class_ir_type(t)) { return ""; }
+            let bname: string = em.types.extract_type_name(t);
+            let bfound: Option<ClassLayout> = em.types.find_class_layout_ensured(bname, true);
+            if (bfound.is_some()) {
+                if (bfound.some.is_value_type) {
+                    if (em.types.llvm_type_size(bfound.some.llvm_struct_type) > 16) {
+                        return "ptr @" + bfound.some.type_name + "_refmap";
+                    }
+                    return "";
+                }
+                return "ptr null";
+            }
+            return "";
+        }
+        let cname: string = em.types.extract_type_name(t);
+        this.ensure_gc_layout(cname, true);
+        let found: Option<ClassLayout> = em.types.find_class_layout(cname);
+        // Unknown spelling (generic angle-bracket names like List<Token> never
+        // match a mangled/specialized layout key; interfaces hold their BOX
+        // object): the parameter still holds ONE pointer — mirror it as a bare
+        // PIN slot, exactly like gc_slot_for_ir_type's register-side fallback.
+        // Returning "" here left generic-typed reference parameters (the
+        // List<T>.at/get/set/grow family — the hottest functions in the
+        // compiler) with NO slot at all: precise roots missed them.
+        if (found.is_none()) { return "ptr null"; }
+        if (found.some.is_value_type) {
+            return "ptr @" + found.some.type_name + "_refmap";
+        }
+        return "ptr null";
+    }
+
+    // Scan-side classification for REGISTER promotion: only plain pointer
+    // homes are promoted (reference-class and string registers). Struct
+    // homes (value classes/enums) are NOT promoted in phase 2 — their def
+    // sites (NEW_ENUM, entry allocas, reg_map aliasing) predate the mutable
+    // storage model and stay on it, covered by the conservative scan this
+    // phase keeps. Phase 3 revisits them with the GC_VERIFY differential in
+    // hand. "" = not promotable.
+    fun gc_slot_for_ir_type(mut this, it: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        // Native arrays are single references (GC objects walked via their
+        // own metadata REFARR) — a bare slot roots them precisely. Leaving
+        // them "" made every array-typed register unslotted (GCSCAN
+        // skip=no-slot), relying on the conservative cover alone.
+        if (em.string_starts_with(em.types.strip_mut_ir_prefix(it), "array<")) { return "ptr null"; }
+        if (em.types.is_string_type(it)) { return "ptr null"; }
+        let t: string = em.types.strip_mut_ir_prefix(it);
+        if (!em.types.is_ref_type(it)) {
+            // Bare / fully-qualified class spellings ("SourceLocation",
+            // "<global>.<global>.emperor.BoundType") — field types, generic
+            // args and cross-namespace references resolve to the class NAME
+            // without the ref<> wrapper. Resolve the layout directly so those
+            // registers root like their ref<>-spelled twins; leaving them
+            // unslotted made every SourceLocation temp (a filename string in
+            // a struct), BoundType local and bare List spelling unrooted in
+            // precise mode (512+255+230 unhomed instances on the self-compile
+            // scan). Primitives and unknown spellings stay "".
+            if (!this.maybe_class_ir_type(t)) { return ""; }
+            let bname: string = em.types.extract_type_name(t);
+            let bfound: Option<ClassLayout> = em.types.find_class_layout_ensured(bname, true);
+            if (bfound.is_some()) {
+                if (bfound.some.is_value_type) { return ""; }
+                return "ptr null";
+            }
+            return "";
+        }
+        let cname: string = em.types.extract_type_name(t);
+        this.ensure_gc_layout(cname, true);
+        let found: Option<ClassLayout> = em.types.find_class_layout(cname);
+        // A reference-typed register always holds a single pointer, whatever
+        // the layout lookup does with its spelling: a bare slot is safe for
+        // every value it can hold (gc_mark_frame_chain resolves first —
+        // non-tracked targets like stack allocas or function values resolve
+        // to NULL and are skipped; interior pointers mark their owner).
+        // Returning "" here leaves the register's live copies unrooted in
+        // precise mode: a field load whose source field is overwritten while
+        // the copy is still in flight (or a value held only in a spill) is
+        // then freed mid-use — the compiler-crash class GC v2 phase 3 hit.
+        if (found.is_none()) {
+            // Unknown spelling (generic angle-bracket names never match the
+            // mangled layout type_name; interfaces hold their BOX object).
+            return "ptr null";
+        }
+        if (found.some.is_value_type) { return ""; }
+        return "ptr null";
+    }
+
+    // Cheap gate for gc_slot_for_ir_type's bare-spelling path: could this
+    // ir_type name a CLASS? Primitives ("i64", "bool", "f32", ...) and enum
+    // spellings ("enum<...>") are all lowercase-initial or angle-wrapped;
+    // class names are uppercase-initial (convention across the compiler and
+    // stdlib) and qualified spellings start with '<' or a namespace segment.
+    fun maybe_class_ir_type(this, t: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (string_length(t) == 0) { return false; }
+        if (em.string_starts_with(t, "enum<")) { return false; }
+        let code: i64 = string_char_code_at(t, 0);
+        if (code == 60 || code == 46) { return true; } // '<' or '.'
+        if (code >= 65 && code <= 90) { return true; } // 'A'..'Z'
+        return false;
+    }
+
+    // Ensure the layout of a type referenced by ir_type exists before the
+    // scans classify its registers (layouts are otherwise built lazily
+    // during body emission — too late to know ptr-vs-inline storage).
+    // Layout names are global-prefix-stripped full names; specialized defs
+    // are keyed by their mangle.
+    fun ensure_gc_layout(mut this, layout_name: string, want_class: bool) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (em.current_unit.is_none()) { return; }
+        this.ensure_gc_layout_in(em.current_unit.some.definitions, layout_name, want_class);
+    }
+
+    fun ensure_gc_layout_in(mut this, defs: _utils.List<BoundDefinition>, layout_name: string, want_class: bool) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        // Memoized per (layout_name, want_class): the walk below only ensures
+        // defs whose layout is MISSING; once a name has been walked the
+        // result cannot change (the bound-defs tree is frozen during
+        // emission), so repeats skip outright. This was the single hottest
+        // emitter function on the no-GC self-compile profile — every enum /
+        // container-typed register classification re-walked the ENTIRE defs
+        // tree, strip_global-prefixing every class def on the way (a string
+        // allocation each). The first walk builds a flat (precomputed-name,
+        // def) index of all class/enum defs so later walks (for other names)
+        // scan a flat array with zero-alloc name matching.
+        let memo: mut _utils.StrMap<i64> = if (want_class) { em.gc_ensured_class } else { em.gc_ensured_enum };
+        if (memo.get(layout_name, -1) == 1) { return; }
+        if (!em.gc_defidx_built) {
+            this.build_gc_def_index(defs);
+        }
+        if (want_class) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(em.gc_defidx_class_defs.size())) {
+                let cd: BoundClassDefinition = em.gc_defidx_class_defs.at(cast<u64>(i)).some;
+                let lname: string = em.gc_defidx_class_names.at(cast<u64>(i)).some;
+                if (this.gc_layout_name_matches(lname, layout_name) && em.types.find_class_layout(lname).is_none()) {
+                    em.types.ensure_class_layout(cd);
+                }
+                i = i + 1;
+            }
+        } else {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(em.gc_defidx_enum_defs.size())) {
+                let ed: BoundEnumDefinition = em.gc_defidx_enum_defs.at(cast<u64>(i)).some;
+                let lname: string = em.gc_defidx_enum_names.at(cast<u64>(i)).some;
+                if (this.gc_layout_name_matches(lname, layout_name) && em.types.find_enum_layout(lname).is_none()) {
+                    em.types.ensure_enum_layout(ed);
+                }
+                i = i + 1;
+            }
+        }
+        memo.set(layout_name, 1);
+    }
+
+    // One-time flatten of the class/enum def tree (per unit): precomputes
+    // every def's layout name so the per-ensure walks never re-derive it.
+    fun build_gc_def_index(mut this, defs: _utils.List<BoundDefinition>) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        em.gc_defidx_built = true;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.namespace_def) {
+                this.build_gc_def_index(def.namespace_def.children);
+            } else if (def is BoundDefinition.class_def) {
+                let cd: BoundClassDefinition = def.class_def;
+                let lname: mut string = em.globals.strip_global_prefix(cd.full_name);
+                if (cd.is_specialized) { lname = cd.name; }
+                em.gc_defidx_class_names.push(lname);
+                em.gc_defidx_class_defs.push(cd);
+            } else if (def is BoundDefinition.enum_def) {
+                let ed: BoundEnumDefinition = def.enum_def;
+                let lname2: mut string = em.globals.strip_global_prefix(ed.full_name);
+                if (ed.is_specialized) { lname2 = ed.name; }
+                em.gc_defidx_enum_names.push(lname2);
+                em.gc_defidx_enum_defs.push(ed);
+            }
+            i = i + 1;
+        }
+    }
+
+    // Layout keys and ir-type names can differ by namespace qualification
+    // ("_ns_file.Holder" vs "Holder") — find_class_layout resolves through
+    // suffix matching, the ensure walk must accept the same equivalence.
+    fun gc_layout_name_matches(this, layout_key: string, wanted: string) -> bool {
+        if (layout_key == wanted) { return true; }
+        // layout_key ends with "." + wanted, compared by char codes — the
+        // substring pair below allocated two strings per candidate.
+        let wl: i64 = string_length(wanted);
+        let ll: i64 = string_length(layout_key);
+        if (ll > wl) {
+            if (string_char_code_at(layout_key, ll - wl - 1) != 46) { return false; } // '.'
+            let i: mut i64 = 0;
+            while (i < wl) {
+                if (string_char_code_at(layout_key, ll - wl + i) != string_char_code_at(wanted, i)) { return false; }
+                i = i + 1;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Promote every register that can hold a GC reference onto the mutable
+    // storage model and record its frame-descriptor slot. Runs after
+    // scan_write_chains (write-chain/alias-assign registers keep their
+    // aliased storage — the parent slot covers them). ARG-defined registers
+    // are param aliases (the prologue mirrors the params instead), and
+    // mixed-kind names keep the ptr-slot model (excluded, as in
+    // scan_mutable_regs).
+    fun scan_gc_regs(mut this, func: IRFunction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (func.is_extern) { return; }
+
+        // Frame prediction: slots are discovered until the body ends, but
+        // rets (emitted during the body) must know at emission time whether
+        // to unlink. Predict "has frame" for any function touching a
+        // reference/string/class/enum value (register or parameter) — the
+        // predictor over-approximates; an over-predicted function links an
+        // empty (zero-slot) frame, which costs a link/unlink pair and
+        // nothing else. An UNDER-prediction would leak the frame onto the
+        // chain forever — never allowed. maybe_class_ir_type also admits
+        // BARE/fully-qualified class spellings (field types and generic args
+        // carry no ref<> wrapper) — a function whose only reference-bearing
+        // values are bare-spelled still links a descriptor (the scan homes
+        // those registers), so its rets must unlink.
+        let predicted: mut bool = false;
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(func.parameters.size())) {
+            let pit: string = func.parameters.at(cast<u64>(pi)).some.ir_type;
+            if (em.types.is_string_type(pit) || em.types.is_ref_type(pit)
+                || em.string_starts_with(em.types.strip_mut_ir_prefix(pit), "enum<")
+                || this.maybe_class_ir_type(em.types.strip_mut_ir_prefix(pit))) {
+                predicted = true;
+            }
+            pi = pi + 1;
+        }
+        let di: mut i64 = 0;
+        while (di < cast<i64>(func.instructions.size()) && !predicted) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(di)).some;
+            let r: Option<IRValue> = this.inst_defined_reg(inst);
+            if (r.is_some()) {
+                let dit: string = r.some.get_ir_type();
+                if (em.types.is_string_type(dit) || em.types.is_ref_type(dit)
+                    || em.string_starts_with(em.types.strip_mut_ir_prefix(dit), "enum<")
+                    || this.maybe_class_ir_type(em.types.strip_mut_ir_prefix(dit))) {
+                    predicted = true;
+                }
+            }
+            di = di + 1;
+        }
+        em.gc_frame_predicted = predicted;
+        if (predicted) {
+            em.gc_frame_local = "%__gcf";
+            em.gc_frame_prev_gep = "%__gcf.prev";
+        }
+
+        // Collection pass with all membership bookkeeping in the
+        // gcscan_flags hash (bits: 1=ARG-defined, 2=UNBOX-defined, 4=NEW-
+        // defined, 8=temp def seen, 16=named def seen, 32=mixed kinds,
+        // 64=classified in the second loop) — the old seven parallel Lists
+        // paid a linear list_contains (a string compare per element) per
+        // lookup, quadratically in the def count.
+        // UNBOX results are pure ALIAS views (emit_unbox only reg_maps them
+        // to the box pointer — nothing is ever materialized). Promoting one
+        // onto the .addr storage model would strand consumers on a slot no
+        // def ever stores (all-zero structs — the json.penguin literal wipe
+        // in the 3c bootstrap). Their target is covered through the aliased
+        // operand's own slot.
+        // NEW-defined registers (any def site): allocate_class gives them an
+        // ENTRY ALLOCA at the register's own name and the ctor writes there —
+        // pointer semantics every consumer (assigns into ptr-typed mutables,
+        // byval forwarding) already relies on. Homing such a register splits
+        // it across TWO storages (%name written by the NEW, %name.addr read
+        // by everyone else): the NEW's value never reaches the home and the
+        // bridge assigns emit struct-into-ptr stores (the GenericCascade
+        // link failure). Their embedded refs stay covered by the entry
+        // alloca's own frame slot (emit_entry_alloca pushes it).
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is IRInstruction.unbox) {
+                let un: string = inst.unbox.result.display();
+                let uv: mut i64 = em.gcscan_flags.get(un, -1);
+                if (uv < 0) { uv = 0; }
+                em.gcscan_flags.set(un, uv | 2);
+            }
+            if (inst is IRInstruction.new_inst) {
+                let nw: string = inst.new_inst.result.display();
+                let nv: mut i64 = em.gcscan_flags.get(nw, -1);
+                if (nv < 0) { nv = 0; }
+                em.gcscan_flags.set(nw, nv | 4);
+            }
+            if (inst is IRInstruction.arg) {
+                let ag: string = inst.arg.result.display();
+                let av: mut i64 = em.gcscan_flags.get(ag, -1);
+                if (av < 0) { av = 0; }
+                em.gcscan_flags.set(ag, av | 1);
+            }
+            // mixed-kind detection (temp vs named defs of one display name)
+            let dr: Option<IRValue> = this.inst_defined_reg(inst);
+            if (dr.is_some()) {
+                let dn: string = dr.some.display();
+                let kindbit: i64 = if (dr.some is IRValue.temp_reg) { 8 } else { 16 };
+                let fl: mut i64 = em.gcscan_flags.get(dn, -1);
+                if (fl < 0) { fl = 0; }
+                if ((fl & kindbit) == 0 && (fl & (24 - kindbit)) != 0) {
+                    fl = fl | 32; // mixed kinds
+                }
+                em.gcscan_flags.set(dn, fl | kindbit);
+            }
+            ii = ii + 1;
+        }
+
+        let ii2: mut i64 = 0;
+        while (ii2 < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii2)).some;
+            let r: Option<IRValue> = this.inst_defined_reg(inst);
+            if (r.is_none()) { ii2 = ii2 + 1; continue; }
+            let name: string = r.some.display();
+            let fl0: i64 = em.gcscan_flags.get(name, -1);
+            if (fl0 < 0 || (fl0 & 64) != 0) { ii2 = ii2 + 1; continue; }
+            em.gcscan_flags.set(name, fl0 | 64);
+            let it: string = r.some.get_ir_type();
+            if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " consider"); }
+            if (it == "" || it == "void") { ii2 = ii2 + 1; continue; }
+            if (inst is IRInstruction.arg) { ii2 = ii2 + 1; continue; }
+            if ((fl0 & 1) != 0) {
+                if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=argdef"); }
+                ii2 = ii2 + 1; continue;
+            }
+            if (this.is_write_chain_reg(name) || this.is_alias_assign(name)) {
+                // Chain-pin homing (cover retirement): the temp's pointer
+                // exists only as an SSA/gep value (reg_map alias — lvalue
+                // addressing), crossing every poll between its def and the
+                // WRMBR/call that consumes it. A write-only PIN mirror gives
+                // the descriptor a slot: the minor's Phase A pins the target
+                // in place, so the SSA copy never dangles into a recycled
+                // chunk. Primitive chain values hold no reference — no
+                // mirror. The register itself is NOT promoted onto storage
+                // (that would break the lvalue emission).
+                if (this.gc_chain_pin_worthy(it)) {
+                    em.gc_chain_pin_regs.push(name);
+                    em.gcpin_map.set(name, 1);
+                    em.gc_frame_slots.push(new GcSlotEntry(name + ".gcpin", "ptr @_emperor_gc_pin_refmap"));
+                    em.plan.needs_gc_pin_refmap = true;
+                } else if (em.gcscan_dbg) {
+                    eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=wchain/alias-primitive");
+                }
+                ii2 = ii2 + 1; continue;
+            }
+            if ((fl0 & 2) != 0) {
+                // UNBOX results are pure ALIAS views (emit_unbox only
+                // reg_maps them to the box pointer — nothing is ever
+                // materialized), so they cannot be promoted onto storage
+                // either. But the aliased operand's own slot is REWRITTEN
+                // at evacuation (the box moves), and this register's SSA
+                // copy of the box pointer is not — give it the same PIN
+                // mirror as the chain temps above.
+                if (this.gc_chain_pin_worthy(it)) {
+                    em.gc_chain_pin_regs.push(name);
+                    em.gcpin_map.set(name, 1);
+                    em.gc_frame_slots.push(new GcSlotEntry(name + ".gcpin", "ptr @_emperor_gc_pin_refmap"));
+                    em.plan.needs_gc_pin_refmap = true;
+                } else if (em.gcscan_dbg) {
+                    eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=unbox-primitive");
+                }
+                ii2 = ii2 + 1; continue;
+            }
+            if ((fl0 & 4) != 0) {
+                if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=newdef-entryalloca"); }
+                ii2 = ii2 + 1; continue;
+            }
+            let slot: mut string = this.gc_slot_for_ir_type(it);
+            // Struct homes (GC v2 3c — the "cover retirement" step): an
+            // immutable value-class / enum register carries EMBEDDED
+            // references (Option<string>, SourceLocation{filename,...}); as
+            // SSA its only live copies sit in clang spill slots no frame
+            // descriptor can name — precisely the exposure that forced the
+            // conservative main-stack cover on every minor (and its
+            // pin-everything storm). Promote them onto the mutable storage
+            // model: one alloca holds the struct, every def stores, every
+            // use loads (the def sites' is_mutable_reg branches already
+            // handle struct-typed storage), and the descriptor slot walks
+            // the struct's ref-map. Types with no embedded references are
+            // left SSA — nothing to root.
+            let home: mut string = "ptr";
+            if (slot == "") {
+                let vc: string = em.types.value_class_struct_type(it);
+                if (string_length(vc) > 0) {
+                    let mmap: string = em.metadata.gc_struct_refmap_operand(vc);
+                    if (mmap == "") {
+                        if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=vc-refmap-missing vc=" + vc); }
+                        ii2 = ii2 + 1; continue;
+                    }
+                    slot = mmap;
+                    home = vc;
+                } else {
+                    let st: string = em.types.strip_mut_ir_prefix(it);
+                    if (!em.string_starts_with(st, "enum<")) {
+                        if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=no-slot"); }
+                        ii2 = ii2 + 1; continue;
+                    }
+                    let ename: string = em.types.extract_type_name(st);
+                    this.ensure_gc_layout(ename, false);
+                    let lt: string = em.types.ir_type_to_llvm(st);
+                    if (!em.string_starts_with(lt, "%enum.")) {
+                        if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=enum-llvm-mismatch"); }
+                        ii2 = ii2 + 1; continue;
+                    }
+                    let mmap2: string = em.metadata.gc_struct_refmap_operand(lt);
+                    if (mmap2 == "") {
+                        if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=enum-refmap-missing"); }
+                        ii2 = ii2 + 1; continue;
+                    }
+                    slot = mmap2;
+                    home = lt;
+                }
+            }
+
+            let already: bool = this.is_mutable_reg(name);
+            if (already) {
+                // Mutable register with existing storage: record a bare-ref
+                // slot when its alloca is pointer-typed (struct-typed mutable
+                // regs are slotted by the prologue's phase-3a loop). A struct
+                // home here means THIS def's type is a value class while the
+                // alloca stayed ptr-sized (mixed defs) — a struct ref-map must
+                // never walk a pointer slot.
+                if (home != "ptr") {
+                    if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=mut-struct-home"); }
+                    ii2 = ii2 + 1; continue;
+                }
+                if (em.values.get_llvm_type(name) != "ptr") {
+                    if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=mut-nonptr-llvm=" + em.values.get_llvm_type(name)); }
+                    ii2 = ii2 + 1; continue;
+                }
+                if ((em.gcscan_flags.get(name, -1) & 32) != 0) {
+                    if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=mut-mixed"); }
+                    ii2 = ii2 + 1; continue;
+                }
+                em.gc_frame_slots.push(new GcSlotEntry(em.values.get_alloca_name(name), slot));
+                ii2 = ii2 + 1;
+                continue;
+            }
+
+            if ((em.gcscan_flags.get(name, -1) & 32) != 0) {
+                if (em.gcscan_dbg) { eprintln("GCSCAN func=" + func.name + " reg=" + name + " type=" + it + " skip=mixed"); }
+                ii2 = ii2 + 1; continue;
+            }
+            // Promote onto the .addr storage model — ptr or struct home.
+            em.values.register_llvm_type(name, home);
+            em.gc_only_regs.push(name);
+            em.mut_reg_map.set(name, 1);
+            em.gconly_home_map.set(name, cast<i64>(em.gc_only_regs.size()));
+            em.gc_reg_llvm_types.push(home);
+            em.gc_frame_slots.push(new GcSlotEntry(em.values.get_alloca_name(name), slot));
+            ii2 = ii2 + 1;
+        }
+
+        // Belt-and-braces for the prediction above: any slot discovered at
+        // scan time means the function WILL link a descriptor, so its rets
+        // (emitted next, during the body) must unlink — an unlinked frame
+        // leaks onto _emperor_gc_frame_head forever and later functions link
+        // their prev through the dead, stack-reused memory (the frame-chain
+        // SEGV family).
+        if (cast<i64>(em.gc_frame_slots.size()) > 0) {
+            em.gc_frame_predicted = true;
+            em.gc_frame_local = "%__gcf";
+            em.gc_frame_prev_gep = "%__gcf.prev";
+        }
+    }
+
+    // True when the RDMBR/RDENUM producing `name` is part of a write chain:
+    // its result must ALIAS the slot it read (lvalue addressing) instead of
+    // copying. Populated by scan_write_chains (hash membership — this is
+    // queried per instruction on emission paths).
+    fun is_write_chain_reg(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        return em.wcr_map.get(name, -1) == 1;
+    }
+
+    // True when the ASSIGN defining `name` must ALIAS its source (receiver
+    // materialization feeding a call, unbox-idiom binds).
+    fun is_alias_assign(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        return em.aar_map.get(name, -1) == 1;
+    }
+
+    // True when `name` has a chain-pin mirror slot (scan_gc_regs grants
+    // them to pointer-carrying write-chain/alias/unbox registers).
+    fun is_chain_pin_reg(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        return em.gcpin_map.get(name, -1) == 1;
+    }
+
+    // Emit the mirror store for a chain-pin register's pointer definition.
+    // No-op for registers without a mirror (primitives, non-chain regs).
+    // `value` must be ptr-typed at the call site — a gep result, a loaded
+    // reference, or an aliased pointer name.
+    fun gc_chain_pin_store(mut this, reg: string, value: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (!this.is_chain_pin_reg(reg)) { return; }
+        em.instructions.emit_line("  store ptr " + value + ", ptr " + reg + ".gcpin");
+    }
+
+    // Can a register of this IR type carry a GC pointer? Gates the chain-pin
+    // mirror: primitive chain values (an extracted i64 payload feeding an
+    // arithmetic use) hold no reference and need no pin. Over-approximates
+    // deliberately — a mirror on a non-ref pointer is inert (the pin pass
+    // resolves and skips non-nursery values).
+    fun gc_chain_pin_worthy(this, it: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (it == "" || it == "void") { return false; }
+        if (em.string_starts_with(em.types.strip_mut_ir_prefix(it), "array<")) { return true; }
+        if (em.types.is_string_type(it)) { return true; }
+        if (em.types.is_any_ref_ir_type(it)) { return true; }
+        if (it == "ptr") { return true; }
+        let t: string = em.types.strip_mut_ir_prefix(it);
+        if (em.string_starts_with(t, "enum<")) { return true; }
+        if (this.maybe_class_ir_type(t)) { return true; }
+        return false;
+    }
+    // The result register an instruction defines, if any (for the write-chain
+    // def table). Mirrors the BabyPenguin MarkWriteChains def collection.
+    fun inst_defined_reg(this, inst: IRInstruction) -> Option<IRValue> {
+        if (inst is IRInstruction.const_inst) { return new Option<IRValue>.some(inst.const_inst.result); }
+        if (inst is IRInstruction.arg) { return new Option<IRValue>.some(inst.arg.result); }
+        if (inst is IRInstruction.assign) { return new Option<IRValue>.some(inst.assign.dest); }
+        if (inst is IRInstruction.cast_inst) { return new Option<IRValue>.some(inst.cast_inst.result); }
+        if (inst is IRInstruction.binop) { return new Option<IRValue>.some(inst.binop.result); }
+        if (inst is IRInstruction.unaryop) { return new Option<IRValue>.some(inst.unaryop.result); }
+        if (inst is IRInstruction.rdmbr) { return new Option<IRValue>.some(inst.rdmbr.result); }
+        if (inst is IRInstruction.new_inst) { return new Option<IRValue>.some(inst.new_inst.result); }
+        if (inst is IRInstruction.new_enum) { return new Option<IRValue>.some(inst.new_enum.result); }
+        if (inst is IRInstruction.isenum) { return new Option<IRValue>.some(inst.isenum.result); }
+        if (inst is IRInstruction.rdenum) { return new Option<IRValue>.some(inst.rdenum.result); }
+        if (inst is IRInstruction.isinstance) { return new Option<IRValue>.some(inst.isinstance.result); }
+        if (inst is IRInstruction.box) { return new Option<IRValue>.some(inst.box.result); }
+        if (inst is IRInstruction.unbox) { return new Option<IRValue>.some(inst.unbox.result); }
+        if (inst is IRInstruction.global_load) { return new Option<IRValue>.some(inst.global_load.result); }
+        if (inst is IRInstruction.call) { return new Option<IRValue>.some(inst.call.result_value); }
+        if (inst is IRInstruction.call_indirect) { return new Option<IRValue>.some(inst.call_indirect.result_value); }
+        if (inst is IRInstruction.call_virt) { return new Option<IRValue>.some(inst.call_virt.result_value); }
+        return new Option<IRValue>.none();
+    }
+
+    // Value-copy semantics: RDMBR/RDENUM results COPY on extraction (binding,
+    // argument, plain read). When the result is instead consumed as the OWNER
+    // of a WRMBR (`w.p.x = 9`, `e.a.b.x += 1`) or as a method-call RECEIVER
+    // (`e.a.increment()` with mut this), it must ALIAS the slot (lvalue
+    // addressing, no copy) so the write reaches the real storage. Mirrors the
+    // BabyPenguin IRGenerator.MarkWriteChains reference implementation:
+    // scan backwards from every WRMBR owner and receiver, mark the defining
+    // RDMBR/RDENUM and continue through its object register so nested chains
+    // alias at every level; ASSIGNs on the path alias instead of forking a
+    // copy (receiver materialization). Only SINGLE-definition TEMP registers
+    // qualify — named registers are bindings (copies by construction) and
+    // multi-def registers are mutable bindings. GLOBAL_LOAD terminates a
+    // chain without marking (the emitter's global handling resolves the
+    // storage address separately).
+    fun scan_write_chains(mut this, func: IRFunction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        em.write_chain_regs = new _utils.List<string>();
+        em.alias_assign_regs = new _utils.List<string>();
+        em.wcr_map = new _utils.StrMap<i64>();
+        em.aar_map = new _utils.StrMap<i64>();
+        let n: i64 = cast<i64>(func.instructions.size());
+
+        // Def table: single-def register (name + kind) -> defining
+        // instruction index. A TEMP register ("%t2" = temp index 2) and a
+        // NAMED register (user variable "t2") share a DISPLAY name but are
+        // distinct registers, so entries are keyed by (name, kind) — two
+        // hashes (wch_def_t / wch_def_n). Value = instruction index+1;
+        // 0 = second definition seen (multi-def, excluded from chains).
+        // The old parallel-list table was linear-scanned per definition and
+        // per lookup (O(n²) string compares on the hot scan path).
+        let di: mut i64 = 0;
+        while (di < n) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(di)).some;
+            let res: Option<IRValue> = this.inst_defined_reg(inst);
+            if (res.is_some()) {
+                let name: string = res.some.display();
+                if (string_length(name) > 1 && string_char_code_at(name, 0) == 37) { // '%'
+                    if (res.some is IRValue.temp_reg) {
+                        let prev: i64 = em.wch_def_t.get(name, -1);
+                        if (prev > 0) {
+                            // Second definition: the register is mutable.
+                            em.wch_def_t.set(name, 0);
+                        } else if (prev < 0) {
+                            em.wch_def_t.set(name, di + 1);
+                        }
+                    } else {
+                        let prevn: i64 = em.wch_def_n.get(name, -1);
+                        if (prevn > 0) {
+                            em.wch_def_n.set(name, 0);
+                        } else if (prevn < 0) {
+                            em.wch_def_n.set(name, di + 1);
+                        }
+                    }
+                }
+            }
+            di = di + 1;
+        }
+
+        // Unbox alias handoff: emit_unbox produces an ALIAS VIEW of the box
+        // (mirrors the reference VM storing CAST results without copy). The
+        // ASSIGN binding an UNBOX result directly must therefore alias too —
+        // copying here would sever every mut-this interface method stub
+        // (`let self: mut Self = cast<mut Self>(this)`).
+        {
+            let ui: mut i64 = 0;
+            while (ui < n) {
+                let inst: IRInstruction = func.instructions.at(cast<u64>(ui)).some;
+                if (inst is IRInstruction.assign) {
+                    let src_name: string = inst.assign.src.display();
+                    let src_idx: i64 = if (inst.assign.src is IRValue.temp_reg) {
+                        em.wch_def_t.get(src_name, -1)
+                    } else {
+                        em.wch_def_n.get(src_name, -1)
+                    };
+                    if (src_idx > 0 && src_idx <= n) {
+                        let src_inst: IRInstruction = func.instructions.at(cast<u64>(src_idx - 1)).some;
+                        if (src_inst is IRInstruction.unbox) {
+                            em.alias_assign_regs.push(inst.assign.dest.display());
+                            em.aar_map.set(inst.assign.dest.display(), 1);
+                        }
+                    }
+                }
+                ui = ui + 1;
+            }
+        }
+
+        // Seeds: WRMBR owners, method receivers (CALL/CALL_VOID arg0 when the
+        // callee's first parameter is a MUTABLE `this` — an immutable-this
+        // method copies its receiver, so the register stays GC-promotable;
+        // CALL_VIRT's lookup object stays conservative: the concrete method's
+        // mutability is unknown at the scan).
+        let work: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        let wi: mut i64 = 0;
+        while (wi < n) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(wi)).some;
+            if (inst is IRInstruction.wrmbr) {
+                work.push(inst.wrmbr.obj);
+            }
+            if (inst is IRInstruction.call) {
+                if (cast<i64>(inst.call.args.size()) > 0) {
+                    let fpt: Option<FuncParamTypes> = em.calls.find_func_param_types(inst.call.func_name);
+                    if (fpt.is_some() && fpt.some.first_param_is_this && fpt.some.first_param_mut_this) {
+                        work.push(inst.call.args.at(cast<u64>(0)).some);
+                    }
+                }
+            }
+            if (inst is IRInstruction.call_void) {
+                if (cast<i64>(inst.call_void.args.size()) > 0) {
+                    let fpt: Option<FuncParamTypes> = em.calls.find_func_param_types(inst.call_void.func_name);
+                    if (fpt.is_some() && fpt.some.first_param_is_this && fpt.some.first_param_mut_this) {
+                        work.push(inst.call_void.args.at(cast<u64>(0)).some);
+                    }
+                }
+            }
+            if (inst is IRInstruction.call_virt) {
+                // NOT seeded: the lookup object passes as a pointer copy
+                // (writes go through the pointer; value-class unbox idioms
+                // are aliased separately via alias_assign_regs). Seeding it
+                // made every interface-call receiver un-promotable — a bare
+                // SSA ref crossing the call's safepoint poll, reading a
+                // recycled-chunk tombstone after promotion (cover-retirement
+                // crash class).
+            }
+            wi = wi + 1;
+        }
+
+        // Propagate to defining instructions (worklist, no recursion).
+        let visited: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
+        while (cast<i64>(work.size()) > 0) {
+            let val: IRValue = work.at(cast<u64>(cast<i64>(work.size()) - 1)).some;
+            work.pop();
+            // Only TEMP registers qualify: named registers are bindings and
+            // must keep their copy semantics (`let q = e.a; q.x = 9` writes
+            // q's own copy, not e's payload).
+            if (!(val is IRValue.temp_reg)) { continue; }
+            let name: string = val.display();
+            if (visited.get(name, -1) == 1) { continue; }
+            visited.set(name, 1);
+            // Multi-def in EITHER kind excludes the name from chains.
+            if (em.wch_def_t.get(name, -1) == 0 || em.wch_def_n.get(name, -1) == 0) { continue; }
+            let def_idx: i64 = em.wch_def_t.get(name, -1) - 1;
+            if (def_idx < 0 || def_idx >= n) { continue; }
+            let def_inst: IRInstruction = func.instructions.at(cast<u64>(def_idx)).some;
+            if (def_inst is IRInstruction.rdmbr) {
+                em.write_chain_regs.push(name);
+                em.wcr_map.set(name, 1);
+                work.push(def_inst.rdmbr.obj);
+            } else if (def_inst is IRInstruction.rdenum) {
+                em.write_chain_regs.push(name);
+                em.wcr_map.set(name, 1);
+                work.push(def_inst.rdenum.enum_value);
+            } else if (def_inst is IRInstruction.assign) {
+                em.alias_assign_regs.push(name);
+                em.aar_map.set(name, 1);
+                work.push(def_inst.assign.src);
+            } else if (def_inst is IRInstruction.global_load) {
+                // Marked (emit_global_load hands out the global's address for
+                // lvalue addressing) but the chain terminates — the global IS
+                // the storage.
+                em.write_chain_regs.push(name);
+                em.wcr_map.set(name, 1);
+            }
+        }
+    }
+
+    // Pin-mirror clear points (RSS): the LAST instruction that reads each
+    // chain-pin register. Reference sites mirror the chain shape exactly —
+    // the consumers (WRMBR owner, every call argument, CALL_VIRT lookup) and
+    // the chain-feeding defs (RDMBR obj, RDENUM enum_value, ASSIGN src,
+    // UNBOX operand). Must run AFTER scan_gc_regs granted the mirrors.
+    // An instruction that reads NONE of them leaves every mirror alone; a
+    // register with no reference at all (dead chain) keeps its mirror until
+    // frame exit — same as before this pass existed.
+    // Every IRValue operand (USE) position an instruction's emission reads.
+    // The pin-mirror liveness scan MUST see all of them: a missed consumer
+    // nulls %reg.gcpin before the register's REAL last read, and the
+    // unpinned window lets a minor promote the target out from under the
+    // still-live SSA/gep copy — the next read/write through it then lands
+    // in recycled chunk memory (heap corruption surfacing as GC ref-map
+    // aborts, SIGSEGVs, or wrong compiler state; the json/hashmap pass3
+    // corruption family). Result registers are definitions, not uses. When
+    // a new IR instruction kind grows operand positions, extend this list —
+    // the clear pass is only as safe as this enumeration is complete.
+    fun gcpin_use_operands(mut this, inst: IRInstruction) -> _utils.List<IRValue> {
+        let out: mut _utils.List<IRValue> = new _utils.List<IRValue>();
+        if (inst is IRInstruction.assign) {
+            out.push(inst.assign.src);
+        } else if (inst is IRInstruction.cast_inst) {
+            out.push(inst.cast_inst.operand);
+        } else if (inst is IRInstruction.binop) {
+            out.push(inst.binop.left);
+            out.push(inst.binop.right);
+        } else if (inst is IRInstruction.unaryop) {
+            out.push(inst.unaryop.operand);
+        } else if (inst is IRInstruction.rdmbr) {
+            out.push(inst.rdmbr.obj);
+        } else if (inst is IRInstruction.wrmbr) {
+            out.push(inst.wrmbr.obj);
+            out.push(inst.wrmbr.value);
+        } else if (inst is IRInstruction.br_cond) {
+            out.push(inst.br_cond.cond);
+        } else if (inst is IRInstruction.ret) {
+            out.push(inst.ret.value);
+        } else if (inst is IRInstruction.call) {
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(inst.call.args.size())) {
+                out.push(inst.call.args.at(cast<u64>(ai)).some);
+                ai = ai + 1;
+            }
+        } else if (inst is IRInstruction.call_void) {
+            let ai2: mut i64 = 0;
+            while (ai2 < cast<i64>(inst.call_void.args.size())) {
+                out.push(inst.call_void.args.at(cast<u64>(ai2)).some);
+                ai2 = ai2 + 1;
+            }
+        } else if (inst is IRInstruction.call_indirect) {
+            out.push(inst.call_indirect.callee);
+            let ai3: mut i64 = 0;
+            while (ai3 < cast<i64>(inst.call_indirect.args.size())) {
+                out.push(inst.call_indirect.args.at(cast<u64>(ai3)).some);
+                ai3 = ai3 + 1;
+            }
+        } else if (inst is IRInstruction.call_virt) {
+            out.push(inst.call_virt.obj);
+            let ai4: mut i64 = 0;
+            while (ai4 < cast<i64>(inst.call_virt.args.size())) {
+                out.push(inst.call_virt.args.at(cast<u64>(ai4)).some);
+                ai4 = ai4 + 1;
+            }
+        } else if (inst is IRInstruction.new_inst) {
+            let ai5: mut i64 = 0;
+            while (ai5 < cast<i64>(inst.new_inst.args.size())) {
+                out.push(inst.new_inst.args.at(cast<u64>(ai5)).some);
+                ai5 = ai5 + 1;
+            }
+        } else if (inst is IRInstruction.new_enum) {
+            if (inst.new_enum.payload.is_some()) {
+                out.push(inst.new_enum.payload.some);
+            }
+        } else if (inst is IRInstruction.isenum) {
+            out.push(inst.isenum.enum_value);
+            out.push(inst.isenum.variant_idx);
+        } else if (inst is IRInstruction.rdenum) {
+            out.push(inst.rdenum.enum_value);
+        } else if (inst is IRInstruction.isinstance) {
+            out.push(inst.isinstance.obj);
+        } else if (inst is IRInstruction.box) {
+            out.push(inst.box.operand);
+        } else if (inst is IRInstruction.unbox) {
+            out.push(inst.unbox.operand);
+        } else if (inst is IRInstruction.global_store) {
+            out.push(inst.global_store.value);
+        }
+        return out;
+    }
+
+    fun scan_gcpin_clears(mut this, func: IRFunction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        em.gcpin_clear_idx = new _utils.List<i64>();
+        em.gcpin_clear_name = new _utils.List<string>();
+        em.gcpin_clear_cursor = 0;
+        if (cast<i64>(em.gc_chain_pin_regs.size()) == 0) { return; }
+        let n: i64 = cast<i64>(func.instructions.size());
+        let last: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
+        let ii: mut i64 = 0;
+        while (ii < n) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            let ref_names: _utils.List<IRValue> = this.gcpin_use_operands(inst);
+            let ri: mut i64 = 0;
+            while (ri < cast<i64>(ref_names.size())) {
+                let rv: IRValue = ref_names.at(cast<u64>(ri)).some;
+                // Alias resolution: a consumer may name the register through
+                // an alias map entry — mirror the def-side aliasing by also
+                // accepting the raw display name (chain temps are the names
+                // scan_gc_regs granted mirrors to).
+                let rn: string = rv.display();
+                if (em.gcpin_map.get(rn, -1) == 1) {
+                    last.set(rn, ii + 1);
+                }
+                ri = ri + 1;
+            }
+            ii = ii + 1;
+        }
+        // Flatten in instruction order: a second walk emitting an entry each
+        // time the reference's recorded last-use equals the current index.
+        // StrMap stores index+1 (0 would read as "missing" on some paths).
+        ii = 0;
+        while (ii < n) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            let ref_names2: _utils.List<IRValue> = this.gcpin_use_operands(inst);
+            let ri2: mut i64 = 0;
+            while (ri2 < cast<i64>(ref_names2.size())) {
+                let rn2: string = ref_names2.at(cast<u64>(ri2)).some.display();
+                if (em.gcpin_map.get(rn2, -1) == 1 && last.get(rn2, -1) == ii + 1) {
+                    // Same-block guard: only clear when NO basic-block
+                    // boundary sits between the def and this last use. A
+                    // loop-carried chain (def outside, consumer inside a
+                    // loop) re-reads the SSA value on every iteration —
+                    // clearing after the first would expose the later
+                    // iterations' polls. The def table holds single-def
+                    // chains (index+1); a miss means we cannot prove the
+                    // window — keep the mirror.
+                    let def_plus: i64 = em.wch_def_t.get(rn2, -1);
+                    let clear_ok: mut bool = false;
+                    if (def_plus > 0) {
+                        clear_ok = true;
+                        let bi: mut i64 = def_plus - 1;
+                        while (bi <= ii) {
+                            let bin: IRInstruction = func.instructions.at(cast<u64>(bi)).some;
+                            if (bi > def_plus - 1 && bin is IRInstruction.label_inst) {
+                                clear_ok = false;
+                                break;
+                            }
+                            bi = bi + 1;
+                        }
+                    }
+                    if (clear_ok) {
+                        em.gcpin_clear_idx.push(ii);
+                        em.gcpin_clear_name.push(rn2);
+                    }
+                }
+                ri2 = ri2 + 1;
+            }
+            ii = ii + 1;
+        }
+    }
+
+    // --- Type helpers ---
+
+    // The scan-time home type of a GC-promoted register (from the parallel
+    // gc_only_regs/gc_reg_llvm_types lists), "" when not promoted. Unlike
+    // get_llvm_type this cannot be clobbered by later def-site registrations.
+    fun gc_only_home(this, reg_name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let m: i64 = em.gconly_home_map.get(reg_name, -1);
+        if (m > 0) {
+            return em.gc_reg_llvm_types.at(cast<u64>(m - 1)).some;
+        }
+        return "";
+    }
+}
+
+}

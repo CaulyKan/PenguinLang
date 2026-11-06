@@ -3,6 +3,7 @@
 Phase 5a: `--define DEBUG=1` on the EmperorPenguin command line seeds the compile-time option store, so `#if (#defined("DEBUG"))` takes the then-branch. (Pass2/3 arg routing: `build/bootstrap/pass2 --define DEBUG=1 <src> -o <exe>`.)
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

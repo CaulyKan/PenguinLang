@@ -1,0 +1,240 @@
+// Shared data structures of the LLVM emission pipeline (batch 0.1 split of
+// LLVMEmitter.penguin): layout tables, string-literal/register mappings, GC
+// frame slots, sret-elision records, type-id constants and function signature
+// summaries.
+namespace emperor {
+
+
+class FieldLayout {
+    field_name: string = "";
+    llvm_type: string = "";
+    byte_offset: i64 = 0;
+    field_index: i64 = 0;
+    bound_type: Option<BoundType> = new Option<BoundType>.none();
+
+    fun new(mut this, field_name: string, llvm_type: string, byte_offset: i64, field_index: i64) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(field_name=" + cast<string>(field_name) + ", llvm_type=" + cast<string>(llvm_type) + ", byte_offset=" + cast<string>(byte_offset) + ", field_index=" + cast<string>(field_index) + ")");
+ }
+        this.field_name = field_name;
+        this.llvm_type = llvm_type;
+        this.byte_offset = byte_offset;
+        this.field_index = field_index;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "FieldLayout{name=" + this.field_name + ", type=" + this.llvm_type + ", offset=" + cast<string>(this.byte_offset) + "}";
+    }
+}
+
+class InterfaceVTable {
+    interface_name: string = "";
+    method_ptrs: mut _utils.List<string> = new _utils.List<string>();
+
+    fun new(mut this, interface_name: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(interface_name=" + cast<string>(interface_name) + ")");
+ }
+        this.interface_name = interface_name;
+    }
+}
+
+// Native-array metadata entry: one per element IR type used by an
+// ARRAY_NEW_ZEROED. The array object layout is { ptr metadata, i64 length,
+// elements... } (elements at +16, stride-aligned); instance_size is 0 =
+// variable-length. The refmap program is a single REFARR node (kind 3):
+//   [total_len, 3, elem_stride, elem_sub, ...elem_sub's node ints...]
+// where elem_sub describes ONE element (0 = no pointers — the precise no-op
+// for primitive elements). The walker reads length from object+8.
+class ArrayMetaEntry {
+    elem_ir: string = "";
+    meta_name: string = "";
+    elem_llvm: string = "";
+    stride: i64 = 0;
+    // Value-class element: slots hold the struct INLINE (whole-struct copies
+    // in/out, ICopy value semantics) and get/set operate through memcpy.
+    is_value_elem: mut bool = false;
+    refmap_name: string = "";
+    // Serialized refmap program (without the leading total-length slot).
+    refmap_ints: mut _utils.List<i64> = new _utils.List<i64>();
+}
+
+class ClassLayout {
+    type_name: string = "";
+    is_value_type: bool = true;
+    llvm_struct_type: string = "";
+    fields: mut _utils.List<FieldLayout> = new _utils.List<FieldLayout>();
+    sizeof_object: mut i64 = 0;
+    has_metadata: bool = false;
+    interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
+    // True while the layout's fields/size are being computed (on-demand
+    // recursive layout building). llvm_type_size on a building layout means a
+    // value-type layout cycle — reported as E_SIZE_CYCLE.
+    is_building: mut bool = false;
+
+    fun new(mut this, type_name: string, is_value_type: bool, has_metadata: bool) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(type_name=" + cast<string>(type_name) + ", is_value_type=" + cast<string>(is_value_type) + ", has_metadata=" + cast<string>(has_metadata) + ")");
+ }
+        this.type_name = type_name;
+        this.is_value_type = is_value_type;
+        this.has_metadata = has_metadata;
+        this.llvm_struct_type = "%class." + type_name;
+    }
+
+    fun total_vtable_entries(this) -> i64 {
+        _utils.trace_enter("Enter total_vtable_entries");
+        let count: mut i64 = 0;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.interface_vtables.size())) {
+            count = count + cast<i64>(this.interface_vtables.at(cast<u64>(i)).some.method_ptrs.size());
+            i = i + 1;
+        }
+        return count;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "ClassLayout{name=" + this.type_name + ", is_value=" + cast<string>(this.is_value_type) + ", size=" + cast<string>(this.sizeof_object) + ", fields=" + cast<string>(this.fields.size()) + "}";
+    }
+}
+
+class EnumVariantLayout {
+    name: string = "";
+    index: i64 = 0;
+    payload_llvm_type: string = "";
+    payload_bound_type: mut Option<BoundType> = new Option<BoundType>.none();
+
+    fun new(mut this, name: string, index: i64, payload_llvm_type: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(name=" + cast<string>(name) + ", index=" + cast<string>(index) + ", payload_llvm_type=" + cast<string>(payload_llvm_type) + ")");
+ }
+        this.name = name;
+        this.index = index;
+        this.payload_llvm_type = payload_llvm_type;
+    }
+}
+
+class EnumLayout {
+    type_name: string = "";
+    llvm_struct_type: string = "";
+    variants: mut _utils.List<EnumVariantLayout> = new _utils.List<EnumVariantLayout>();
+    payload_llvm_type: string = "";
+    has_payload: bool = false;
+    interface_vtables: mut _utils.List<InterfaceVTable> = new _utils.List<InterfaceVTable>();
+    // See ClassLayout.is_building.
+    is_building: mut bool = false;
+
+    fun new(mut this, type_name: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(type_name=" + cast<string>(type_name) + ")");
+ }
+        this.type_name = type_name;
+        this.llvm_struct_type = "%enum." + type_name;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "EnumLayout{name=" + this.type_name + ", has_payload=" + cast<string>(this.has_payload) + ", payload_type=" + this.payload_llvm_type + ", variants=" + cast<string>(this.variants.size()) + "}";
+    }
+}
+
+class StringLitEntry {
+    id: mut i64 = 0;
+    value: mut string = "";
+    fun new(mut this, id: i64, value: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(id=" + cast<string>(id) + ", value=" + cast<string>(value) + ")");
+ }
+        this.id = id;
+        this.value = value;
+    }
+    fun global_name(this) -> string {
+        _utils.trace_enter("Enter global_name");
+        return "@str_" + cast<string>(this.id);
+    }
+}
+
+class RegMapping {
+    ir_name: mut string = "";
+    llvm_value: mut string = "";
+    fun new(mut this, ir_name: string, llvm_value: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(ir_name=" + cast<string>(ir_name) + ", llvm_value=" + cast<string>(llvm_value) + ")");
+ }
+        this.ir_name = ir_name;
+        this.llvm_value = llvm_value;
+    }
+}
+
+// GC v2 phase 2: one precise-root slot of the current function's frame
+// descriptor. map_operand "ptr null" = a bare pointer home (the alloca holds
+// one reference: ref/string register, receiver mirror); "ptr @X_refmap" = an
+// inline struct home walked with that ref-map (value-class/enum register,
+// byval aggregate parameter, value-class parameter copy).
+class GcSlotEntry {
+    addr: mut string = "";
+    map_operand: mut string = "";
+    fun new(mut this, addr: string, map_operand: string) {
+        this.addr = addr;
+        this.map_operand = map_operand;
+    }
+}
+
+// Records a CALL whose sret return value flows directly into a register via the
+// immediately-following ASSIGN (i.e. `let x = func()`). Such a pair is an RVO
+// (return-value-optimization) candidate: the callee can write its return value
+// straight into the destination's storage, avoiding a separate sret buffer and
+// the copy that overflowed mutable-reg allocas (the pass2 binding crash).
+class SretElision {
+    call_result: mut string = "";      // the CALL's result register (e.g. %t12)
+    dest_reg: mut string = "";         // the ASSIGN destination (e.g. %bound_init)
+    assign_index: mut i64 = 0;         // instruction index of the ASSIGN (to skip it)
+    callee_sret_llvm_type: mut string = "";  // LLVM struct type returned via sret
+    fun new(mut this, call_result: string, dest_reg: string, assign_index: i64, callee_sret_llvm_type: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(call_result=" + cast<string>(call_result) + ", dest_reg=" + cast<string>(dest_reg) + ", assign_index=" + cast<string>(assign_index) + ")");
+ }
+        this.call_result = call_result;
+        this.dest_reg = dest_reg;
+        this.assign_index = assign_index;
+        this.callee_sret_llvm_type = callee_sret_llvm_type;
+    }
+}
+
+class TypeIdConstant {
+    global_name: mut string = "";
+    display_name: mut string = "";
+    len: mut i64 = 0;
+    fun new(mut this, global_name: string, display_name: string, len: i64) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(global_name=" + cast<string>(global_name) + ", display_name=" + cast<string>(display_name) + ", len=" + cast<string>(len) + ")");
+ }
+        this.global_name = global_name;
+        this.display_name = display_name;
+        this.len = len;
+    }
+}
+
+class FuncParamTypes {
+    func_name: string = "";
+    param_types: mut _utils.List<string> = new _utils.List<string>();
+    // IR-level return type ("void", "i32", "ref<string>", ...) — needed by the
+    // function-value thunk synthesis (ensure_funval) to mirror the callee's
+    // sret/scalar return convention.
+    ret_ir_type: mut string = "void";
+    // True when the callee's first parameter is named "this" — the receiver.
+    // The write-chain pre-scan uses this to decide whether a CALL's arg0 is a
+    // method receiver (must alias the caller's slot) or a plain by-value
+    // argument (copy).
+    first_param_is_this: mut bool = false;
+    // True when that receiver is MUTABLE (`mut this`) — only a mut receiver
+    // must alias its slot; an immutable-this method (`fun size(this)`)
+    // semantically copies, so its receiver register stays promotable onto
+    // the GC storage model (crossing a safepoint poll as a bare SSA load
+    // left it reading a recycled-chunk tombstone — the 3c cover-retirement
+    // crash in MonomorphizePass).
+    first_param_mut_this: mut bool = false;
+
+    fun new(mut this, func_name: string) {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter new(func_name=" + cast<string>(func_name) + ")");
+ }
+        this.func_name = func_name;
+    }
+    fun to_string(this) -> string {
+        _utils.trace_enter("Enter to_string");
+        return "FuncParamTypes{name=" + this.func_name + ", params=" + cast<string>(this.param_types.size()) + "}";
+    }
+}
+
+
+}

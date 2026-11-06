@@ -1,0 +1,6 @@
+namespace app {
+#template(T: type)
+fun badm(x: T) -> i64 {
+    return x.not_a_member();
+}
+}

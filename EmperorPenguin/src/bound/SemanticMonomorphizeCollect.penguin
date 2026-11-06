@@ -1,0 +1,990 @@
+// Generic instantiation COLLECTION (batch 0.3 mechanical split of
+// SemanticMonomorphize.penguin — method bodies moved verbatim, see the
+// driver class there): the bound-tree and AST walkers that gather
+// class/enum/interface (collect_instantiations_from_def /
+// collect_from_ast_expr_safe) and function (collect_func_inst_from_expr)
+// instantiation requests for the pass-3 fixpoint. Pure traversals —
+// immutable-this methods.
+//
+// ── The TWO-SOURCE shape (batch 3.4 decision: KEPT, not single-sourced) ──
+// The collector reads two different sources per round, and the difference
+// is LOAD-BEARING for the specialization set:
+//   * the BOUND-TREE source (collect_generic_instantiations over
+//     result.definitions) scans SPECIALIZED classes' impl blocks + their
+//     method bodies' TEMPLATE AST (ast_source) with the SPECIALIZED class's
+//     scope — the transitive-specialization path (a spec's body instantiates
+//     other generics with the now-concrete params; the template file's AST
+//     is the only body text that exists, but the scope view is the
+//     specialized one);
+//   * the AST source (collect_generic_instantiations_from_ast over
+//     unit.definitions) scans the raw user AST with the def's CLASS/file
+//     scope — the "class-scope PROJECTION": a method's own template params
+//     are invisible there, so an instantiation whose args mention them
+//     resolves to a template-param dummy and is SKIPPED (W1), and method
+//     names ambiguous across classes are SKIPPED wholesale
+//     (is_ambiguous_method_template) — both left to pass-8's
+//     receiver-inference paths. This projection is exactly why the EP
+//     self-compile records zero fixpoint-func instances: every generic
+//     method call the fixpoint could see is deferred to bind time.
+// Redesign A4's end state single-sources this ("per-file ExprArena scan +
+// the template file's arena view with the specialized scope") — but the
+// single source must then REPRODUCE this projection (a plain function-scope
+// view would resolve MORE names, grow the collection set, and change the
+// instance table). Until the arena + the visibility-projection machinery
+// exist (batch 4/6), the two-source shape is the behavior-preserving form;
+// the instances=469 byte-exact reconciliation is the judge for any future
+// unification attempt.
+namespace emperor {
+
+class MonoCollect {
+    // Back-reference to the owning pass (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern, mirroring the batch 0.1/0.2
+    // splits): all shared monomorphize state stays on MonomorphizePass
+    // (whose own model field is reached via owner).
+    owner: mut Option<MonomorphizePass> = new Option<MonomorphizePass>.none();
+
+    fun new(mut this, owner: mut MonomorphizePass) {
+        this.owner = new Option<MonomorphizePass>.some(owner);
+    }
+
+    fun collect_generic_instantiations(this, defs: _utils.List<BoundDefinition>, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_generic_instantiations");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            this.collect_instantiations_from_def(def, instantiations);
+            i = i + 1;
+        }
+    }
+
+    fun collect_instantiations_from_def(this, def: BoundDefinition, instantiations: mut _utils.List<BoundType>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter collect_instantiations_from_def");
+        // O1: the attribution context for this def's request occurrences
+        // (re-set on every recursion — namespace children each set their
+        // own). Attribution-less shapes ("" — namespaces, initial routines,
+        // synthesized defs) record nothing (both collection modes use this
+        // same rule, so the safety-net comparison stays consistent).
+        owner.attrib_file = bound_def_source_file(def);
+        if (def is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = def.class_def;
+            // Skip template classes - their type params produce error types
+            if (cls.is_generic_template) { return; }
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cls.fields.size())) {
+                let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+                if (fd is BoundDefinition.class_field) {
+                    this.try_add_instantiation(fd.class_field.bound_type, instantiations);
+                }
+                fi = fi + 1;
+            }
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(mi)).some;
+                if (md is BoundDefinition.function_def) {
+                    this.try_add_instantiation(md.function_def.return_type, instantiations);
+                    let pi: mut i64 = 0;
+                    while (pi < cast<i64>(md.function_def.parameters.size())) {
+                        this.try_add_instantiation(md.function_def.parameters.at(cast<u64>(pi)).some.bound_type, instantiations);
+                        pi = pi + 1;
+                    }
+                }
+                mi = mi + 1;
+            }
+            // Collect generic interface instantiations from `impl IFoo<u8>` blocks
+            // so the interface (and its default methods) get specialized.
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cls.interface_impls.size())) {
+                let id: BoundDefinition = cls.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    this.try_add_instantiation(id.impl_def.interface_type, instantiations);
+                }
+                ii = ii + 1;
+            }
+            // Transitive specialization: a specialized class's METHOD BODIES may
+            // instantiate OTHER generic classes with this class's (now concrete)
+            // type params, e.g. Holder<i32>.use() { new Wrap<i32>(...) }. Scan the
+            // template AST body (ast_source) with THIS specialized class's scope so
+            // those inner instantiations get collected and specialized in a later
+            // monomorphization iteration. Templates are skipped above; ast_source is
+            // set only for specialized classes, so non-generic classes aren't rescanned.
+            if (cls.ast_source.is_some() && cls.scope.is_some()) {
+                if (cls.ast_source.some is Definition.class_def) {
+                    let ast_cls: ClassDefinition = cls.ast_source.some.class_def;
+                    let body_scope: BoundScope = cls.scope.some;
+                    let bmi: mut i64 = 0;
+                    while (bmi < cast<i64>(ast_cls.members.size())) {
+                        let bm: Definition = ast_cls.members.at(cast<u64>(bmi)).some;
+                        if (bm is Definition.function_def) {
+                            if (bm.function_def.body.is_some()) {
+                                this.collect_from_ast_expr_safe(bm.function_def.body.some, body_scope, instantiations);
+                            }
+                        }
+                        if (bm is Definition.impl_def) {
+                            let ifn: mut i64 = 0;
+                            while (ifn < cast<i64>(bm.impl_def.functions.size())) {
+                                let im: Definition = bm.impl_def.functions.at(cast<u64>(ifn)).some;
+                                if (im is Definition.function_def) {
+                                    if (im.function_def.body.is_some()) {
+                                        this.collect_from_ast_expr_safe(im.function_def.body.some, body_scope, instantiations);
+                                    }
+                                }
+                                ifn = ifn + 1;
+                            }
+                        }
+                        bmi = bmi + 1;
+                    }
+                }
+            }
+        }
+        if (def is BoundDefinition.function_def) {
+            let func: BoundFunctionDefinition = def.function_def;
+            this.try_add_instantiation(func.return_type, instantiations);
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(func.parameters.size())) {
+                this.try_add_instantiation(func.parameters.at(cast<u64>(pi)).some.bound_type, instantiations);
+                pi = pi + 1;
+            }
+        }
+        if (def is BoundDefinition.initial_routine) {
+            let init: BoundInitialRoutineDefinition = def.initial_routine;
+            if (init.scope.is_some()) {
+                this.collect_instantiations_from_scope(init.scope.some, instantiations);
+            }
+        }
+        if (def is BoundDefinition.global_var_def) {
+            // A global's DECLARED type can be the only mention of a generic
+            // instantiation (e.g. `let q : mut Fifo<i64> = ...` at file scope —
+            // the initializer's new-expression is not scanned from global-var
+            // defs): collect it or the specialization never gets a layout.
+            // The initializer resolves in the global's OWN scope (a global can
+            // live inside a namespace, e.g. emperor.MetaHost's
+            // List<BoundTypeArg> — resolving its args from the global scope
+            // would mis-report E_RESOLVE_TYPE every fixpoint round).
+            this.try_add_instantiation(def.global_var_def.bound_type, instantiations);
+            if (def.global_var_def.ast_source.is_some() && def.global_var_def.ast_source.some is Definition.global_var) {
+                let ginit: Option<Expression> = def.global_var_def.ast_source.some.global_var.initializer;
+                if (ginit.is_some()) {
+                    let gscope: mut BoundScope = if (def.global_var_def.scope.is_some()) {
+                        def.global_var_def.scope.some
+                    } else {
+                        owner.model.some.global_scope
+                    };
+                    this.collect_from_ast_expr_safe(ginit.some, gscope, instantiations);
+                }
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(ns.children.size())) {
+                this.collect_instantiations_from_def(ns.children.at(cast<u64>(ci)).some, instantiations);
+                ci = ci + 1;
+            }
+        }
+    }
+
+    fun collect_instantiations_from_scope(this, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_instantiations_from_scope");
+        let si: mut i64 = 0;
+        while (si < cast<i64>(scope.symbols.size())) {
+            let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
+            if (sym is BoundSymbol.variable) {
+                this.try_add_instantiation(sym.variable.bound_type, instantiations);
+            }
+            si = si + 1;
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(scope.children.size())) {
+            this.collect_instantiations_from_scope(scope.children.at(cast<u64>(ci)).some, instantiations);
+            ci = ci + 1;
+        }
+    }
+
+    fun try_add_instantiation(this, bt: BoundType, instantiations: mut _utils.List<BoundType>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter try_add_instantiation");
+        if (cast<i64>(bt.generic_args.size()) > 0 && bt.type_definition.is_some()) {
+            // O1: record the occurrence for the per-file request cache —
+            // EVERY occurrence (the dedup-skip branch included): attribution
+            // is occurrence data, not first-collector-wins, so a request
+            // appearing in two files lands in both files' buckets.
+            owner.attrib_note(owner.attrib_type_key(bt));
+            let already: mut bool = false;
+            let j: mut i64 = 0;
+            while (j < cast<i64>(instantiations.size())) {
+                if (bt.is_same_type(instantiations.at(cast<u64>(j)).some)) {
+                    already = true;
+                }
+                j = j + 1;
+            }
+            if (already) {
+                owner.model.some.trace("monomorphize instantiation already exists (skip): " + bt.display_name());
+            } else {
+                instantiations.push(bt);
+                owner.model.some.trace("monomorphize collect instantiation " + bt.display_name());
+            }
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            let arg: BoundTypeArg = bt.generic_args.at(cast<u64>(i)).some;
+            // Value args aren't types whose instantiation needs collecting.
+            if (!arg_is_value(arg)) {
+                this.try_add_instantiation(arg_as_bound_type(arg), instantiations);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun collect_generic_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        this.collect_generic_instantiations_from_ast_impl(defs, scope, true, false, instantiations);
+    }
+
+    // gate_dirty (O1): when true, only defs whose source file is in
+    // owner.inc_files are scanned (the incremental sweeps — everything else
+    // is provably unchanged and its requests are already satisfied). The
+    // gate applies at every recursion level (namespace children carry their
+    // own source files; a gated namespace's children all pass anyway — the
+    // parser never mixes files inside one AST def).
+    fun collect_generic_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, scope: BoundScope, top_level: bool, gate_dirty: bool, instantiations: mut _utils.List<BoundType>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter collect_generic_instantiations_from_ast");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: Definition = defs.at(cast<u64>(i)).some;
+            if (gate_dirty && !owner.inc_file_contains(ast_def_filename(def))) {
+                i = i + 1;
+                continue;
+            }
+            // O1: attribution context for this def's AST-body occurrences.
+            owner.attrib_file = ast_def_filename(def);
+            // Where this def's expressions resolve names: top-level defs live in
+            // their file namespace; nested (namespace-child) defs in the
+            // enclosing namespace scope passed in as `scope`.
+            let def_scope: BoundScope = if (top_level && !(def is Definition.namespace_def) && !owner.model.some.top_level_in_global) {
+                top_level_def_scope(def, scope)
+            } else {
+                scope
+            };
+            if (def is Definition.initial_routine) {
+                if (def.initial_routine.body.is_some()) {
+                    this.collect_from_ast_expr_safe(def.initial_routine.body.some, def_scope, instantiations);
+                }
+            }
+            if (def is Definition.function_def) {
+                // Top-level functions (not class members): their bodies can
+                // instantiate generics too (`new std.Array<i64,4>()` inside a
+                // plain function). Without this the instantiation was never
+                // collected, the specialization never entered the bound tree,
+                // emit_new found no class layout, and the allocation was
+                // silently skipped (leaving method-call this-registers
+                // undefined). Class members are covered below; initial
+                // routines above.
+                if (def.function_def.body.is_some()) {
+                    this.collect_from_ast_expr_safe(def.function_def.body.some, def_scope, instantiations);
+                }
+            }
+            if (def is Definition.class_def) {
+                // Skip template class bodies - their type params aren't resolvable here
+                if (def.class_def.template_decl.is_none()) {
+                    let members: _utils.List<Definition> = def.class_def.members;
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(members.size())) {
+                        let member: Definition = members.at(cast<u64>(mi)).some;
+                        if (member is Definition.function_def) {
+                            if (member.function_def.body.is_some()) {
+                                this.collect_from_ast_expr_safe(member.function_def.body.some, def_scope, instantiations);
+                            }
+                        }
+                        mi = mi + 1;
+                    }
+                }
+            }
+            if (def is Definition.namespace_def) {
+                // Namespace children resolve in the namespace scope (merged by
+                // name across files, so sibling types are its local symbols).
+                // The scope is found by NAME, never by index into the bound
+                // defs: libmeta direct injection inserts bound defs with no
+                // AST counterpart, shifting every later bound index and
+                // mis-scoping all files compiled after the lib slot (their
+                // bare namespace-qualified names stopped resolving).
+                let ns_lookup: Option<BoundScope> = scope.lookup_namespace(def.namespace_def.name);
+                let ns_scope: BoundScope = if (ns_lookup.is_some()) { ns_lookup.some } else { scope };
+                this.collect_generic_instantiations_from_ast_impl(def.namespace_def.children, ns_scope, false, gate_dirty, instantiations);
+            }
+            i = i + 1;
+        }
+    }
+
+    // ── O1: the incremental (gated) sweeps ──────────────────────────────────
+    //
+    // The fast-lane replacement for the two full sweeps (see
+    // MonomorphizePass's inc_* block for the equivalence argument). The
+    // bound-tree side scans ONLY: (a) round 0 — the session-captured dirty
+    // bound segments (the fast lane's exact top-level def pairing) and every
+    // append-zone def not yet scanned (the previous transaction's pass-8
+    // on-demand creations); (b) later rounds — uncovered append-zone defs
+    // only (= the previous round's new specializations, the cascade entry).
+    // Ungated namespaces are skipped ENTIRELY: every bound namespace def
+    // belongs to one file (bind_namespace_def creates one per file's AST
+    // namespace block and fills it only with that file's children), so an
+    // ungated namespace's subtree is entirely clean.
+    fun collect_incremental_types(this, unit: CompilationUnit, result: BoundCompilationUnit, instantiations: mut _utils.List<BoundType>, include_dirty: bool) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter collect_incremental_types");
+        let append_from: i64 = cast<i64>(unit.definitions.size()) + owner.model.some.libmeta_total_injected();
+        let defs: _utils.List<BoundDefinition> = result.definitions;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            let uncovered_append: bool = i >= append_from && !owner.scan_is_covered(bound_def_full_name(def));
+            if (uncovered_append || (include_dirty && owner.inc_range_contains(i))) {
+                owner.stat_inc_scanned = owner.stat_inc_scanned + 1;
+                this.collect_instantiations_from_def(def, instantiations);
+            }
+            i = i + 1;
+        }
+        // AST side: only the dirty files' bodies (the fast lane swapped the
+        // new texts into unit.definitions; clean files are provably
+        // unchanged).
+        this.collect_generic_instantiations_from_ast_impl(unit.definitions, result.global_scope, true, true, instantiations);
+    }
+
+    fun collect_incremental_funs(this, unit: CompilationUnit, result: BoundCompilationUnit, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_incremental_funs");
+        this.collect_function_instantiations_from_ast_impl(unit.definitions, result.global_scope, true, true, func_instantiations);
+    }
+
+    // Recurse into a statement's sub-expressions (and nested statements) so that
+    // generic instantiations inside while/if/for bodies are collected. Without this,
+    // `new Foo<X>()` inside a loop body was missed by monomorphization collection
+    // → never specialized → emit_new found no layout → use of undefined value.
+    fun collect_from_ast_statement_safe(this, stmt: Statement, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.expression.expression.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.block_expr.expression.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.assignment.target.some, scope, instantiations);
+            }
+            if (stmt.assignment.value.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.assignment.value.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.let_decl) {
+            if (stmt.let_decl.initializer.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.let_decl.initializer.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.return_stmt.value.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.if_stmt.condition.some, scope, instantiations);
+            }
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.if_stmt.then_statement.some, scope, instantiations);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.if_stmt.else_statement.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.while_stmt.condition.some, scope, instantiations);
+            }
+            if (stmt.while_stmt.body.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.while_stmt.body.some, scope, instantiations);
+            }
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.iterable.is_some()) {
+                this.collect_from_ast_expr_safe(stmt.for_stmt.iterable.some, scope, instantiations);
+            }
+            if (stmt.for_stmt.body.is_some()) {
+                this.collect_from_ast_statement_safe(stmt.for_stmt.body.some, scope, instantiations);
+            }
+        }
+    }
+
+    fun collect_from_ast_expr_safe(this, expr: Expression, scope: BoundScope, instantiations: mut _utils.List<BoundType>) {
+        _utils.trace_enter("Enter collect_from_ast_expr_safe");
+        if (expr is Expression.new_expr) {
+            let ne: NewExpression = expr.new_expr;
+            if (cast<i64>(ne.generic_args.size()) > 0) {
+                let resolved: Option<BoundType> = this.resolve_new_generic_args_from_ast(ne.type_name, ne.generic_args, scope);
+                if (resolved.is_some()) {
+                    this.try_add_instantiation(resolved.some, instantiations);
+                }
+            }
+        }
+        // Recurse into sub-expressions safely
+        if (expr is Expression.function_call) {
+            let fc: FunctionCallExpression = expr.function_call;
+            if (fc.callee.is_some()) {
+                this.collect_from_ast_expr_safe(fc.callee.some, scope, instantiations);
+            }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(fc.arguments.size())) {
+                this.collect_from_ast_expr_safe(fc.arguments.at(cast<u64>(ai)).some, scope, instantiations);
+                ai = ai + 1;
+            }
+        }
+        if (expr is Expression.code_block) {
+            let blk: CodeBlockExpression = expr.code_block;
+            let si: mut i64 = 0;
+            while (si < cast<i64>(blk.statements.size())) {
+                this.collect_from_ast_statement_safe(blk.statements.at(cast<u64>(si)).some, scope, instantiations);
+                si = si + 1;
+            }
+            if (blk.trailing_expr.is_some()) {
+                this.collect_from_ast_expr_safe(blk.trailing_expr.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.cast_expr) {
+            let ce: CastExpression = expr.cast_expr;
+            // A cast to a generic interface (e.g. cast<IFoo<u8>>(x)) must register
+            // the instantiation so its default methods get monomorphized with the
+            // concrete type args (otherwise their T-typed returns stay unresolved).
+            if (let ts := ce.target_type.some) {
+                if (cast<i64>(ts.generic_args.size()) > 0) {
+                    let base_name: mut string = ts.name;
+                    if (cast<i64>(ts.qualified_parts.size()) > 0) {
+                        let sb2: mut StringBuilder = new StringBuilder();
+                        let qi: mut i64 = 0;
+                        while (qi < cast<i64>(ts.qualified_parts.size())) {
+                            sb2.append(ts.qualified_parts.at(cast<u64>(qi)).some);
+                            sb2.append(".");
+                            qi = qi + 1;
+                        }
+                        sb2.append(ts.name);
+                        base_name = sb2.to_string();
+                    }
+                    let resolved: Option<BoundType> = this.resolve_new_generic_args_from_ast(base_name, ts.generic_args, scope);
+                    if (resolved.is_some()) {
+                        this.try_add_instantiation(resolved.some, instantiations);
+                    }
+                }
+            }
+            if (ce.inner.is_some()) {
+                this.collect_from_ast_expr_safe(ce.inner.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.member_access) {
+            let ma: MemberAccessExpression = expr.member_access;
+            if (ma.base_expr.is_some()) {
+                this.collect_from_ast_expr_safe(ma.base_expr.some, scope, instantiations);
+            }
+        }
+        // if/while parse as *expressions* inside code blocks (wrapped in a
+        // Statement.block_expr by parse_codeBlockExpression), so generic
+        // instantiations inside their bodies (e.g. `new Foo<T>()` in a while
+        // body) were never collected here -> class never specialized -> the
+        // LLVM emitter hit "NEW Foo__T (no layout)" and the object's registers
+        // stayed undefined. Recurse into both branches just like the
+        // statement-level variants above.
+        if (expr is Expression.if_expr) {
+            let ie: IfExpression = expr.if_expr;
+            if (ie.condition.is_some()) {
+                this.collect_from_ast_expr_safe(ie.condition.some, scope, instantiations);
+            }
+            if (ie.then_block.is_some()) {
+                this.collect_from_ast_expr_safe(ie.then_block.some, scope, instantiations);
+            }
+            if (ie.else_block.is_some()) {
+                this.collect_from_ast_expr_safe(ie.else_block.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.while_expr) {
+            let we: WhileExpression = expr.while_expr;
+            if (we.condition.is_some()) {
+                this.collect_from_ast_expr_safe(we.condition.some, scope, instantiations);
+            }
+            if (we.body.is_some()) {
+                this.collect_from_ast_expr_safe(we.body.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.binary) {
+            let bin: BinaryExpression = expr.binary;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(bin.operands.size())) {
+                this.collect_from_ast_expr_safe(bin.operands.at(cast<u64>(oi)).some, scope, instantiations);
+                oi = oi + 1;
+            }
+        }
+        if (expr is Expression.unary) {
+            if (expr.unary.operand.is_some()) {
+                this.collect_from_ast_expr_safe(expr.unary.operand.some, scope, instantiations);
+            }
+        }
+        if (expr is Expression.parenthesized) {
+            if (expr.parenthesized.inner.is_some()) {
+                this.collect_from_ast_expr_safe(expr.parenthesized.inner.some, scope, instantiations);
+            }
+        }
+    }
+
+    fun resolve_new_generic_args_from_ast(this, type_name: string, generic_args: _utils.List<TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter resolve_new_generic_args_from_ast");
+        // Resolve the base type, then apply the generic args. See
+        // resolve_new_base_type_from_ast for why the trailing variant segment of an
+        // enum new-expression ("Enum.variant") must be stripped.
+        let base_type: Option<BoundType> = this.resolve_new_base_type_from_ast(type_name, scope);
+        if (base_type.is_none()) { return new Option<BoundType>.none(); }
+
+        // The collector runs with the def's CLASS/file scope, where a method's
+        // own template params (e.g. the `U` of RangeIterator.map's
+        // `new MapIterator<i64, U>`) are invisible — args can legitimately come
+        // back unresolved. Skip the whole instantiation when any arg does:
+        // specializing over unresolved/template-param args manufactures
+        // garbage specs (run() also suppresses the resolve-failure reports
+        // for this speculative window — pass 8 re-binds bodies with proper
+        // scopes and reports REAL errors there).
+        let args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let k: mut i64 = 0;
+        let arg_ok: mut bool = true;
+        while (k < cast<i64>(generic_args.size())) {
+            let one_arg: BoundTypeArg = owner.model.some.resolve_types_pass.resolve_single_generic_arg(generic_args.at(cast<u64>(k)).some, scope);
+            if (!arg_is_value(one_arg)) {
+                if (bound_type_is_template_param(arg_as_bound_type(one_arg))) { arg_ok = false; }
+            }
+            args.push(one_arg);
+            k = k + 1;
+        }
+        if (!arg_ok) { return new Option<BoundType>.none(); }
+        return new Option<BoundType>.some(base_type.some.with_generic_args(args));
+    }
+
+    // Resolve the base type named by a new-expression's type_name for the AST-driven
+    // monomorphization collector. type_name may be qualified ("_utils.List"). For an
+    // enum variant new the parser flattens `new Enum<T>.variant()` into type_name =
+    // "Enum.variant" (the variant is appended after the generic args); "Enum.variant"
+    // resolves to the enum *member*, not a type. Without stripping the trailing variant
+    // segment, a generic enum used only as a local in an initial block (which the
+    // bound-tree collector never sees) is never monomorphized — no LLVM type is emitted
+    // and payload access falls back to i64. Try the full name, then strip one segment.
+    fun resolve_new_base_type_from_ast(this, type_name: string, scope: BoundScope) -> Option<BoundType> {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter resolve_new_base_type_from_ast");
+        let found: Option<BoundSymbol> = owner.model.some.bind_expressions_pass.resolve_type_by_name(type_name, scope);
+        if (found.is_some()) {
+            if (found.some is BoundSymbol.type_sym) {
+                if (found.some.type_sym.bound_type.type_definition.is_some()) {
+                    return new Option<BoundType>.some(found.some.type_sym.bound_type);
+                }
+            }
+        }
+        let dot: i64 = owner.model.some.bind_expressions_pass.find_last_dot(type_name);
+        if (dot > 0) {
+            let base_name: string = string_substring(type_name, 0, dot);
+            let found2: Option<BoundSymbol> = owner.model.some.bind_expressions_pass.resolve_type_by_name(base_name, scope);
+            if (found2.is_some()) {
+                if (found2.some is BoundSymbol.type_sym) {
+                    if (found2.some.type_sym.bound_type.type_definition.is_some()) {
+                        return new Option<BoundType>.some(found2.some.type_sym.bound_type);
+                    }
+                }
+            }
+        }
+        return new Option<BoundType>.none();
+    }
+
+    fun collect_function_instantiations_from_ast(this, defs: _utils.List<Definition>, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        _utils.trace_enter("Enter collect_function_instantiations_from_ast");
+        this.collect_function_instantiations_from_ast_impl(defs, scope, true, false, func_instantiations);
+    }
+
+    // gate_dirty (O1): see collect_generic_instantiations_from_ast_impl.
+    fun collect_function_instantiations_from_ast_impl(this, defs: _utils.List<Definition>, scope: BoundScope, top_level: bool, gate_dirty: bool, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter collect_function_instantiations_from_ast");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: Definition = defs.at(cast<u64>(i)).some;
+            if (gate_dirty && !owner.inc_file_contains(ast_def_filename(def))) {
+                i = i + 1;
+                continue;
+            }
+            // O1: attribution context for this def's AST-body occurrences.
+            owner.attrib_file = ast_def_filename(def);
+            // Where this def's expressions resolve names: top-level defs live in
+            // their file namespace; nested (namespace-child) defs in the
+            // enclosing namespace scope passed in as `scope`.
+            let def_scope: BoundScope = if (top_level && !(def is Definition.namespace_def) && !owner.model.some.top_level_in_global) {
+                top_level_def_scope(def, scope)
+            } else {
+                scope
+            };
+            if (def is Definition.initial_routine) {
+                if (def.initial_routine.body.is_some()) {
+                    this.collect_func_inst_from_expr(def.initial_routine.body.some, def_scope, func_instantiations);
+                }
+            }
+            if (def is Definition.function_def) {
+                if (def.function_def.body.is_some()) {
+                    this.collect_func_inst_from_expr(def.function_def.body.some, def_scope, func_instantiations);
+                }
+            }
+            if (def is Definition.namespace_def) {
+                // Namespace children resolve in the namespace scope (merged by
+                // name across files, so sibling types are its local symbols).
+                let ns_lookup: Option<BoundScope> = scope.lookup_namespace(def.namespace_def.name);
+                let ns_scope: BoundScope = if (ns_lookup.is_some()) { ns_lookup.some } else { scope };
+                this.collect_function_instantiations_from_ast_impl(def.namespace_def.children, ns_scope, false, gate_dirty, func_instantiations);
+            }
+            if (def is Definition.class_def) {
+                if (def.class_def.template_decl.is_none()) {
+                    let members: _utils.List<Definition> = def.class_def.members;
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(members.size())) {
+                        let member: Definition = members.at(cast<u64>(mi)).some;
+                        if (member is Definition.function_def) {
+                            if (member.function_def.body.is_some()) {
+                                this.collect_func_inst_from_expr(member.function_def.body.some, def_scope, func_instantiations);
+                            }
+                        }
+                        mi = mi + 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    fun collect_func_inst_from_expr(this, expr: Expression, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        _utils.trace_enter("Enter collect_func_inst_from_expr");
+        if (expr is Expression.function_call) {
+            let fc: FunctionCallExpression = expr.function_call;
+            if (let ast_callee := fc.callee.some) {
+                if (ast_callee is Expression.identifier) {
+                    if (cast<i64>(ast_callee.identifier.generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.identifier.name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let gi: mut i64 = 0;
+                        while (gi < cast<i64>(ast_callee.identifier.generic_args.size())) {
+                            resolved_args.push(make_type_arg(owner.model.some.resolve_type_specifier(ast_callee.identifier.generic_args.at(cast<u64>(gi)).some, scope)));
+                            gi = gi + 1;
+                        }
+                        owner.attrib_note(func_name + "|" + MonomorphizePass.mangle_generic_name(func_name, resolved_args));
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                    // D6: a value-template function call (filled<3>()) — the value args
+                    // ride value_generic_args (Expression list) and become value
+                    // BoundTypeArgs, so the mangled name is filled__3 and
+                    // specialize_function_def substitutes N -> 3 into the body.
+                    // Integer/char constants are folded here; bool/string value args are
+                    // handled by bind_function_call directly.
+                    if (cast<i64>(ast_callee.identifier.value_generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.identifier.name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let vi: mut i64 = 0;
+                        while (vi < cast<i64>(ast_callee.identifier.value_generic_args.size())) {
+                            let varg: Expression = ast_callee.identifier.value_generic_args.at(cast<u64>(vi)).some;
+                            resolved_args.push(owner.model.some.meta_rewriter.value_expr_to_bound_type(varg));
+                            vi = vi + 1;
+                        }
+                        owner.attrib_note(func_name + "|" + MonomorphizePass.mangle_generic_name(func_name, resolved_args));
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                }
+                // Generic method calls: obj.method<T>(args)
+                if (ast_callee is Expression.member_access) {
+                    if (cast<i64>(ast_callee.member_access.generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.member_access.member_name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let gi: mut i64 = 0;
+                        while (gi < cast<i64>(ast_callee.member_access.generic_args.size())) {
+                            resolved_args.push(make_type_arg(owner.model.some.resolve_type_specifier(ast_callee.member_access.generic_args.at(cast<u64>(gi)).some, scope)));
+                            gi = gi + 1;
+                        }
+                        owner.attrib_note(func_name + "|" + MonomorphizePass.mangle_generic_name(func_name, resolved_args));
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                    // D6: a QUALIFIED value-template call (ns.f<4>()) — the value
+                    // args ride the member's value_generic_args (the only
+                    // cross-file spelling of a value-template call: file
+                    // isolation hides the bare name, the namespace prefix
+                    // resolves globally). The request is recorded under the bare
+                    // member name, exactly like the type-generic member arm
+                    // above; the adjudicator's find_bound_function_def resolves
+                    // the template tree-wide and mangles from its full_name, so
+                    // the specialization lands in the template's namespace
+                    // scope (MetaTemplateValueQualifiedCall).
+                    if (cast<i64>(ast_callee.member_access.value_generic_args.size()) > 0) {
+                        let func_name: string = ast_callee.member_access.member_name;
+                        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                        let vi2: mut i64 = 0;
+                        while (vi2 < cast<i64>(ast_callee.member_access.value_generic_args.size())) {
+                            let varg: Expression = ast_callee.member_access.value_generic_args.at(cast<u64>(vi2)).some;
+                            resolved_args.push(owner.model.some.meta_rewriter.value_expr_to_bound_type(varg));
+                            vi2 = vi2 + 1;
+                        }
+                        owner.attrib_note(func_name + "|" + MonomorphizePass.mangle_generic_name(func_name, resolved_args));
+                        func_instantiations.push(new FunctionInstantiation(func_name, resolved_args));
+                    }
+                }
+                this.collect_func_inst_from_expr(fc.callee.some, scope, func_instantiations);
+            }
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(fc.arguments.size())) {
+                this.collect_func_inst_from_expr(fc.arguments.at(cast<u64>(ai)).some, scope, func_instantiations);
+                ai = ai + 1;
+            }
+        }
+        if (expr is Expression.code_block) {
+            let blk: CodeBlockExpression = expr.code_block;
+            let si: mut i64 = 0;
+            while (si < cast<i64>(blk.statements.size())) {
+                let stmt: Statement = blk.statements.at(cast<u64>(si)).some;
+                if (stmt is Statement.let_decl) {
+                    if (stmt.let_decl.initializer.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.let_decl.initializer.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.expression) {
+                    if (stmt.expression.expression.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.expression.expression.some, scope, func_instantiations);
+                    }
+                }
+                // if/while bodies are wrapped as block_expr statements (see
+                // parse_codeBlockExpression); recurse so generic calls inside
+                // them are collected too.
+                if (stmt is Statement.block_expr) {
+                    if (stmt.block_expr.expression.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.block_expr.expression.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.while_stmt) {
+                    if (stmt.while_stmt.condition.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.while_stmt.condition.some, scope, func_instantiations);
+                    }
+                    if (stmt.while_stmt.body.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.while_stmt.body.some, scope, func_instantiations);
+                    }
+                }
+                if (stmt is Statement.if_stmt) {
+                    if (stmt.if_stmt.condition.is_some()) {
+                        this.collect_func_inst_from_expr(stmt.if_stmt.condition.some, scope, func_instantiations);
+                    }
+                    if (stmt.if_stmt.then_statement.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.if_stmt.then_statement.some, scope, func_instantiations);
+                    }
+                    if (stmt.if_stmt.else_statement.is_some()) {
+                        this.collect_func_inst_from_expr_stmt(stmt.if_stmt.else_statement.some, scope, func_instantiations);
+                    }
+                }
+                si = si + 1;
+            }
+        }
+        if (expr is Expression.cast_expr) {
+            if (expr.cast_expr.inner.is_some()) {
+                this.collect_func_inst_from_expr(expr.cast_expr.inner.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.member_access) {
+            if (expr.member_access.base_expr.is_some()) {
+                this.collect_func_inst_from_expr(expr.member_access.base_expr.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.if_expr) {
+            if (expr.if_expr.condition.is_some()) {
+                this.collect_func_inst_from_expr(expr.if_expr.condition.some, scope, func_instantiations);
+            }
+            if (expr.if_expr.then_block.is_some()) {
+                this.collect_func_inst_from_expr(expr.if_expr.then_block.some, scope, func_instantiations);
+            }
+            if (expr.if_expr.else_block.is_some()) {
+                this.collect_func_inst_from_expr(expr.if_expr.else_block.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.binary) {
+            let bin: BinaryExpression = expr.binary;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(bin.operands.size())) {
+                this.collect_func_inst_from_expr(bin.operands.at(cast<u64>(oi)).some, scope, func_instantiations);
+                oi = oi + 1;
+            }
+        }
+        if (expr is Expression.unary) {
+            if (expr.unary.operand.is_some()) {
+                this.collect_func_inst_from_expr(expr.unary.operand.some, scope, func_instantiations);
+            }
+        }
+        if (expr is Expression.new_expr) {
+            let ne: NewExpression = expr.new_expr;
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(ne.arguments.size())) {
+                this.collect_func_inst_from_expr(ne.arguments.at(cast<u64>(ai)).some, scope, func_instantiations);
+                ai = ai + 1;
+            }
+        }
+    }
+
+    // Statement-level counterpart of collect_func_inst_from_expr: recurse into a
+    // statement's sub-statements/expressions so generic calls inside if/while
+    // bodies are collected (block-expr statements hold if/while *expressions*).
+    fun collect_func_inst_from_expr_stmt(this, stmt: Statement, scope: BoundScope, func_instantiations: mut _utils.List<FunctionInstantiation>) {
+        if (stmt is Statement.expression) {
+            if (stmt.expression.expression.is_some()) {
+                this.collect_func_inst_from_expr(stmt.expression.expression.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.block_expr) {
+            if (stmt.block_expr.expression.is_some()) {
+                this.collect_func_inst_from_expr(stmt.block_expr.expression.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.assignment) {
+            if (stmt.assignment.target.is_some()) {
+                this.collect_func_inst_from_expr(stmt.assignment.target.some, scope, func_instantiations);
+            }
+            if (stmt.assignment.value.is_some()) {
+                this.collect_func_inst_from_expr(stmt.assignment.value.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.let_decl) {
+            if (stmt.let_decl.initializer.is_some()) {
+                this.collect_func_inst_from_expr(stmt.let_decl.initializer.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.return_stmt) {
+            if (stmt.return_stmt.value.is_some()) {
+                this.collect_func_inst_from_expr(stmt.return_stmt.value.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.if_stmt) {
+            if (stmt.if_stmt.condition.is_some()) {
+                this.collect_func_inst_from_expr(stmt.if_stmt.condition.some, scope, func_instantiations);
+            }
+            if (stmt.if_stmt.then_statement.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.if_stmt.then_statement.some, scope, func_instantiations);
+            }
+            if (stmt.if_stmt.else_statement.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.if_stmt.else_statement.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.while_stmt) {
+            if (stmt.while_stmt.condition.is_some()) {
+                this.collect_func_inst_from_expr(stmt.while_stmt.condition.some, scope, func_instantiations);
+            }
+            if (stmt.while_stmt.body.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.while_stmt.body.some, scope, func_instantiations);
+            }
+        }
+        if (stmt is Statement.for_stmt) {
+            if (stmt.for_stmt.iterable.is_some()) {
+                this.collect_func_inst_from_expr(stmt.for_stmt.iterable.some, scope, func_instantiations);
+            }
+            if (stmt.for_stmt.body.is_some()) {
+                this.collect_func_inst_from_expr_stmt(stmt.for_stmt.body.some, scope, func_instantiations);
+            }
+        }
+    }
+
+    fun find_bound_function_def(this, defs: _utils.List<BoundDefinition>, name: string) -> Option<BoundDefinition> {
+        _utils.trace_enter("Enter find_bound_function_def");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.function_def) {
+                if (def.function_def.name == name) {
+                    return new Option<BoundDefinition>.some(def);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let found: Option<BoundDefinition> = this.find_bound_function_def(def.namespace_def.children, name);
+                if (found.is_some()) { return found; }
+            }
+            if (def is BoundDefinition.class_def) {
+                let found: Option<BoundDefinition> = this.find_bound_function_def(def.class_def.methods, name);
+                if (found.is_some()) { return found; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    // True when more than one CLASS defines a same-named method — the
+    // bare-name template lookup in the pass-3 fixpoint cannot tell them
+    // apart (see the AMBIGUOUS METHOD NAMES comment in run()).
+    fun is_ambiguous_method_template(this, defs: _utils.List<BoundDefinition>, name: string) -> bool {
+        let count: mut i64 = this.count_class_methods_named(defs, name, 0);
+        return count > 1;
+    }
+
+    // Like find_bound_function_def but restricted to CLASS METHODS (never
+    // matches a free/namespace-level function). The adjudicator uses the
+    // pair (full-tree hit, class-only hit) to detect the CROSS-KIND name
+    // collision — a bare name that denotes BOTH a free function template
+    // and a class method template (Foo.identity<T> vs identity<T>) — where
+    // a bare-name request cannot tell which template the call site means
+    // (MethodTemplateNameCollidesWithFreeFunction: a member call
+    // `a.identity<string>(..)` collected under the bare name manufactured a
+    // spurious FREE specialization and poisoned the later explicit call's
+    // argument types).
+    fun find_bound_function_def_in_class(this, defs: _utils.List<BoundDefinition>, name: string) -> Option<BoundDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(def.class_def.methods.size())) {
+                    let md: BoundDefinition = def.class_def.methods.at(cast<u64>(mi)).some;
+                    if (md is BoundDefinition.function_def) {
+                        if (md.function_def.name == name) {
+                            return new Option<BoundDefinition>.some(md);
+                        }
+                    }
+                    mi = mi + 1;
+                }
+                let nested: Option<BoundDefinition> = this.find_bound_function_def_in_class(def.class_def.methods, name);
+                if (nested.is_some()) { return nested; }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let found: Option<BoundDefinition> = this.find_bound_function_def_in_class(def.namespace_def.children, name);
+                if (found.is_some()) { return found; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+    fun count_class_methods_named(this, defs: _utils.List<BoundDefinition>, name: string, acc: i64) -> i64 {
+        let n: mut i64 = acc;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let mi: mut i64 = 0;
+                let methods: _utils.List<BoundDefinition> = def.class_def.methods;
+                while (mi < cast<i64>(methods.size())) {
+                    let md: BoundDefinition = methods.at(cast<u64>(mi)).some;
+                    if (md is BoundDefinition.function_def) {
+                        if (md.function_def.name == name) { n = n + 1; }
+                    }
+                    mi = mi + 1;
+                }
+                n = this.count_class_methods_named(def.class_def.methods, name, n);
+            }
+            if (def is BoundDefinition.namespace_def) {
+                n = this.count_class_methods_named(def.namespace_def.children, name, n);
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+}
+
+}

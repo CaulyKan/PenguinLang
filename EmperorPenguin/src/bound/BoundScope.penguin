@@ -318,6 +318,50 @@ class BoundScope {
         this.children.push(child);
     }
 
+    // Batch 4.2 (incremental session, fast lane): remove the FIRST symbol in
+    // THIS scope whose full name matches, if any. The full path never calls
+    // this — it exists solely for the session's teardown of dead specialized /
+    // synthesized defs, whose symbols would otherwise survive the eviction
+    // and poison the next fixpoint round's dedup checks (a stale symbol makes
+    // the monomorphizer believe the specialization still exists).
+    fun remove_symbol_by_full_name(mut this, full_name: string) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.symbols.size())) {
+            let sym: BoundSymbol = this.symbols.at(cast<u64>(i)).some;
+            let sym_full: string = if (sym is BoundSymbol.variable) {
+                sym.variable.full_name
+            } else if (sym is BoundSymbol.function_sym) {
+                sym.function_sym.full_name
+            } else if (sym is BoundSymbol.type_sym) {
+                sym.type_sym.full_name
+            } else if (sym is BoundSymbol.enum_member) {
+                sym.enum_member.full_name
+            } else {
+                ""
+            };
+            if (sym_full == full_name) {
+                this.symbols.remove(cast<u64>(i));
+                return;
+            }
+            i = i + 1;
+        }
+    }
+
+    // Batch 4.2: recursive form — remove the symbol from this scope's whole
+    // subtree (the specialization's owning scope is the template file's
+    // namespace scope; the caller does not know which one holds it). The
+    // children list yields immutable bindings — cast to mut for the
+    // recursive mut-this call.
+    fun remove_symbol_in_tree(mut this, full_name: string) {
+        this.remove_symbol_by_full_name(full_name);
+        let c: mut i64 = 0;
+        while (c < cast<i64>(this.children.size())) {
+            let child: mut BoundScope = cast<mut BoundScope>(this.children.at(cast<u64>(c)).some);
+            child.remove_symbol_in_tree(full_name);
+            c = c + 1;
+        }
+    }
+
     fun find_child_by_name(this, name: string) -> Option<BoundScope> {
         _utils.trace_enter("Enter find_child_by_name");
         let i: mut i64 = 0;

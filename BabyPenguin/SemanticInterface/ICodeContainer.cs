@@ -153,13 +153,32 @@ namespace BabyPenguin.SemanticInterface
             else throw new NotImplementedException();
         }
 
+        /// <summary>
+        /// Symbols invisible to name resolution right now (see
+        /// CodeContainerStorage.InitializingVariables) — null when the window is
+        /// empty so the resolution fast path pays nothing.
+        /// </summary>
+        private IReadOnlyCollection<ISymbol>? InitializingExcludes =>
+            CodeContainerData.InitializingVariables.Count == 0 ? null : [.. CodeContainerData.InitializingVariables];
+
         public ISymbol AddLocalDeclaration(Declaration item, bool generateCode = true)
         {
             var symbol = Model.ResolveShortSymbol(item.Name, scope: this, requireSymbolTypeInferred: false, expressionScopeId: item.ScopeId) ??
                 throw new BabyPenguinException($"Cant resolve symbol '{item.Name}'", item.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
 
-            if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
-                InferVariableType(symbol);
+            // Open the declaration's initializer resolution window: the declared
+            // name resolves to outer symbols (a same-named function) inside its
+            // own initializer, never to the variable being declared.
+            CodeContainerData.InitializingVariables.Push(symbol.WithoutMutability());
+            try
+            {
+                if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
+                    InferVariableType(symbol);
+            }
+            finally
+            {
+                CodeContainerData.InitializingVariables.Pop();
+            }
 
             // Static topology bookkeeping: a module (ported class) instantiated
             // in a construct body joins the pool checked for unconnected
@@ -170,14 +189,24 @@ namespace BabyPenguin.SemanticInterface
                 && (declFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ConstructPrefix)
                     || declFunc.Name.StartsWith(BabyPenguin.SemanticPass.SemanticScopingPass.ClassConstructPrefix)))
             {
-                var declSymbol = symbol is MutableSymbolProxy declProxy ? declProxy.Symbol : symbol;
+                var declSymbol = symbol.WithoutMutability();
                 var declClass = declSymbol.TypeInfo.WithMutability(Mutability.Auto).FullName();
                 if (PortRegistry.ClassHasPorts(declClass))
                     CodeContainerData.NewedModules.Add((declSymbol, declClass, item.SourceLocation));
             }
 
             if (item.InitializeExpression != null && generateCode)
-                AddExpression(item.InitializeExpression, true, symbol);
+            {
+                CodeContainerData.InitializingVariables.Push(symbol.WithoutMutability());
+                try
+                {
+                    AddExpression(item.InitializeExpression, true, symbol);
+                }
+                finally
+                {
+                    CodeContainerData.InitializingVariables.Pop();
+                }
+            }
 
             return symbol;
         }
@@ -187,6 +216,18 @@ namespace BabyPenguin.SemanticInterface
         public class CodeContainerStorage
         {
             public Stack<CurrentWhileLoopInfo> CurrentWhileLoop { get; } = new Stack<CurrentWhileLoopInfo>();
+
+            /// <summary>
+            /// Name-resolution exclusion window: the local variables whose `let`
+            /// initializers are CURRENTLY being compiled (innermost last). While a
+            /// declaration's initializer is resolved/generated, the declared name
+            /// must NOT resolve to the variable itself — it is not in scope until
+            /// the declaration completes (EmperorPenguin's binding order). A same-
+            /// named outer function therefore wins inside the initializer
+            /// (`let f: string = f("x")` calls the function, matching EP Pass2/3).
+            /// Entries are un-proxied core symbols (see WithoutMutability()).
+            /// </summary>
+            public Stack<ISymbol> InitializingVariables { get; } = new Stack<ISymbol>();
 
             /// <summary>
             /// try/catch protected ranges of this container, in semantic-instruction
@@ -1970,7 +2011,7 @@ namespace BabyPenguin.SemanticInterface
                     {
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
-                                s => !s.IsClassMember, scope: this, requireSymbolTypeInferred: false, expressionScopeId: exp.ScopeId);
+                                s => !s.IsClassMember, scope: this, requireSymbolTypeInferred: false, expressionScopeId: exp.ScopeId, excludeSymbols: InitializingExcludes);
                             if (symbol != null)
                             {
                                 if (symbol.TypeInferStatus != TypeInferStatus.ExplicitTyped)
@@ -3292,7 +3333,7 @@ namespace BabyPenguin.SemanticInterface
                         else if (callee is PrimaryExpression primaryExp && primaryExp.IsSimple)
                         {
                             // Simple function call: foo(args)
-                            ISymbol? funVar = Model.ResolveShortSymbol(primaryExp.Text, scope: this, expressionScopeId: exp.ScopeId);
+                            ISymbol? funVar = Model.ResolveShortSymbol(primaryExp.Text, scope: this, expressionScopeId: exp.ScopeId, excludeSymbols: InitializingExcludes);
                             if (funVar == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{primaryExp.Text}'", primaryExp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             paramVars = convertParams(funVar.TypeInfo, paramVars, exp.SourceLocation);
@@ -3406,7 +3447,7 @@ namespace BabyPenguin.SemanticInterface
                     {
                         case PrimaryExpression.Type.Identifier:
                             var symbol = Model.ResolveShortSymbol(exp.Identifier!.Name,
-                                s => !s.IsClassMember, scope: this, expressionScopeId: exp.ScopeId);
+                                s => !s.IsClassMember, scope: this, expressionScopeId: exp.ScopeId, excludeSymbols: InitializingExcludes);
                             if (symbol == null)
                                 throw new BabyPenguinException($"Cant resolve symbol '{exp.Identifier!.Name}'", exp.SourceLocation, code: ErrorCode.E_RESOLVE_SYMBOL);
                             else

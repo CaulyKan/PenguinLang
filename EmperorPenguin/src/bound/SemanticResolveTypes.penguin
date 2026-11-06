@@ -27,7 +27,11 @@ class ResolveTypesPass {
             // prefix alignment is preserved.
             if (this.model.some.libmeta_is_injected(i) || i >= ast_count + this.model.some.libmeta_total_injected()) {
                 if (i >= ast_count + this.model.some.libmeta_total_injected()) {
-                    BoundDefinition.set_pass_index(result.definitions.at(cast<u64>(i)).some, this.model.some.current_pass_index);
+                    // Batch 3.3a: monomorphize-protocol stamp (literal 3) instead of
+                    // the ambient pass pointer. pass_index 2 is no longer a reachable
+                    // state anywhere (resolve_pair always stamps 3; libmeta-injected
+                    // defs arrive at 3).
+                    BoundDefinition.set_pass_index(result.definitions.at(cast<u64>(i)).some, 3);
                 }
                 i = i + 1;
                 continue;
@@ -52,35 +56,38 @@ class ResolveTypesPass {
 
     fun resolve_pair(mut this, ast_def: Definition, bound_def: BoundDefinition, scope: BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter resolve_pair");
-        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        // Batch 3.3a: per-processor guard (resolve = protocol index 3). The def's
+        // pass_index records "resolved through the monomorphize protocol"; callers
+        // no longer lower the global pass pointer to control the stamp.
+        if (BoundDefinition.get_pass_index(bound_def) >= 3) { return bound_def; }
         if (bound_def is BoundDefinition.function_def && ast_def is Definition.function_def) {
             let bf: mut BoundFunctionDefinition = bound_def.function_def;
             this.resolve_function_pair(ast_def.function_def, bf, scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.function_def(bf);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
             let bc: mut BoundClassDefinition = bound_def.class_def;
             this.resolve_class_pair(ast_def.class_def, bc, scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.class_def(bc);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
             let be: mut BoundEnumDefinition = bound_def.enum_def;
             this.resolve_enum_types(be, scope, ast_def.enum_def);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.enum_def(be);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
             let bi: mut BoundInterfaceDefinition = bound_def.interface_def;
             this.resolve_interface_pair(ast_def.interface_def, bi, scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.interface_def(bi);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
             let bn: mut BoundNamespaceDefinition = bound_def.namespace_def;
             this.resolve_namespace_pair(ast_def.namespace_def, bn, scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.namespace_def(bn);
         }
         // Primitive interface impls: resolve each mangled method's parameter and
@@ -121,7 +128,7 @@ class ResolveTypesPass {
                     this.model.some.type_registry.void_type, new _utils.List<BoundType>(), false);
                 init.symbol = new Option<BoundFunctionSymbol>.some(sym);
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.initial_routine(init);
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
@@ -134,7 +141,7 @@ class ResolveTypesPass {
                     gv.variable_symbol = new Option<BoundVariableSymbol>.some(sym);
                 }
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.global_var_def(gv);
         }
         if (bound_def is BoundDefinition.type_ref_def && ast_def is Definition.type_ref_def) {
@@ -148,10 +155,10 @@ class ResolveTypesPass {
                 tsym.bound_type = alias_t;
                 tr.type_symbol = new Option<BoundTypeSymbol>.some(tsym);
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 3);
             return new BoundDefinition.type_ref_def(tr);
         }
-        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(bound_def, 3);
         return bound_def;
     }
 
@@ -301,6 +308,34 @@ class ResolveTypesPass {
                             if (bound_cls.is_specialized) {
                                 field.bound_type = this.model.some.monomorphize_pass.resolve_field_specialization(field.bound_type, this.model.some.global_scope);
                             }
+                        } else {
+                            // Untyped class field (`value = 7`): infer the field
+                            // type from its initializer, matching the BabyPenguin
+                            // reference (its constructor pass infers such fields
+                            // via InferVariableType). Without this the field's
+                            // bound_type stayed at the default void — the field
+                            // silently vanished from the class layout ([0 x i32]
+                            // offsets) and member reads lowered to a literal
+                            // `void` (clang "expected value token"); on #class
+                            // shapes the downstream damage surfaced as E_INTERNAL
+                            // "new expression has no type symbol". Only literal
+                            // and NON-GENERIC new-expression initializers infer
+                            // here: their type resolution never depends on pass
+                            // 2's still-in-flight resolution of other defs, and a
+                            // generic new would push specialized defs mid-walk.
+                            let inferred: Option<BoundType> = this.infer_untyped_field_type(ast_member.class_field.initializer, class_scope);
+                            if (inferred.is_some()) {
+                                let ft: mut BoundType = inferred.some;
+                                field.bound_type = ft;
+                            } else if (ast_member.class_field.initializer.is_some()) {
+                                this.model.some.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+                                    "cannot infer the type of field '" + ast_member.class_field.name + "' from its initializer — annotate the field type (only literal and non-generic new-expression initializers are inferred)",
+                                    ast_member.class_field.location);
+                            } else {
+                                this.model.some.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+                                    "field '" + ast_member.class_field.name + "' has no type annotation and no initializer",
+                                    ast_member.class_field.location);
+                            }
                         }
                         if (field.field_symbol.is_some()) {
                             let fsym: mut BoundVariableSymbol = field.field_symbol.some;
@@ -354,6 +389,39 @@ class ResolveTypesPass {
                 }
             }
         }
+    }
+
+    // Type inference for untyped class fields (`value = 7`): bind a literal or
+    // NON-GENERIC new-expression initializer in the class scope and return its
+    // type, re-mutabilitied to the immutable default a typed field declaration
+    // resolves to (the reference semantics of BabyPenguin's InferVariableType
+    // for fields — field WRITE mutability is tracked separately by the field
+    // symbol, so inferred-immutable fields remain assignable). Returns none
+    // for any other initializer shape: those depend on pass-2's in-flight
+    // resolution of other definitions (function signatures, generic
+    // specializations) and require an explicit annotation instead.
+    fun infer_untyped_field_type(mut this, init: Option<Expression>, class_scope: mut BoundScope) -> Option<BoundType> {
+        if (init.is_none()) { return new Option<BoundType>.none(); }
+        let e: Expression = init.some;
+        if (!(e is Expression.constant) && !(e is Expression.string_literal)
+            && !(e is Expression.bool_literal) && !(e is Expression.new_expr)) {
+            return new Option<BoundType>.none();
+        }
+        // A generic new (`new Box<T>()`) routes through the on-demand
+        // specialization path, which pushes defs mid-walk — not safe during
+        // pass 2. Refuse (the caller reports the annotation requirement).
+        if (e is Expression.new_expr) {
+            if (cast<i64>(e.new_expr.generic_args.size()) > 0) {
+                return new Option<BoundType>.none();
+            }
+        }
+        let bound: Option<BoundExpression> = this.model.some.bind_expressions_pass.bind_expression(e, class_scope);
+        if (bound.is_none()) { return new Option<BoundType>.none(); }
+        let bt: BoundType = bound.some.get_bound_type();
+        if (bt.kind is TypeKind.ErrorKind) {
+            return new Option<BoundType>.none();
+        }
+        return new Option<BoundType>.some(bt.with_mutability(new Mutability.Immutable()));
     }
 
     fun resolve_enum_types(mut this, e: mut BoundEnumDefinition, scope: BoundScope, ast_enum: EnumDefinition) {

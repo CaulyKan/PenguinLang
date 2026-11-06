@@ -3,6 +3,7 @@
 Phase 5a.3: statement-level `#while (false)` inside a function body drops the body statement. The first `return` is never emitted so the function returns 2.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

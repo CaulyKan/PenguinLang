@@ -1,0 +1,4 @@
+initial {
+    let mut h = new app.Host<i32>();
+    println("report=" + cast<string>(h.report()));
+}

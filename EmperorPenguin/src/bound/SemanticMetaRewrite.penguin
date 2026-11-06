@@ -5,6 +5,134 @@
 // result.definitions[i] alignment stays intact for all downstream passes.
 namespace emperor {
 
+// ── Batch 5: seed fingerprint machinery (redesign §7) ─────────────────────
+//
+// MetaSeedFp: two independent djb2-family chains (x33 and x129, both masked
+// to 30 bits) folded over every fingerprint component. The composite key
+// "fp<h1>-<h2>" carries ~60 bits — a false HIT (identical key for different
+// seeds = a stale seed = a wrong compile) needs a simultaneous collision in
+// BOTH chains. PenguinLang has no closures, so the accumulator is a class.
+
+class MetaSeedFp {
+    h1: mut i64 = 5381;
+    h2: mut i64 = 97;
+    // Batch 5 debug: verbose >= 2 prints the running key per section so a
+    // false MISS between two compilations of the same inputs is attributable
+    // to its component (flip -vv on both runs and diff the section keys).
+    trace_on: bool = false;
+    fun section(mut this, tag: string) {
+        if (this.trace_on) {
+            __builtin.eprintln("[MetaSeedFp] " + tag + " -> " + this.key());
+        }
+    }
+    // Fold one component into both chains. Callers pass a distinct tag per
+    // component group (length-prefixed by fold_part where a part could
+    // contain the "|" separator) so adjacent components cannot concatenate
+    // into equal strings.
+    fun fold(mut this, s: string) {
+        let v1: mut i64 = this.h1;
+        let n: i64 = string_length(s);
+        let i: mut i64 = 0;
+        while (i < n) {
+            v1 = ((__builtin.lshift(v1, 5) + v1 + string_char_code_at(s, i)) & 1073741823);
+            i = i + 1;
+        }
+        this.h1 = v1;
+        let v2: mut i64 = this.h2;
+        let j: mut i64 = 0;
+        while (j < n) {
+            v2 = ((__builtin.lshift(v2, 7) + v2 + string_char_code_at(s, j)) & 1073741823);
+            j = j + 1;
+        }
+        this.h2 = v2;
+    }
+    // Length-prefixed part fold: "len:part" — unambiguous concatenation.
+    // Debug: with trace_on, every folded part is echoed (truncated) so a
+    // component divergence between two compilations is attributable to the
+    // exact part.
+    fun fold_part(mut this, s: string) {
+        this.fold(cast<string>(string_length(s)) + ":" + s);
+    }
+    fun key(this) -> string {
+        return "fp" + cast<string>(this.h1) + "-" + cast<string>(this.h2);
+    }
+}
+
+// The seed-relevant text of one #fun: everything compile_meta_function's
+// synthesis consumes from the BoundMetaFunctionDefinition — name, namespace
+// wrap inputs (enclosing_ns + file usings + defining file, which selects the
+// define view at synthesis time), parameter kinds + declared static types,
+// return type, and the RAW body (meta calls intact: their #defined folds are
+// covered separately by the define-store components, so the raw text is the
+// order-independent part).
+fun meta_fun_seed_text(bmf: BoundMetaFunctionDefinition) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    sb.append(cast<string>(string_length(bmf.name)));
+    sb.append(":");
+    sb.append(bmf.name);
+    sb.append("|ns:");
+    sb.append(cast<string>(string_length(bmf.enclosing_ns)));
+    sb.append(":");
+    sb.append(bmf.enclosing_ns);
+    sb.append("|usings:");
+    sb.append(cast<string>(bmf.file_usings.size()));
+    let ui: mut i64 = 0;
+    while (ui < cast<i64>(bmf.file_usings.size())) {
+        let u: string = bmf.file_usings.at(cast<u64>(ui)).some;
+        sb.append(cast<string>(string_length(u)));
+        sb.append(":");
+        sb.append(u);
+        ui = ui + 1;
+    }
+    sb.append("|file:");
+    let fname: string = bmf.location.filename;
+    sb.append(cast<string>(string_length(fname)));
+    sb.append(":");
+    sb.append(fname);
+    sb.append("|params:");
+    sb.append(cast<string>(bmf.parameters.size()));
+    let pi: mut i64 = 0;
+    while (pi < cast<i64>(bmf.parameters.size())) {
+        let mp: MetaParameter = bmf.parameters.at(cast<u64>(pi)).some;
+        sb.append(cast<string>(string_length(mp.name)));
+        sb.append(":");
+        sb.append(mp.name);
+        sb.append("/");
+        sb.append(cast<string>(string_length(mp.kind)));
+        sb.append(":");
+        sb.append(mp.kind);
+        sb.append("/");
+        if (mp.param_type.is_some()) {
+            let pt: string = mp.param_type.some.build_text();
+            sb.append(cast<string>(string_length(pt)));
+            sb.append(":");
+            sb.append(pt);
+        } else {
+            sb.append("0:-");
+        }
+        pi = pi + 1;
+    }
+    sb.append("|ret:");
+    if (bmf.return_type.is_some()) {
+        let rt: string = bmf.return_type.some.build_text();
+        sb.append(cast<string>(string_length(rt)));
+        sb.append(":");
+        sb.append(rt);
+    } else {
+        sb.append("0:-");
+    }
+    sb.append("|body:");
+    if (bmf.body.is_some()) {
+        let bt: string = bmf.body.some.build_text();
+        sb.append(cast<string>(string_length(bt)));
+        sb.append(":");
+        sb.append(bt);
+    } else {
+        sb.append("0:-");
+    }
+    return sb.to_string();
+}
+
 class MetaRewriter {
     // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
     // 破除 SemanticModel <-> 本 pass 的类环。
@@ -15,18 +143,24 @@ class MetaRewriter {
     }
 
     // ------------------------------------------------------------------
-    // Compile-time meta rewrite (Phase 5a).
+    // Compile-time meta rewrite (Phase 5a, file-scoped since batch 2.1).
     //
     // Resolves top-level (and, via recursion, nested) meta constructs in a
     // definition list into plain definitions BEFORE the 9 parallel-indexed
     // passes run. This keeps unit.definitions[i] <-> result.definitions[i]
     // alignment intact, so all existing passes work unchanged.
     //
-    // Currently resolves: #define("K","V") (records a compile-time option and
-    //   drops the definition) and #if / #elif / #else (conditional inclusion
-    //   of definitions; condition folded by eval_meta_bool). #for / #while and
-    //   meta inside function/class/enum bodies pass through unchanged (later
-    //   sub-phases 5a.2 / 5a.3 / 5a.4).
+    // Currently resolves: #define("K","V") (records a FILE-scoped define —
+    //   visible from its line to the end of the DEF's source file, never
+    //   across files; redefining a code define in the same file is
+    //   E_DUPLICATE_SYMBOL) and #if / #elif / #else (conditional inclusion
+    //   of definitions; condition folded by eval_meta_bool against the
+    //   def's own file view). Statement-level meta is resolved in the same
+    //   ordered walk (rewrite_meta_in_def_container walks function bodies),
+    //   so a statement-level #define is visible to later conditions in its
+    //   its file (a second sweep then catches bodies spliced in later —
+    //   #fun create_definition output). #for and meta inside enum bodies pass
+    //   through unchanged.
     // ------------------------------------------------------------------
 
     // 唯一入口：bind() 的预处理五步（collect #fun -> collect #class -> seed JIT ->
@@ -39,6 +173,11 @@ class MetaRewriter {
         // #funs later — duplicates are harmless, JIT compile is cached by name.)
         this.collect_meta_function_defs(unit.definitions);
         this.collect_meta_class_defs(unit.definitions);
+        // Batch 5: collect every #define's raw text BEFORE seeding — code
+        // defines reach the store only during the rewrite below, but they feed
+        // #defined folds at unit-B synthesis time and so belong in the seed
+        // fingerprint (see compute_meta_seed_fingerprint).
+        this.collect_meta_define_texts(unit.definitions);
         this.seed_meta_engine();
         // Phase 5a: flatten compile-time meta (#define / #if / ...) into plain
         // definitions before any pass runs. Done in place on unit.definitions so
@@ -48,37 +187,20 @@ class MetaRewriter {
         this.rewrite_meta_in_function_bodies(unit.definitions);
     }
 
-    fun meta_has_option(this, key: string) -> bool {
-        for (let k in this.model.some.meta_option_keys) {
-            if (k == key) { return true; }
+    // File-scoped define store reads (batch 2.1+2.3). Every define lives under
+    // the file that declared it (CLI --define seeds are materialized per input
+    // file), so all lookups take the file key — the file of the #define/#if
+    // def being processed, or the #fun's defining file for engine bridges.
+    fun meta_has_option(this, file: string, key: string) -> bool {
+        let found: bool = this.model.some.meta_define_has(file, key);
+        if (!found) {
+            this.model.some.trace("meta define lookup MISS: " + file + ":" + key);
         }
-        this.model.some.trace("meta option lookup MISS: " + key);
-        return false;
+        return found;
     }
 
-    fun meta_get_option(this, key: string) -> Option<string> {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.model.some.meta_option_keys.size())) {
-            if (this.model.some.meta_option_keys.at(cast<u64>(i)).some == key) {
-                return new Option<string>.some(this.model.some.meta_option_values.at(cast<u64>(i)).some);
-            }
-            i = i + 1;
-        }
-        return new Option<string>.none();
-    }
-
-    fun meta_set_option(mut this, key: string, value: string) {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.model.some.meta_option_keys.size())) {
-            if (this.model.some.meta_option_keys.at(cast<u64>(i)).some == key) {
-                this.model.some.meta_option_values.set(cast<u64>(i), value);
-                return;
-            }
-            i = i + 1;
-        }
-        this.model.some.trace("meta option set (new): " + key + " = " + value);
-        this.model.some.meta_option_keys.push(key);
-        this.model.some.meta_option_values.push(value);
+    fun meta_get_option(this, file: string, key: string) -> Option<string> {
+        return this.model.some.meta_define_lookup(file, key);
     }
 
     fun meta_strip_quotes(this, quoted: string) -> string {
@@ -141,35 +263,28 @@ class MetaRewriter {
     // expression is not a constant we can evaluate (caller reports an error
     // and takes no branch). Supports bool literals, #defined("K"), !e,
     // parenthesization, and && / || / == / != of foldable sub-expressions.
-    // Fold a compile-time string expression for #if conditions: string literals
-    // and #option("K") (the value of a compile-time option). Returns none if the
-    // option is undefined or the expression isn't a foldable string.
-    fun eval_meta_string(this, expr: Expression) -> Option<string> {
+    // Fold a compile-time string expression for #if conditions (batch 2.1):
+    // string literals and BARE IDENTIFIERS that name a define in `file` (the
+    // redesign §3 replacement for the retired #option("K") read — a bare name
+    // folds to its define VALUE; an undefined name does not fold, so the
+    // caller rejects the condition as non-constant). Returns none if the
+    // expression isn't foldable.
+    fun eval_meta_string(this, expr: Expression, file: string) -> Option<string> {
         if (expr is Expression.string_literal) {
             return new Option<string>.some(this.meta_strip_quotes(expr.string_literal.value));
         }
-        if (expr is Expression.meta_call) {
-            let mc: MetaCallExpression = expr.meta_call;
-            if (mc.func_name == "option") {
-                if (cast<i64>(mc.arguments.size()) == 1) {
-                    let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
-                    if (arg is Expression.string_literal) {
-                        let key: string = this.meta_strip_quotes(arg.string_literal.value);
-                        return this.meta_get_option(key);
-                    }
-                }
-            }
-            return new Option<string>.none();
+        if (expr is Expression.identifier) {
+            return this.meta_get_option(file, expr.identifier.name);
         }
         if (expr is Expression.parenthesized) {
             if (expr.parenthesized.inner.is_some()) {
-                return this.eval_meta_string(expr.parenthesized.inner.some);
+                return this.eval_meta_string(expr.parenthesized.inner.some, file);
             }
         }
         return new Option<string>.none();
     }
 
-    fun eval_meta_bool(this, expr: Expression) -> Option<bool> {
+    fun eval_meta_bool(this, expr: Expression, file: string) -> Option<bool> {
         if (expr is Expression.bool_literal) {
             if (expr.bool_literal.value == "true") { return new Option<bool>.some(true); }
             if (expr.bool_literal.value == "false") { return new Option<bool>.some(false); }
@@ -182,7 +297,7 @@ class MetaRewriter {
                     let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
                     if (arg is Expression.string_literal) {
                         let key: string = this.meta_strip_quotes(arg.string_literal.value);
-                        return new Option<bool>.some(this.meta_has_option(key));
+                        return new Option<bool>.some(this.meta_has_option(file, key));
                     }
                 }
             }
@@ -190,7 +305,7 @@ class MetaRewriter {
         }
         if (expr is Expression.parenthesized) {
             if (expr.parenthesized.inner.is_some()) {
-                return this.eval_meta_bool(expr.parenthesized.inner.some);
+                return this.eval_meta_bool(expr.parenthesized.inner.some, file);
             }
             return new Option<bool>.none();
         }
@@ -198,7 +313,7 @@ class MetaRewriter {
             let u: UnaryExpression = expr.unary;
             if (u.operator_value is UnaryOperator.Not) {
                 if (u.operand.is_some()) {
-                    let inner: Option<bool> = this.eval_meta_bool(u.operand.some);
+                    let inner: Option<bool> = this.eval_meta_bool(u.operand.some, file);
                     if (inner.is_some()) {
                         if (inner.some) { return new Option<bool>.some(false); }
                         return new Option<bool>.some(true);
@@ -211,10 +326,10 @@ class MetaRewriter {
             let b: BinaryExpression = expr.binary;
             if (cast<i64>(b.operands.size()) != 2) { return new Option<bool>.none(); }
             let op: BinaryOperator = b.operators.at(cast<u64>(0)).some;
-            // String equality first: #option("K") == "literal" (and !=).
+            // String equality first: bare define NAME == "literal" (and !=).
             if (op is BinaryOperator.Equal || op is BinaryOperator.NotEqual) {
-                let ls: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(0)).some);
-                let rs: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(1)).some);
+                let ls: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(0)).some, file);
+                let rs: Option<string> = this.eval_meta_string(b.operands.at(cast<u64>(1)).some, file);
                 if (let l := ls.some) {
                     if (let r := rs.some) {
                         if (l == r) {
@@ -227,8 +342,8 @@ class MetaRewriter {
                     return new Option<bool>.none();
                 }
             }
-            let lhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(0)).some);
-            let rhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(1)).some);
+            let lhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(0)).some, file);
+            let rhs_opt: Option<bool> = this.eval_meta_bool(b.operands.at(cast<u64>(1)).some, file);
             if (let lhs := lhs_opt.some) {
                 if (let rhs := rhs_opt.some) {
                     if (op is BinaryOperator.LogicalAnd) {
@@ -255,8 +370,12 @@ class MetaRewriter {
         return new Option<bool>.none();
     }
 
-    // If this top-level meta call is #define("K","V"), record the option and
-    // return true (consume it). Otherwise return false (keep it as-is).
+    // If this top-level meta call is #define("K","V"), record the define under
+    // the DEF's own source file (batch 2.1: file-scoped — visible from here to
+    // the end of that file, never across files) and return true (consume it).
+    // Redefining a key that is already a CODE define in the same file is
+    // E_DUPLICATE_SYMBOL (the first value stays); overwriting a CLI --define
+    // seed is allowed (code wins). Otherwise return false (keep as-is).
     fun try_consume_meta_define(mut this, d: MetaCallDefinition) -> bool {
         if (let call := d.call.some) {
             if (call is Expression.meta_call) {
@@ -267,9 +386,16 @@ class MetaRewriter {
                         let arg_v: Expression = mc.arguments.at(cast<u64>(1)).some;
                         if (arg_k is Expression.string_literal) {
                             if (arg_v is Expression.string_literal) {
+                                // Rebind the Option payload to a mutable binding
+                                // first (meta_define_code_write takes `mut this`).
+                                let m: mut SemanticModel = this.model.some;
                                 let key: string = this.meta_strip_quotes(arg_k.string_literal.value);
                                 let val: string = this.meta_strip_quotes(arg_v.string_literal.value);
-                                this.meta_set_option(key, val);
+                                if (m.meta_define_code_exists(d.source_file, key)) {
+                                    m.report_error(new ErrorCode.E_DUPLICATE_SYMBOL(), "#define: '" + key + "' is already defined in this file (file-scoped redefinition is an error)", d.location);
+                                    return true;
+                                }
+                                m.meta_define_code_write(d.source_file, key, val);
                                 return true;
                             }
                         }
@@ -280,16 +406,17 @@ class MetaRewriter {
         return false;
     }
 
-    // Resolve a #if definition: fold the condition, splice the taken branch's
-    // definitions (recursively resolving nested meta) into `out`.
+    // Resolve a #if definition: fold the condition (against the #if's OWN
+    // file's define view), splice the taken branch's definitions (recursively
+    // resolving nested meta) into `out`.
     fun splice_meta_if(mut this, d: MetaIfDefinition, out: mut _utils.List<Definition>) {
         let picked: mut _utils.List<Definition> = new _utils.List<Definition>();
         let decided: mut bool = false;
         if (let cond := d.condition.some) {
-            let c: Option<bool> = this.eval_meta_bool(cond);
+            let c: Option<bool> = this.eval_meta_bool(cond, d.source_file);
             if (let cv := c.some) {
                 decided = true;
-                this.model.some.trace("meta #if at line " + cast<string>(d.location.line) + ": condition = " + (if (cv) { "true" } else { "false" }));
+                this.model.some.trace("meta #if at line " + cast<string>(d.location.line) + " in " + d.source_file + ": condition = " + (if (cv) { "true" } else { "false" }));
                 if (cv) {
                     for (let td in d.then_definitions) {
                         picked.push(td);
@@ -298,7 +425,7 @@ class MetaRewriter {
                     let elif_taken: mut bool = false;
                     for (let br in d.elif_branches) {
                         if (let bc := br.condition.some) {
-                            let ec: Option<bool> = this.eval_meta_bool(bc);
+                            let ec: Option<bool> = this.eval_meta_bool(bc, d.source_file);
                             if (let ecv := ec.some) {
                                 if (ecv) {
                                     for (let bd in br.body_definitions) {
@@ -332,7 +459,7 @@ class MetaRewriter {
         let iteration: mut i64 = 0;
         while (iteration < max_iterations) {
             if (let cond := d.condition.some) {
-                let c: Option<bool> = this.eval_meta_bool(cond);
+                let c: Option<bool> = this.eval_meta_bool(cond, d.source_file);
                 if (let cv := c.some) {
                     this.model.some.trace("meta #while at line " + cast<string>(d.location.line) + ": iteration " + cast<string>(iteration) + " condition = " + (if (cv) { "true" } else { "false" }));
                     if (cv) {
@@ -412,7 +539,11 @@ class MetaRewriter {
     }
 
     // Recurse into container definitions (namespace/class/impl) so def-level
-    // meta (#if/#define) nested inside them is resolved too.
+    // meta (#if/#define) nested inside them is resolved too — and into
+    // function/initial BODIES (batch 2.1): statement-level meta is resolved
+    // at the def's position in the SAME ordered walk, so a statement-level
+    // #define is visible to later definitions'/statements' #if conditions in
+    // its file (aligned with BabyPenguin's single ordered splice walk).
     fun rewrite_meta_in_def_container(mut this, d: Definition) {
         if (d is Definition.namespace_def) {
             this.rewrite_meta_definitions(d.namespace_def.children);
@@ -426,6 +557,10 @@ class MetaRewriter {
             this.model.some.meta_engine.current_scope_class_name = saved_scope;
         } else if (d is Definition.impl_def) {
             this.rewrite_meta_definitions(d.impl_def.functions);
+        } else if (d is Definition.function_def) {
+            this.rewrite_meta_in_body_expr(d.function_def.body, d.function_def.source_file);
+        } else if (d is Definition.initial_routine) {
+            this.rewrite_meta_in_body_expr(d.initial_routine.body, d.initial_routine.source_file);
         }
     }
 
@@ -584,6 +719,131 @@ class MetaRewriter {
             }
         }
     }
+
+    // ── Batch 5: #define raw-text collection (seed-fingerprint input) ──────
+    //
+    // Walk the unit BEFORE the rewrite and record every define-writing meta
+    // call's raw text (plus, conservatively, every OTHER def-position meta
+    // call — its arguments feed a #fun whose splice may generate defines).
+    // Def level + statement level + nested containers + #if/#while branches.
+    // Read-only: nothing is consumed or rewritten here.
+
+    fun collect_meta_define_texts(mut this, defs: _utils.List<Definition>) {
+        for (let d in defs) {
+            if (d is Definition.meta_call_def) {
+                this.model.some.meta_define_texts.push(d.meta_call_def.source_file + "|" + d.build_text());
+            } else if (d is Definition.meta_if_def) {
+                this.collect_meta_define_texts(d.meta_if_def.then_definitions);
+                let bi: mut i64 = 0;
+                while (bi < cast<i64>(d.meta_if_def.elif_branches.size())) {
+                    this.collect_meta_define_texts(d.meta_if_def.elif_branches.at(cast<u64>(bi)).some.body_definitions);
+                    bi = bi + 1;
+                }
+                this.collect_meta_define_texts(d.meta_if_def.else_definitions);
+            } else if (d is Definition.meta_while_def) {
+                this.collect_meta_define_texts(d.meta_while_def.body);
+            } else if (d is Definition.namespace_def) {
+                this.collect_meta_define_texts(d.namespace_def.children);
+            } else if (d is Definition.class_def) {
+                this.collect_meta_define_texts(d.class_def.members);
+            } else if (d is Definition.impl_def) {
+                this.collect_meta_define_texts(d.impl_def.functions);
+            } else if (d is Definition.function_def) {
+                this.collect_define_texts_in_body(d.function_def.body, d.function_def.source_file);
+            } else if (d is Definition.initial_routine) {
+                this.collect_define_texts_in_body(d.initial_routine.body, d.initial_routine.source_file);
+            }
+        }
+    }
+
+    // Statement level: mirror the prepass statement walk (collect_resolved_
+    // statements + rewrite_one_statement) but read-only, keeping only #define
+    // statements (the only statement-shape that writes the define store).
+    fun collect_define_texts_in_body(mut this, body: Option<Expression>, file: string) {
+        if (let body_expr := body.some) {
+            if (body_expr is Expression.code_block) {
+                this.collect_define_texts_in_stmts(body_expr.code_block.statements, file);
+            }
+        }
+    }
+
+    fun collect_define_texts_in_stmts(mut this, stmts: _utils.List<Statement>, file: string) {
+        for (let s in stmts) {
+            if (s is Statement.meta_if_stmt) {
+                if (let ts := s.meta_if_stmt.then_statement.some) {
+                    this.collect_define_texts_in_substmt(ts, file);
+                }
+                let bi: mut i64 = 0;
+                while (bi < cast<i64>(s.meta_if_stmt.elif_branches.size())) {
+                    if (let bs := s.meta_if_stmt.elif_branches.at(cast<u64>(bi)).some.body_statement.some) {
+                        this.collect_define_texts_in_substmt(bs, file);
+                    }
+                    bi = bi + 1;
+                }
+                if (let es := s.meta_if_stmt.else_statement.some) {
+                    this.collect_define_texts_in_substmt(es, file);
+                }
+            } else if (s is Statement.meta_while_stmt) {
+                if (let ws := s.meta_while_stmt.body.some) {
+                    this.collect_define_texts_in_substmt(ws, file);
+                }
+            } else if (this.stmt_is_meta_define(s)) {
+                this.model.some.meta_define_texts.push(file + "|" + s.build_text());
+            } else {
+                this.collect_define_texts_in_substmt(s, file);
+            }
+        }
+    }
+
+    // Recurse into one nested sub-statement (the body of if/while/for or a
+    // plain block statement): a block's inner statement list is walked; an
+    // if/while/for has its own sub-bodies. Mirrors rewrite_meta_in_substatement
+    // plus the for/while/if arms of rewrite_one_statement.
+    fun collect_define_texts_in_substmt(mut this, stmt: Statement, file: string) {
+        if (stmt is Statement.if_stmt) {
+            if (let then := stmt.if_stmt.then_statement.some) {
+                this.collect_define_texts_in_substmt(then, file);
+            }
+            if (let el := stmt.if_stmt.else_statement.some) {
+                this.collect_define_texts_in_substmt(el, file);
+            }
+            return;
+        }
+        if (stmt is Statement.while_stmt) {
+            if (let body := stmt.while_stmt.body.some) {
+                this.collect_define_texts_in_substmt(body, file);
+            }
+            return;
+        }
+        if (stmt is Statement.for_stmt) {
+            if (let body := stmt.for_stmt.body.some) {
+                this.collect_define_texts_in_substmt(body, file);
+            }
+            return;
+        }
+        if (this.stmt_is_meta_define(stmt)) {
+            this.model.some.meta_define_texts.push(file + "|" + stmt.build_text());
+            return;
+        }
+        let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
+        if (let blk := blk_opt.some) {
+            this.collect_define_texts_in_stmts(blk, file);
+        }
+    }
+
+    // #define("K","V"); as a statement — the fingerprint-relevant shape of
+    // try_consume_meta_define_stmt (literal key/value check omitted: raw text
+    // is hashed verbatim, so non-literal shapes fold too — conservative).
+    fun stmt_is_meta_define(this, s: Statement) -> bool {
+        if (s is Statement.expression) {
+            if (let inner := s.expression.expression.some) {
+                if (inner is Expression.meta_call) {
+                    return inner.meta_call.func_name == "define";
+                }
+            }
+        }
+        return false;
+    }
     // After def-level meta is flattened (rewrite_meta_definitions), walk every
     // function/initial body and resolve statement-level meta: #if conditional
     // inclusion of statements and #define option sets. Recurses into namespaces
@@ -592,12 +852,17 @@ class MetaRewriter {
     // unrolling (needs loop-variable AST substitution) is a follow-up.
     // ------------------------------------------------------------------
 
+    // Second statement-level sweep (safety net, batch 2.1): the ordered def
+    // walk above already resolved bodies in place, but definitions spliced by
+    // #fun calls DURING that walk (create_definition output, stamped with the
+    // calling file) arrive after their position — this pass catches their
+    // bodies. Each def is processed against its own source_file view.
     fun rewrite_meta_in_function_bodies(mut this, defs: _utils.List<Definition>) {
         for (let d in defs) {
             if (d is Definition.function_def) {
-                this.rewrite_meta_in_body_expr(d.function_def.body);
+                this.rewrite_meta_in_body_expr(d.function_def.body, d.function_def.source_file);
             } else if (d is Definition.initial_routine) {
-                this.rewrite_meta_in_body_expr(d.initial_routine.body);
+                this.rewrite_meta_in_body_expr(d.initial_routine.body, d.initial_routine.source_file);
             } else if (d is Definition.namespace_def) {
                 this.rewrite_meta_in_function_bodies(d.namespace_def.children);
             } else if (d is Definition.class_def) {
@@ -608,42 +873,47 @@ class MetaRewriter {
         }
     }
 
-    fun rewrite_meta_in_body_expr(mut this, body: Option<Expression>) {
+    fun rewrite_meta_in_body_expr(mut this, body: Option<Expression>, file: string) {
         if (let body_expr := body.some) {
             if (body_expr is Expression.code_block) {
-                this.rewrite_meta_statements_inplace(body_expr.code_block.statements);
+                this.rewrite_meta_statements_inplace(body_expr.code_block.statements, file);
             }
         }
     }
 
     // Resolve meta constructs in a statement list, replacing its contents in
-    // place (empties via pop, then repushes resolved).
-    fun rewrite_meta_statements_inplace(mut this, stmts: mut _utils.List<Statement>) {
+    // place (empties via pop, then repushes resolved). `file` is the owning
+    // source file of the enclosing function — every define read/write in the
+    // walk is keyed to it.
+    fun rewrite_meta_statements_inplace(mut this, stmts: mut _utils.List<Statement>, file: string) {
         let resolved: mut _utils.List<Statement> = new _utils.List<Statement>();
-        this.collect_resolved_statements(stmts, resolved);
+        this.collect_resolved_statements(stmts, resolved, file);
         while (cast<i64>(stmts.size()) > 0) { stmts.pop(); }
         for (let rs in resolved) {
             stmts.push(rs);
         }
     }
 
-    fun collect_resolved_statements(mut this, src: _utils.List<Statement>, out: mut _utils.List<Statement>) {
+    fun collect_resolved_statements(mut this, src: _utils.List<Statement>, out: mut _utils.List<Statement>, file: string) {
         for (let s in src) {
             if (s is Statement.meta_if_stmt) {
-                this.splice_meta_if_stmt(s.meta_if_stmt, out);
+                this.splice_meta_if_stmt(s.meta_if_stmt, out, file);
             } else if (s is Statement.meta_while_stmt) {
-                this.splice_meta_while_stmt(s.meta_while_stmt, out);
-            } else if (this.try_consume_meta_define_stmt(s)) {
+                this.splice_meta_while_stmt(s.meta_while_stmt, out, file);
+            } else if (this.try_consume_meta_define_stmt(s, file)) {
                 // consumed #define("K","V"); statement -> drop
             } else {
-                out.push(this.rewrite_one_statement(s));
+                out.push(this.rewrite_one_statement(s, file));
             }
         }
     }
 
     // If this statement is #define("K","V"); (a meta-call-as-statement), record
-    // the option and return true (consume). Otherwise return false.
-    fun try_consume_meta_define_stmt(mut this, s: Statement) -> bool {
+    // the define under `file` (the enclosing function's file) and return true
+    // (consume). Same rule as the def level: redefining a code define in the
+    // same file reports E_DUPLICATE_SYMBOL and keeps the first value; a CLI
+    // seed may be overwritten freely.
+    fun try_consume_meta_define_stmt(mut this, s: Statement, file: string) -> bool {
         if (s is Statement.expression) {
             if (let inner := s.expression.expression.some) {
                 if (inner is Expression.meta_call) {
@@ -654,9 +924,17 @@ class MetaRewriter {
                             let arg_v: Expression = mc.arguments.at(cast<u64>(1)).some;
                             if (arg_k is Expression.string_literal) {
                                 if (arg_v is Expression.string_literal) {
+                                    // Rebind the Option payload to a mutable
+                                    // binding first (meta_define_code_write
+                                    // takes `mut this`).
+                                    let m: mut SemanticModel = this.model.some;
                                     let key: string = this.meta_strip_quotes(arg_k.string_literal.value);
                                     let val: string = this.meta_strip_quotes(arg_v.string_literal.value);
-                                    this.meta_set_option(key, val);
+                                    if (m.meta_define_code_exists(file, key)) {
+                                        m.report_error(new ErrorCode.E_DUPLICATE_SYMBOL(), "#define: '" + key + "' is already defined in this file (file-scoped redefinition is an error)", s.expression.location);
+                                        return true;
+                                    }
+                                    m.meta_define_code_write(file, key, val);
                                     return true;
                                 }
                             }
@@ -671,16 +949,16 @@ class MetaRewriter {
     // Resolve a #while statement: repeatedly evaluate the condition and
     // splice body statements until the condition becomes false.
     // A safety cap prevents infinite compile-time loops.
-    fun splice_meta_while_stmt(mut this, s: MetaWhileStatement, out: mut _utils.List<Statement>) {
+    fun splice_meta_while_stmt(mut this, s: MetaWhileStatement, out: mut _utils.List<Statement>, file: string) {
         let max_iterations: i64 = 10000;
         let iteration: mut i64 = 0;
         while (iteration < max_iterations) {
             if (let cond := s.condition.some) {
-                let c: Option<bool> = this.eval_meta_bool(cond);
+                let c: Option<bool> = this.eval_meta_bool(cond, file);
                 if (let cv := c.some) {
                     if (cv) {
                         if (s.body.is_some()) {
-                            this.flatten_statement_into(s.body.some, out);
+                            this.flatten_statement_into(s.body.some, out, file);
                         }
                         iteration = iteration + 1;
                     } else {
@@ -699,13 +977,14 @@ class MetaRewriter {
         }
     }
 
-    // Resolve a #if statement: fold the condition, splice the taken branch's
-    // statements (flattening a braced block; recursively resolving nested meta).
-    fun splice_meta_if_stmt(mut this, s: MetaIfStatement, out: mut _utils.List<Statement>) {
+    // Resolve a #if statement: fold the condition (against the enclosing
+    // function's file define view), splice the taken branch's statements
+    // (flattening a braced block; recursively resolving nested meta).
+    fun splice_meta_if_stmt(mut this, s: MetaIfStatement, out: mut _utils.List<Statement>, file: string) {
         let picked: mut Option<Statement> = new Option<Statement>.none();
         let decided: mut bool = false;
         if (let cond := s.condition.some) {
-            let c: Option<bool> = this.eval_meta_bool(cond);
+            let c: Option<bool> = this.eval_meta_bool(cond, file);
             if (let cv := c.some) {
                 decided = true;
                 this.model.some.trace("meta #if at line " + cast<string>(s.location.line) + ": condition = " + (if (cv) { "true" } else { "false" }));
@@ -715,7 +994,7 @@ class MetaRewriter {
                     let elif_taken: mut bool = false;
                     for (let br in s.elif_branches) {
                         if (let bc := br.condition.some) {
-                            let ec: Option<bool> = this.eval_meta_bool(bc);
+                            let ec: Option<bool> = this.eval_meta_bool(bc, file);
                             if (let ecv := ec.some) {
                                 if (ecv) {
                                     picked = br.body_statement;
@@ -735,19 +1014,19 @@ class MetaRewriter {
             this.model.some.report_error(new ErrorCode.E_UNSUPPORTED(), "meta #if condition is not a compile-time constant", s.location);
         }
         if (picked.is_some()) {
-            this.flatten_statement_into(picked.some, out);
+            this.flatten_statement_into(picked.some, out, file);
         }
     }
 
     // Append `stmt` to `out`. If it wraps a braced code block, flatten the
     // block's statements (recursively resolved); otherwise rewrite+push as one.
-    fun flatten_statement_into(mut this, stmt: Statement, out: mut _utils.List<Statement>) {
+    fun flatten_statement_into(mut this, stmt: Statement, out: mut _utils.List<Statement>, file: string) {
         let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
         if (blk_opt.is_some()) {
-            this.collect_resolved_statements(blk_opt.some, out);
+            this.collect_resolved_statements(blk_opt.some, out, file);
             return;
         }
-        out.push(this.rewrite_one_statement(stmt));
+        out.push(this.rewrite_one_statement(stmt, file));
     }
 
     // If `stmt` wraps a code_block (Statement.block_expr, or Statement.expression
@@ -773,85 +1052,280 @@ class MetaRewriter {
     // Recurse into a kept (non-meta) statement's nested control-flow bodies so
     // meta inside regular if/while/for/{...} is resolved. Returns the same
     // statement object (sub-contents mutated in place).
-    fun rewrite_one_statement(mut this, stmt: Statement) -> Statement {
+    fun rewrite_one_statement(mut this, stmt: Statement, file: string) -> Statement {
         if (stmt is Statement.if_stmt) {
             if (let then := stmt.if_stmt.then_statement.some) {
-                this.rewrite_meta_in_substatement(then);
+                this.rewrite_meta_in_substatement(then, file);
             }
             if (let el := stmt.if_stmt.else_statement.some) {
-                this.rewrite_meta_in_substatement(el);
+                this.rewrite_meta_in_substatement(el, file);
             }
             return stmt;
         }
         if (stmt is Statement.while_stmt) {
             if (let body := stmt.while_stmt.body.some) {
-                this.rewrite_meta_in_substatement(body);
+                this.rewrite_meta_in_substatement(body, file);
             }
             return stmt;
         }
         if (stmt is Statement.for_stmt) {
             if (let body := stmt.for_stmt.body.some) {
-                this.rewrite_meta_in_substatement(body);
+                this.rewrite_meta_in_substatement(body, file);
             }
             return stmt;
         }
         let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
         if (let blk := blk_opt.some) {
-            this.rewrite_meta_statements_inplace(blk);
+            this.rewrite_meta_statements_inplace(blk, file);
         }
         return stmt;
     }
 
     // Rewrite meta inside a single sub-statement (the body/then/else of regular
     // control flow): if it wraps a code block, resolve that block in place.
-    fun rewrite_meta_in_substatement(mut this, stmt: Statement) {
+    fun rewrite_meta_in_substatement(mut this, stmt: Statement, file: string) {
         let blk_opt: Option<_utils.List<Statement>> = this.stmt_inner_code_block(stmt);
         if (let blk := blk_opt.some) {
-            this.rewrite_meta_statements_inplace(blk);
+            this.rewrite_meta_statements_inplace(blk, file);
         }
+    }
+
+    // ── Batch 5: the whole-seed fingerprint (redesign §7) ─────────────────
+    //
+    // hash(全部种子源文本 ⊕ 全部 #fun 文本 ⊕ 全部 #class build_text ⊕
+    // --meta-src 集 ⊕ host_coroutine flag ⊕ extern 声明面) plus the
+    // define-store state (seed-time CLI seeds + every collected #define raw
+    // text) — the seventh component the spec's "指纹必须保守完整" demands:
+    // defines feed #defined folds inside #fun bodies at unit-B synthesis
+    // time, so a define change with an unchanged #fun set MUST still swap
+    // the seed. Any single component change ⇒ different key ⇒ memo MISS ⇒
+    // fresh unit B. A missing component would be a stale-seed bug (wrong
+    // compile), so when in doubt: fold it in.
+    fun compute_meta_seed_fingerprint(this) -> string {
+        let fp: mut MetaSeedFp = new MetaSeedFp();
+        fp.fold("MSFP-V1");
+        // (1) the fixed base source set — same shared path list unit B
+        // compiles (base_meta_source_rel_paths; one list, no drift).
+        fp.trace_on = this.model.some.verbose >= 2;
+        let paths: mut _utils.List<string> = base_meta_source_rel_paths();
+        fp.fold("base:");
+        fp.section("base");
+        fp.fold_part(cast<string>(paths.size()));
+        let bi: mut i64 = 0;
+        while (bi < cast<i64>(paths.size())) {
+            let rel: string = paths.at(cast<u64>(bi)).some;
+            fp.fold_part(rel);
+            fp.fold_part(read_compiler_source(rel));
+            bi = bi + 1;
+        }
+        // (2) conditional stdlib member of unit B: scheduler.penguin rides
+        // along exactly when --meta-src files exist AND coroutine is on
+        // (mirrors compile_meta_function's push).
+        let with_user: bool = cast<i64>(this.model.some.meta_user_inputs.size()) > 0;
+        let coro: bool = this.model.some.enable_coroutine;
+        if (with_user && coro) {
+            fp.fold("sched:");
+            fp.fold_part(read_compiler_source("EmperorPenguin/std/penguin/scheduler.penguin"));
+        }
+        fp.section("sched");
+        // (3) every #fun text — the JIT set (meta_function_defs) AND the
+        // isolated template set (template_meta_function_defs: host-invoked
+        // gates route through the same engine; a _template_X body change
+        // must swap the seed too). Lazy per-static-type unique-name
+        // trampolines are name-derived (deterministic from the type
+        // spelling) and are name-keyed in the engine — no component needed.
+        fp.fold("funs:");
+        fp.fold_part(cast<string>(this.model.some.meta_function_defs.size()));
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.model.some.meta_function_defs.size())) {
+            fp.fold_part(meta_fun_seed_text(this.model.some.meta_function_defs.at(cast<u64>(fi)).some));
+            fi = fi + 1;
+        }
+        fp.fold("tfuns:");
+        fp.fold_part(cast<string>(this.model.some.template_meta_function_defs.size()));
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(this.model.some.template_meta_function_defs.size())) {
+            fp.fold_part(meta_fun_seed_text(this.model.some.template_meta_function_defs.at(cast<u64>(ti)).some));
+            ti = ti + 1;
+        }
+        fp.section("funs");
+        // (4) every #class build_text (the <meta_classes> unit-B input).
+        fp.fold("classes:");
+        fp.fold_part(cast<string>(this.model.some.meta_class_defs.size()));
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.model.some.meta_class_defs.size())) {
+            fp.fold_part(this.model.some.meta_class_defs.at(cast<u64>(ci)).some.build_text());
+            ci = ci + 1;
+        }
+        fp.section("classes");
+        // (5) the --meta-src set (verbatim user inputs, filename + content —
+        // the flag itself derives from the list being non-empty).
+        fp.fold("usersrc:");
+        if (with_user) { fp.fold_part("1"); } else { fp.fold_part("0"); }
+        fp.fold_part(cast<string>(this.model.some.meta_user_inputs.size()));
+        let ui: mut i64 = 0;
+        while (ui < cast<i64>(this.model.some.meta_user_inputs.size())) {
+            fp.fold_part(this.model.some.meta_user_inputs.at(cast<u64>(ui)).some.filename);
+            fp.fold_part(this.model.some.meta_user_inputs.at(cast<u64>(ui)).some.source);
+            ui = ui + 1;
+        }
+        fp.section("usersrc");
+        // (6) host_coroutine flag (forwarded to the unit-B compiler) and the
+        // extern declaration face (meta_extern_decls — the host-callback
+        // surface unit B compiles against; constant within one binary, folded
+        // anyway so a rebuilt compiler with a changed face cannot share keys).
+        fp.fold("coro:");
+        if (coro) { fp.fold_part("1"); } else { fp.fold_part("0"); }
+        fp.fold("externs:");
+        fp.fold_part(this.model.some.meta_engine.meta_extern_decls());
+        fp.section("externs");
+        // (7) define-store state: the seed-time store (CLI --define seeds,
+        // materialized per input file at compile_sources time) + every
+        // collected #define raw text (code defines land in the store only
+        // after seeding — their raw text is the conservative proxy).
+        fp.fold("store:");
+        fp.fold_part(cast<string>(this.model.some.meta_option_files.size()));
+        let si: mut i64 = 0;
+        while (si < cast<i64>(this.model.some.meta_option_files.size())) {
+            fp.fold_part(this.model.some.meta_option_files.at(cast<u64>(si)).some);
+            fp.fold_part(this.model.some.meta_option_keys.at(cast<u64>(si)).some);
+            if (si < cast<i64>(this.model.some.meta_option_values.size())) {
+                fp.fold_part(this.model.some.meta_option_values.at(cast<u64>(si)).some);
+            }
+            si = si + 1;
+        }
+        fp.section("store");
+        fp.fold("defines:");
+        fp.fold_part(cast<string>(this.model.some.meta_define_texts.size()));
+        let di: mut i64 = 0;
+        while (di < cast<i64>(this.model.some.meta_define_texts.size())) {
+            fp.fold_part(this.model.some.meta_define_texts.at(cast<u64>(di)).some);
+            di = di + 1;
+        }
+        fp.section("defines");
+        return fp.key();
     }
 
     // Seed the JIT meta engine (the model's `meta_engine` field) once: wire the
     // verbose flag, host type registry, global scope, AST definitions fallback,
     // the full #fun set, the collected #class source, and register the engine in
     // the module-global active_meta slot (plus the owner/active model back-refs).
+    //
+    // Batch 5 (redesign §7) — whole-seed memo: a NON-unit-B model first
+    // computes the conservative seed fingerprint (every unit-B input; see
+    // compute_meta_seed_fingerprint). A cache HIT adopts the cached engine
+    // WHOLE — JIT session, compiled #funs, caller-stubs — so no unit B
+    // pipeline runs; every per-model live reference is re-pointed at the
+    // current model first (the recon's dangling-risk list: owner_model,
+    // host_type_registry, global_scope, ast_definitions — without these the
+    // JIT'd bridges would resolve tokens against a dead model's objects).
+    // A MISS seeds fresh (the historical path) and caches the engine.
+    // Unit B's own nested model seeds plainly: its engine is short-lived and
+    // must never interact with the process cache.
     fun seed_meta_engine(mut this) {
-        if (!this.model.some.meta_engine_seeded) {
-            this.model.some.meta_engine_seeded = true;
-            this.model.some.meta_engine.verbose = this.model.some.verbose;
-            this.model.some.meta_engine.with_user_sources = cast<i64>(this.model.some.meta_user_inputs.size()) > 0;
-            this.model.some.meta_engine.user_inputs = this.model.some.meta_user_inputs;
-            this.model.some.meta_engine.host_coroutine = this.model.some.enable_coroutine;
-            this.model.some.meta_engine.host_type_registry = this.model.some.type_registry;
-            // Phase 6: give MetaEngine access to the global scope so it can resolve
-            // user-defined types (BoundTypeRegistry only knows primitives). It's a
-            // reference, populated by pass_build_scopes before reflection runs.
-            this.model.some.meta_engine.global_scope = new Option<BoundScope>.some(this.model.some.global_scope);
-            // R3b: AST definitions fallback — for reflection at def-splice time
-            // (before types are bound in global_scope).
-            this.model.some.meta_engine.ast_definitions = new Option<_utils.List<Definition>>.some(this.model.some.ast_definitions);
-            // req3+4: give the MetaEngine the full #fun set so a JIT-compiled #fun
-            // can synthesize the other #funs it calls into its unit B.
-            for (let mf in this.model.some.meta_function_defs) {
-                this.model.some.meta_engine.all_meta_function_defs.push(mf);
+        if (this.model.some.meta_engine_seeded) { return; }
+        this.model.some.meta_engine_seeded = true;
+        if (!this.model.some.is_unit_b) {
+            let fp: string = this.compute_meta_seed_fingerprint();
+            let cached: Option<MetaEngine> = meta_engine_cache_lookup(fp);
+            if (cached.is_some()) {
+                this.adopt_cached_meta_engine(cached.some);
+                if (this.model.some.verbose >= 1) {
+                    __builtin.eprintln("[MetaEngine] seed memo HIT (" + fp + "): reusing whole seed (JIT session + compiled #funs), no unit B recompile");
+                }
+                this.model.some.trace("meta engine seeded from whole-seed memo (fingerprint " + fp + ")");
+                return;
             }
-            // Phase 6 v2: feed collected `#class` definitions (build_text) into unit B
-            // as the <meta_classes> source input, so #funs can use them.
-            let class_src: mut StringBuilder = new StringBuilder();
-            for (let mcd in this.model.some.meta_class_defs) {
-                class_src.append(mcd.build_text());
-                class_src.append("\n");
+            this.seed_fresh_meta_engine();
+            meta_engine_cache_store(fp, this.model.some.meta_engine);
+            if (this.model.some.verbose >= 1) {
+                __builtin.eprintln("[MetaEngine] seed memo MISS (" + fp + "): fresh seed, engine cached");
             }
-            this.model.some.meta_engine.meta_class_source = class_src.to_string();
-            // Phase 6: register MetaEngine in the module-global active_meta slot so
-            // JIT'd #fun code can call back into the host via penguin_meta_* functions.
-            penguin_meta_set_active(this.model.some.meta_engine);
-            // R1: also set the owner_model back-ref + active_model so #error/#warn/#info
-            // host callbacks can reach this SemanticModel's report_error/warning/info.
-            this.model.some.meta_engine.owner_model = new Option<SemanticModel>.some(this.model.some);
-            penguin_meta_set_active_model(this.model.some);
-            this.model.some.trace("meta engine seeded: " + cast<string>(this.model.some.meta_function_defs.size()) + " meta function(s), " + cast<string>(this.model.some.template_meta_function_defs.size()) + " template function(s)");
+            return;
         }
+        this.seed_fresh_meta_engine();
+    }
+
+    // The historical seed path (batch 5: extracted verbatim from the old
+    // seed_meta_engine body) — wires a FRESH engine from the model's state.
+    fun seed_fresh_meta_engine(mut this) {
+        this.model.some.meta_engine.verbose = this.model.some.verbose;
+        this.model.some.meta_engine.with_user_sources = cast<i64>(this.model.some.meta_user_inputs.size()) > 0;
+        this.model.some.meta_engine.user_inputs = this.model.some.meta_user_inputs;
+        this.model.some.meta_engine.host_coroutine = this.model.some.enable_coroutine;
+        this.model.some.meta_engine.host_type_registry = this.model.some.type_registry;
+        // Phase 6: give MetaEngine access to the global scope so it can resolve
+        // user-defined types (BoundTypeRegistry only knows primitives). It's a
+        // reference, populated by pass_build_scopes before reflection runs.
+        this.model.some.meta_engine.global_scope = new Option<BoundScope>.some(this.model.some.global_scope);
+        // R3b: AST definitions fallback — for reflection at def-splice time
+        // (before types are bound in global_scope).
+        this.model.some.meta_engine.ast_definitions = new Option<_utils.List<Definition>>.some(this.model.some.ast_definitions);
+        // req3+4: give the MetaEngine the full #fun set so a JIT-compiled #fun
+        // can synthesize the other #funs it calls into its unit B.
+        for (let mf in this.model.some.meta_function_defs) {
+            this.model.some.meta_engine.all_meta_function_defs.push(mf);
+        }
+        // Phase 6 v2: feed collected `#class` definitions (build_text) into unit B
+        // as the <meta_classes> source input, so #funs can use them.
+        let class_src: mut StringBuilder = new StringBuilder();
+        for (let mcd in this.model.some.meta_class_defs) {
+            class_src.append(mcd.build_text());
+            class_src.append("\n");
+        }
+        this.model.some.meta_engine.meta_class_source = class_src.to_string();
+        // Phase 6: register MetaEngine in the module-global active_meta slot so
+        // JIT'd #fun code can call back into the host via penguin_meta_* functions.
+        penguin_meta_set_active(this.model.some.meta_engine);
+        // R1: also set the owner_model back-ref + active_model so #error/#warn/#info
+        // host callbacks can reach this SemanticModel's report_error/warning/info.
+        this.model.some.meta_engine.owner_model = new Option<SemanticModel>.some(this.model.some);
+        penguin_meta_set_active_model(this.model.some);
+        this.model.some.trace("meta engine seeded: " + cast<string>(this.model.some.meta_function_defs.size()) + " meta function(s), " + cast<string>(this.model.some.template_meta_function_defs.size()) + " template function(s)");
+    }
+
+    // Batch 5: adopt a memo-hit engine for the CURRENT model. The fingerprint
+    // guarantees the reused unit-B inputs are identical, but every reference
+    // that points BACK into a model must be re-pointed here — the cached
+    // engine's previous owner may be gone (dangling owner_model /
+    // host_type_registry / global_scope / ast_definitions would resolve tokens
+    // against dead objects, and `t == #typeof(i32)` pointer identity would
+    // compare BoundType objects from a stale registry). The JIT-set member
+    // list is refreshed with the CURRENT model's bmf objects (texts identical
+    // by fingerprint — refreshing avoids pinning the previous model's AST),
+    // and per-compile transients are defensively reset.
+    fun adopt_cached_meta_engine(mut this, eng: mut MetaEngine) {
+        let m: mut SemanticModel = this.model.some;
+        eng.verbose = m.verbose;
+        eng.with_user_sources = cast<i64>(m.meta_user_inputs.size()) > 0;
+        eng.user_inputs = m.meta_user_inputs;
+        eng.host_coroutine = m.enable_coroutine;
+        eng.host_type_registry = m.type_registry;
+        eng.global_scope = new Option<BoundScope>.some(m.global_scope);
+        eng.ast_definitions = new Option<_utils.List<Definition>>.some(m.ast_definitions);
+        eng.all_meta_function_defs = new _utils.List<BoundMetaFunctionDefinition>();
+        for (let mf in m.meta_function_defs) {
+            eng.all_meta_function_defs.push(mf);
+        }
+        let class_src: mut StringBuilder = new StringBuilder();
+        for (let mcd in m.meta_class_defs) {
+            class_src.append(mcd.build_text());
+            class_src.append("\n");
+        }
+        eng.meta_class_source = class_src.to_string();
+        // Per-compile transients: clear so a previous compile's leftovers
+        // can't leak into this one (push/pop pairing should have emptied
+        // them already; this is the defensive belt).
+        eng.current_scope_class_name = "";
+        while (cast<i64>(eng.compiling_meta_names.size()) > 0) { eng.compiling_meta_names.pop(); }
+        eng.specializing_active_slots = new _utils.List<i64>();
+        eng.option_view_file = "";
+        // Hand the engine to the model and publish it in the active slots —
+        // exactly the fresh-seed tail (owner_model + active_model included).
+        m.meta_engine = eng;
+        penguin_meta_set_active(eng);
+        eng.owner_model = new Option<SemanticModel>.some(m);
+        penguin_meta_set_active_model(m);
     }
 
 }

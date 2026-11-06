@@ -1,0 +1,706 @@
+// Type-metadata concern of the LLVM emitter (batch 0.1 split): LLVM type
+// definitions, full class/enum metadata globals with GC ref-map programs,
+// type-id constants and interface-id bookkeeping.
+namespace emperor {
+
+class LLVMMetadata {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    // The ref-map operand for a struct LLVM type, "" when the layout is
+    // missing or holds no pointers (no slot needed — most enum temps are
+    // pointer-free and slotting every one would bloat the descriptor).
+    fun gc_struct_refmap_operand(mut this, llvm_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (em.string_starts_with(llvm_type, "%class.")) {
+            let found: Option<ClassLayout> = em.types.find_class_layout_by_llvm(llvm_type);
+            if (found.is_none()) { return ""; }
+            if (!this.gc_layout_has_pointers_class(found.some)) { return ""; }
+            return "ptr @" + found.some.type_name + "_refmap";
+        }
+        if (em.string_starts_with(llvm_type, "%enum.")) {
+            let ename: string = string_substring(llvm_type, 6, string_length(llvm_type) - 6);
+            let found: Option<EnumLayout> = em.types.find_enum_layout(ename);
+            if (found.is_none()) { return ""; }
+            if (!this.gc_layout_has_pointers_enum(found.some)) { return ""; }
+            return "ptr @" + found.some.type_name + "_refmap";
+        }
+        return "";
+    }
+
+    fun gc_layout_has_pointers_class(mut this, layout: ClassLayout) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let f: mut i64 = 0;
+        while (f < cast<i64>(layout.fields.size())) {
+            let fl: FieldLayout = layout.fields.at(cast<u64>(f)).some;
+            if (fl.llvm_type == "ptr") { return true; }
+            if (em.string_starts_with(fl.llvm_type, "%class.")) {
+                let sub: Option<ClassLayout> = em.types.find_class_layout_by_llvm(fl.llvm_type);
+                if (sub.is_some() && this.gc_layout_has_pointers_class(sub.some)) { return true; }
+            }
+            if (em.string_starts_with(fl.llvm_type, "%enum.")) {
+                let sube: Option<EnumLayout> = em.types.find_enum_layout(string_substring(fl.llvm_type, 6, string_length(fl.llvm_type) - 6));
+                if (sube.is_some() && this.gc_layout_has_pointers_enum(sube.some)) { return true; }
+            }
+            f = f + 1;
+        }
+        return false;
+    }
+
+    fun gc_layout_has_pointers_enum(mut this, layout: EnumLayout) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let v: mut i64 = 0;
+        while (v < cast<i64>(layout.variants.size())) {
+            let vt: string = layout.variants.at(cast<u64>(v)).some.payload_llvm_type;
+            if (vt == "ptr") { return true; }
+            if (em.string_starts_with(vt, "%class.")) {
+                let sub: Option<ClassLayout> = em.types.find_class_layout_by_llvm(vt);
+                if (sub.is_some() && this.gc_layout_has_pointers_class(sub.some)) { return true; }
+            }
+            if (em.string_starts_with(vt, "%enum.")) {
+                let sube: Option<EnumLayout> = em.types.find_enum_layout(string_substring(vt, 6, string_length(vt) - 6));
+                if (sube.is_some() && this.gc_layout_has_pointers_enum(sube.some)) { return true; }
+            }
+            v = v + 1;
+        }
+        return false;
+    }
+
+    // --- Type definitions ---
+
+    fun emit_type_definitions(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_type_definitions");
+        // Emit value-class struct types (with metadata ptr at field 0) and enum
+        // struct types ({ ptr, i32, payload? }) interleaved in layout COMPLETION
+        // order — a valid topological order of the type-nesting graph, so a
+        // struct nesting another (inline value-class field / value-class enum
+        // payload) is always emitted after its dependency.
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(em.layout_done_order.size())) {
+            let struct_name: string = em.layout_done_order.at(cast<u64>(ti)).some;
+            if (em.string_starts_with(struct_name, "%class.")) {
+                let name: string = string_substring(struct_name, 7, string_length(struct_name) - 7);
+                let found: Option<ClassLayout> = em.types.find_class_layout(name);
+                if (found.is_some()) {
+                    let layout: ClassLayout = found.some;
+                    if (layout.is_value_type) {
+                        em.sb.append(layout.llvm_struct_type + " = type { ptr");
+                        let fi: mut i64 = 0;
+                        while (fi < cast<i64>(layout.fields.size())) {
+                            em.sb.append(", " + layout.fields.at(cast<u64>(fi)).some.llvm_type);
+                            fi = fi + 1;
+                        }
+                        em.sb.append(" }\n");
+                    }
+                }
+            }
+            if (em.string_starts_with(struct_name, "%enum.")) {
+                let name: string = string_substring(struct_name, 6, string_length(struct_name) - 6);
+                let found: Option<EnumLayout> = em.types.find_enum_layout(name);
+                if (found.is_some()) {
+                    let layout: EnumLayout = found.some;
+                    // The payload union MUST be an opaque byte array. Typing it
+                    // as the largest variant's class struct lets the optimizer
+                    // split whole-enum copies (load/store %enum.X of List slots,
+                    // byval argument forwarding) at THAT variant's field
+                    // boundaries — a nested enum tag (i32) becomes a 4-byte
+                    // copy that truncates an 8-byte pointer field of a
+                    // DIFFERENT variant occupying the same union offset
+                    // (List<IRInstruction> pushes lost ir_type pointers this
+                    // way; the read side then segfaulted in string concat).
+                    // A byte array forces byte-preserving copies for every
+                    // variant; typed loads/stores through the slot pointer
+                    // still work (LLVM pointers are untyped).
+                    //
+                    // The tag field type depends on the payload's alignment so
+                    // the alignment-1 byte array lands exactly where the old
+                    // typed layout put the payload (and semantic byte_size
+                    // stays in sync):
+                    //   align-8 payload  -> i64 tag, payload at offset 16
+                    //       (pointer-bearing payloads MUST be 8-aligned for the
+                    //       GC's word-aligned conservative scan to see them)
+                    //   smaller payload  -> i32 tag, payload at offset 12
+                    //       (pure primitives: no pointers inside to miss)
+                    let tag_type: mut string = "i64";
+                    em.sb.append(layout.llvm_struct_type + " = type { ptr, " + tag_type);
+                    if (layout.has_payload) {
+                        let pay_bytes: i64 = em.types.llvm_type_size(layout.payload_llvm_type);
+                        em.sb.append(", [" + cast<string>(pay_bytes) + " x i8]");
+                    }
+                    em.sb.append(" }\n");
+                }
+            }
+            ti = ti + 1;
+        }
+
+        // Emit metadata globals for all classes (both ICopy and IRef) — in
+        // canonical order by type name (batch 1.2), decoupled from the
+        // layout-table build order (the struct DEFINITIONS above keep their
+        // topological completion order; the metadata globals are flat and
+        // order-free).
+        let ckeys: mut _utils.List<string> = new _utils.List<string>();
+        let ci0: mut i64 = 0;
+        while (ci0 < cast<i64>(em.class_layouts.size())) {
+            ckeys.push(em.class_layouts.at(cast<u64>(ci0)).some.type_name);
+            ci0 = ci0 + 1;
+        }
+        let cidx: _utils.List<i64> = merge_sort_string_indices(ckeys);
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(cidx.size())) {
+            let layout: ClassLayout = em.class_layouts.at(cast<u64>(cidx.at_unchecked(cast<u64>(ci)))).some;
+            if (cast<i64>(layout.interface_vtables.size()) > 0) {
+                // Full metadata with vtable and interface_map
+                this.emit_full_class_metadata(layout);
+            } else {
+                // Full metadata format (no interfaces, but consistent struct layout for C runtime)
+                let name: string = layout.type_name;
+                let name_len: i64 = string_length(name);
+                let field_count: i64 = cast<i64>(layout.fields.size());
+                this.emit_field_arrays(name, layout.fields);
+                let refmap: string = this.emit_class_refmap(name, layout);
+                em.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+                em.sb.append("  ptr @." + name + "_name,\n");
+                em.sb.append("  i32 " + cast<string>(layout.sizeof_object) + ",\n");
+                em.sb.append("  i32 " + cast<string>(field_count) + ",\n");
+                em.sb.append("  ptr @" + name + "_field_offsets,\n");
+                em.sb.append("  ptr @" + name + "_field_is_ptr,\n");
+                em.sb.append("  ptr null,\n");
+                em.sb.append("  i32 0,\n");
+                em.sb.append("  ptr null,\n");
+                em.sb.append("  " + refmap + "\n");
+                em.sb.append("}\n");
+                em.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
+            }
+            ci = ci + 1;
+        }
+
+        // Emit metadata globals for enums — always use full metadata format,
+        // in canonical order by type name (batch 1.2).
+        let ekeys: mut _utils.List<string> = new _utils.List<string>();
+        let ei0: mut i64 = 0;
+        while (ei0 < cast<i64>(em.enum_layouts.size())) {
+            ekeys.push(em.enum_layouts.at(cast<u64>(ei0)).some.type_name);
+            ei0 = ei0 + 1;
+        }
+        let eidx: _utils.List<i64> = merge_sort_string_indices(ekeys);
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(eidx.size())) {
+            let layout: EnumLayout = em.enum_layouts.at(cast<u64>(eidx.at_unchecked(cast<u64>(ei)))).some;
+            this.emit_full_enum_metadata(layout);
+            ei = ei + 1;
+        }
+
+        if (cast<i64>(em.class_layouts.size()) > 0 || cast<i64>(em.enum_layouts.size()) > 0) {
+            em.sb.append("\n");
+        }
+    }
+
+    fun emit_full_class_metadata(mut this, layout: ClassLayout) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_full_class_metadata(layout=" + layout.to_string() + ")");
+ }
+        let name: string = layout.type_name;
+
+        // Emit interface ID string constants (deduplicated)
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            if (!list_contains(em.emitted_interface_ids, iface_name)) {
+                em.emitted_interface_ids.push(iface_name);
+                let len: i64 = string_length(iface_name);
+                em.sb.append("@." + iface_name + "_interface_id = private unnamed_addr constant [" + cast<string>(len + 1) + " x i8] c\"" + iface_name + "\\00\"\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit per-interface vtable arrays
+        ii = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            let method_count: i64 = cast<i64>(ivt.method_ptrs.size());
+            if (method_count > 0) {
+                em.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [" + cast<string>(method_count) + " x ptr] [");
+                let mi: mut i64 = 0;
+                while (mi < method_count) {
+                    if (mi > 0) { em.sb.append(", "); }
+                    em.sb.append("ptr " + ivt.method_ptrs.at(cast<u64>(mi)).some);
+                    mi = mi + 1;
+                }
+                em.sb.append("]\n");
+            } else {
+                em.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [0 x ptr] zeroinitializer\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit interface map (one entry per interface, pointing to its own vtable)
+        let iface_count: i64 = cast<i64>(layout.interface_vtables.size());
+        em.sb.append("@" + name + "_interface_map = private constant [" + cast<string>(iface_count) + " x { ptr, ptr }] [");
+        ii = 0;
+        while (ii < iface_count) {
+            if (ii > 0) { em.sb.append(", "); }
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            em.sb.append("{ ptr, ptr } { ptr @." + iface_name + "_interface_id, ptr @" + name + "_" + iface_name + "_vtable }");
+            ii = ii + 1;
+        }
+        em.sb.append("]\n");
+
+        // Emit field arrays for GC traversal
+        this.emit_field_arrays(name, layout.fields);
+        // Precise-GC layout program (NULL slot = conservative fallback)
+        let refmap: string = this.emit_class_refmap(name, layout);
+
+        // Emit full ClassMetadata
+        // struct: { ptr name, i32 instance_size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr refmap }
+        em.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+        em.sb.append("  ptr @." + name + "_name,\n");
+        em.sb.append("  i32 " + cast<string>(layout.sizeof_object) + ",\n");
+        em.sb.append("  i32 " + cast<string>(layout.fields.size()) + ",\n");
+        em.sb.append("  ptr @" + name + "_field_offsets,\n");
+        em.sb.append("  ptr @" + name + "_field_is_ptr,\n");
+        em.sb.append("  ptr null,\n");
+        em.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
+        em.sb.append("  ptr @" + name + "_interface_map,\n");
+        em.sb.append("  " + refmap + "\n");
+        em.sb.append("}\n");
+
+        // Emit name string constant
+        let name_len: i64 = string_length(name);
+        em.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
+    }
+
+    fun emit_field_arrays(mut this, name: string, fields: _utils.List<FieldLayout>) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_field_arrays(name=" + cast<string>(name) + ")");
+ }
+        let field_count: i64 = cast<i64>(fields.size());
+        if (field_count == 0) {
+            em.sb.append("@" + name + "_field_offsets = private constant [0 x i32] zeroinitializer\n");
+            em.sb.append("@" + name + "_field_is_ptr = private constant [0 x i32] zeroinitializer\n");
+            return;
+        }
+        // Emit field_offsets array
+        em.sb.append("@" + name + "_field_offsets = private constant [" + cast<string>(field_count) + " x i32] [");
+        let fi: mut i64 = 0;
+        while (fi < field_count) {
+            if (fi > 0) { em.sb.append(", "); }
+            let f: FieldLayout = fields.at(cast<u64>(fi)).some;
+            em.sb.append("i32 " + cast<string>(f.byte_offset));
+            fi = fi + 1;
+        }
+        em.sb.append("]\n");
+        // Emit field_is_ptr array
+        em.sb.append("@" + name + "_field_is_ptr = private constant [" + cast<string>(field_count) + " x i32] [");
+        fi = 0;
+        while (fi < field_count) {
+            if (fi > 0) { em.sb.append(", "); }
+            let f: FieldLayout = fields.at(cast<u64>(fi)).some;
+            let is_ptr: mut string = "0";
+            if (f.llvm_type == "ptr") { is_ptr = "1"; }
+            em.sb.append("i32 " + is_ptr);
+            fi = fi + 1;
+        }
+        em.sb.append("]\n");
+    }
+
+    // --- Precise-GC ref-map programs ---
+    // One flat i32 program per type layout (encoding documented in
+    // emperor_types.h, interpreted by gc.c): map[0] = total length, root node
+    // at index 1; SLOTS nodes list (byte_off, sub) pairs where sub = -1 is a
+    // bare pointer slot and sub >= 2 an inline nested struct; ENUM nodes map
+    // variant tags to payload nodes (payload inline at node base + 16). Every
+    // emitter-built type gets a program (a pointer-free type carries "n = 0");
+    // the collector treats a NULL slot as "no program" and falls back to
+    // conservative scanning, so a failed build is slow, never unsound.
+
+    fun refmap_type_name(mut this, llvm_type: string, prefix: string) -> string {
+        return string_substring(llvm_type, string_length(prefix), string_length(llvm_type) - string_length(prefix));
+    }
+
+    // Node describing ONE value of `payload_llvm_type` whose storage begins
+    // at the caller's base (offsets inside the node are relative to that
+    // base): a bare pointer (single slot at +0), an inline value class (its
+    // own slots) or an inline enum (its per-tag payload table). Appends the
+    // node to `ints` and returns its index; 0 = payload holds no pointers.
+    fun refmap_node_of_payload(mut this, payload_llvm_type: string, ints: mut _utils.List<i64>) -> i64 {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (payload_llvm_type == "ptr") {
+            let idx: i64 = cast<i64>(ints.size());
+            ints.push(1);
+            ints.push(1);
+            ints.push(0);
+            ints.push(-1);
+            return idx;
+        }
+        if (em.string_starts_with(payload_llvm_type, "%class.")) {
+            let found: Option<ClassLayout> = em.types.find_class_layout(this.refmap_type_name(payload_llvm_type, "%class."));
+            if (found.is_some()) {
+                return this.refmap_append_class_node(found.some, ints);
+            }
+            em.refmap_failed = true;
+            return 0;
+        }
+        if (em.string_starts_with(payload_llvm_type, "%enum.")) {
+            let found: Option<EnumLayout> = em.types.find_enum_layout(this.refmap_type_name(payload_llvm_type, "%enum."));
+            if (found.is_some()) {
+                return this.refmap_append_enum_node(found.some, ints);
+            }
+            em.refmap_failed = true;
+            return 0;
+        }
+        return 0;
+    }
+
+    fun refmap_append_class_node(mut this, layout: ClassLayout, ints: mut _utils.List<i64>) -> i64 {
+        let em: mut LLVMEmitter = this.emitter.some;
+        // Collect pointer-bearing fields first so the (off, sub) pairs stay
+        // contiguous behind the node header; nested nodes are appended after
+        // the pairs and their indices back-patched into them.
+        let ptrish: mut _utils.List<i64> = new _utils.List<i64>();
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(layout.fields.size())) {
+            let f: FieldLayout = layout.fields.at(cast<u64>(fi)).some;
+            if (f.llvm_type == "ptr" || em.string_starts_with(f.llvm_type, "%class.") || em.string_starts_with(f.llvm_type, "%enum.")) {
+                ptrish.push(fi);
+            }
+            fi = fi + 1;
+        }
+        let idx: i64 = cast<i64>(ints.size());
+        ints.push(1);
+        ints.push(cast<i64>(ptrish.size()));
+        let pair_base: i64 = cast<i64>(ints.size());
+        fi = 0;
+        while (fi < cast<i64>(ptrish.size())) {
+            let f: FieldLayout = layout.fields.at(cast<u64>(ptrish.at(cast<u64>(fi)).some)).some;
+            ints.push(f.byte_offset);
+            ints.push(-1);
+            fi = fi + 1;
+        }
+        fi = 0;
+        while (fi < cast<i64>(ptrish.size())) {
+            let f: FieldLayout = layout.fields.at(cast<u64>(ptrish.at(cast<u64>(fi)).some)).some;
+            if (f.llvm_type != "ptr") {
+                let sub: i64 = this.refmap_node_of_payload(f.llvm_type, ints);
+                if (sub != 0) {
+                    ints.set(cast<u64>(pair_base + fi * 2 + 1), sub);
+                }
+            }
+            fi = fi + 1;
+        }
+        return idx;
+    }
+
+    fun refmap_append_enum_node(mut this, layout: EnumLayout, ints: mut _utils.List<i64>) -> i64 {
+        let idx: i64 = cast<i64>(ints.size());
+        // The variant table is indexed by the STORED TAG (the member's
+        // discriminant value), so its size follows the largest tag.
+        let max_tag: mut i64 = -1;
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(layout.variants.size())) {
+            let v: EnumVariantLayout = layout.variants.at(cast<u64>(vi)).some;
+            if (v.index > max_tag) { max_tag = v.index; }
+            vi = vi + 1;
+        }
+        ints.push(2);
+        if (max_tag < 0) {
+            ints.push(0);
+            return idx;
+        }
+        ints.push(max_tag + 1);
+        let table_base: i64 = cast<i64>(ints.size());
+        vi = 0;
+        while (vi <= max_tag) {
+            ints.push(0);
+            vi = vi + 1;
+        }
+        vi = 0;
+        while (vi < cast<i64>(layout.variants.size())) {
+            let v: EnumVariantLayout = layout.variants.at(cast<u64>(vi)).some;
+            // Tag-only variants carry payload_llvm_type "" — their table
+            // entry stays 0 (payload never scanned).
+            if (v.index >= 0 && string_length(v.payload_llvm_type) > 0) {
+                let sub: i64 = this.refmap_node_of_payload(v.payload_llvm_type, ints);
+                if (sub != 0) {
+                    ints.set(cast<u64>(table_base + v.index), sub);
+                }
+            }
+            vi = vi + 1;
+        }
+        return idx;
+    }
+
+    // Emits the refmap constant global and returns the metadata-slot operand.
+    fun emit_class_refmap(mut this, name: string, layout: ClassLayout) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        em.refmap_failed = false;
+        let ints: mut _utils.List<i64> = new _utils.List<i64>();
+        ints.push(0);
+        this.refmap_append_class_node(layout, ints);
+        if (em.refmap_failed) { return "ptr null"; }
+        ints.set(cast<u64>(0), cast<i64>(ints.size()));
+        return this.emit_refmap_constant(name, ints);
+    }
+
+    fun emit_enum_refmap(mut this, name: string, layout: EnumLayout) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        em.refmap_failed = false;
+        let ints: mut _utils.List<i64> = new _utils.List<i64>();
+        ints.push(0);
+        this.refmap_append_enum_node(layout, ints);
+        if (em.refmap_failed) { return "ptr null"; }
+        ints.set(cast<u64>(0), cast<i64>(ints.size()));
+        return this.emit_refmap_constant(name, ints);
+    }
+
+    fun emit_refmap_constant(mut this, name: string, ints: _utils.List<i64>) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        em.sb.append("@" + name + "_refmap = private constant [" + cast<string>(ints.size()) + " x i32] [");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ints.size())) {
+            if (i > 0) { em.sb.append(", "); }
+            em.sb.append("i32 " + cast<string>(ints.at(cast<u64>(i)).some));
+            i = i + 1;
+        }
+        em.sb.append("]\n");
+        return "ptr @" + name + "_refmap";
+    }
+
+    fun emit_full_enum_metadata(mut this, layout: EnumLayout) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_full_enum_metadata(layout=" + layout.to_string() + ")");
+ }
+        let name: string = layout.type_name;
+
+        // Emit interface ID string constants (deduplicated)
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            if (!list_contains(em.emitted_interface_ids, iface_name)) {
+                em.emitted_interface_ids.push(iface_name);
+                let len: i64 = string_length(iface_name);
+                em.sb.append("@." + iface_name + "_interface_id = private unnamed_addr constant [" + cast<string>(len + 1) + " x i8] c\"" + iface_name + "\\00\"\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit per-interface vtable arrays
+        ii = 0;
+        while (ii < cast<i64>(layout.interface_vtables.size())) {
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            let method_count: i64 = cast<i64>(ivt.method_ptrs.size());
+            if (method_count > 0) {
+                em.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [" + cast<string>(method_count) + " x ptr] [");
+                let mi: mut i64 = 0;
+                while (mi < method_count) {
+                    if (mi > 0) { em.sb.append(", "); }
+                    em.sb.append("ptr " + ivt.method_ptrs.at(cast<u64>(mi)).some);
+                    mi = mi + 1;
+                }
+                em.sb.append("]\n");
+            } else {
+                em.sb.append("@" + name + "_" + iface_name + "_vtable = private constant [0 x ptr] zeroinitializer\n");
+            }
+            ii = ii + 1;
+        }
+
+        // Emit interface map
+        let iface_count: i64 = cast<i64>(layout.interface_vtables.size());
+        em.sb.append("@" + name + "_interface_map = private constant [" + cast<string>(iface_count) + " x { ptr, ptr }] [");
+        ii = 0;
+        while (ii < iface_count) {
+            if (ii > 0) { em.sb.append(", "); }
+            let ivt: InterfaceVTable = layout.interface_vtables.at(cast<u64>(ii)).some;
+            let iface_name: string = ivt.interface_name;
+            em.sb.append("{ ptr, ptr } { ptr @." + iface_name + "_interface_id, ptr @" + name + "_" + iface_name + "_vtable }");
+            ii = ii + 1;
+        }
+        em.sb.append("]\n");
+
+        // Emit full metadata matching EmperorClassMetadata layout:
+        // { ptr name, i32 size, i32 field_count, ptr field_offsets, ptr field_is_ptr, ptr vtable, i32 interface_count, ptr interface_map, ptr refmap }
+        let refmap: string = this.emit_enum_refmap(name, layout);
+        em.sb.append("@" + name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+        em.sb.append("  ptr @." + name + "_name,\n");
+        em.sb.append("  i32 0,\n");
+        em.sb.append("  i32 0,\n");
+        em.sb.append("  ptr null,\n");
+        em.sb.append("  ptr null,\n");
+        em.sb.append("  ptr null,\n");
+        em.sb.append("  i32 " + cast<string>(iface_count) + ",\n");
+        em.sb.append("  ptr @" + name + "_interface_map,\n");
+        em.sb.append("  " + refmap + "\n");
+        em.sb.append("}\n");
+
+        // Emit name string constant
+        let name_len: i64 = string_length(name);
+        em.sb.append("@." + name + "_name = private unnamed_addr constant [" + cast<string>(name_len + 1) + " x i8] c\"" + name + "\\00\"\n");
+    }
+
+
+    fun is_interface_type_id(this, type_id: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_interface_type_id(type_id=" + cast<string>(type_id) + ")");
+ }
+        // Walk the bound compilation unit to check if type_id refers to an interface
+        if (em.current_unit.is_some()) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(em.current_unit.some.definitions.size())) {
+                if (this.def_is_interface_type(em.current_unit.some.definitions.at(cast<u64>(i)).some, type_id)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+        }
+        return false;
+    }
+
+    fun def_is_interface_type(this, def: BoundDefinition, type_id: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter def_is_interface_type(type_id=" + cast<string>(type_id) + ")");
+ }
+        if (def is BoundDefinition.interface_def) {
+            if (def.interface_def.type_symbol.is_some()) {
+                if (def.interface_def.type_symbol.some.full_name == type_id) {
+                    return true;
+                }
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(def.namespace_def.children.size())) {
+                if (this.def_is_interface_type(def.namespace_def.children.at(cast<u64>(i)).some, type_id)) {
+                    return true;
+                }
+                i = i + 1;
+            }
+        }
+        return false;
+    }
+
+    // The interface id registered in interface_map must match the CALL side's
+    // interface_id (resolve_interface_id → extract_template_name → the
+    // template's simple name), e.g. "IIterator" for `impl IIterator<i64> for
+    // ...`. The full display_name ("IIterator<i64>") would break
+    // _emperor_vtable_lookup and produce invalid LLVM identifiers.
+    fun interface_map_name(this, iface_type: BoundType) -> string {
+        _utils.trace_enter("Enter interface_map_name");
+        let dn: string = iface_type.display_name();
+        let pos: i64 = string_find(dn, "<");
+        if (pos >= 0) {
+            return string_substring(dn, 0, pos);
+        }
+        return dn;
+    }
+
+    fun sanitize_type_id(this, type_id: string) -> string {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter sanitize_type_id(type_id=" + cast<string>(type_id) + ")");
+ }
+        let result: mut string = "";
+        let i: mut i64 = 0;
+        while (i < cast<i64>(string_length(type_id))) {
+            let ch: string = string_char_at(type_id, i);
+            if (ch == ".") {
+                result = result + "_";
+            } else if (ch == "<" || ch == ">" || ch == " ") {
+                result = result + "_";
+            } else {
+                result = result + ch;
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    fun ensure_type_id_constant(mut this, type_id: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter ensure_type_id_constant(type_id=" + cast<string>(type_id) + ")");
+ }
+        let sanitized: string = this.sanitize_type_id(type_id);
+        let global_name: string = "@." + sanitized + "_type_id";
+        // Check for duplicates
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.type_id_constants.size())) {
+            if (em.type_id_constants.at(cast<u64>(i)).some.global_name == global_name) {
+                return;
+            }
+            i = i + 1;
+        }
+        let display_name: string = this.type_id_constant_content(type_id);
+        let len: i64 = cast<i64>(string_length(display_name)) + 1;
+        em.type_id_constants.push(new TypeIdConstant(global_name, display_name, len));
+    }
+
+    // The CONTENT of a `@.<id>_type_id` constant must match what the object's
+    // side registers. Interfaces are identified by their simple TEMPLATE name
+    // (the interface_map / resolve_interface_id convention — `impl I<5>` maps
+    // "I"), so an interface type_id (a full_name, used for
+    // is_interface_type_id routing) must reduce to that simple name. Classes
+    // keep the <global>.-stripped full path, matching the metadata name.
+    // (This also fixes `x is SomeNs.IFace`, where the old content
+    // "SomeNs.IFace" never matched the map's "IFace".)
+    fun type_id_constant_content(this, type_id: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter type_id_constant_content");
+        if (em.current_unit.is_some()) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(em.current_unit.some.definitions.size())) {
+                let simple: Option<string> = this.def_interface_simple_name(em.current_unit.some.definitions.at(cast<u64>(i)).some, type_id);
+                if (simple.is_some()) {
+                    let n: string = simple.some;
+                    let pos: i64 = string_find(n, "__");
+                    if (pos >= 0) {
+                        return string_substring(n, 0, pos);
+                    }
+                    return n;
+                }
+                i = i + 1;
+            }
+        }
+        return this.type_id_display_name(type_id);
+    }
+
+    fun def_interface_simple_name(this, def: BoundDefinition, type_id: string) -> Option<string> {
+        _utils.trace_enter("Enter def_interface_simple_name");
+        if (def is BoundDefinition.interface_def) {
+            if (def.interface_def.type_symbol.is_some()) {
+                if (def.interface_def.type_symbol.some.full_name == type_id) {
+                    return new Option<string>.some(def.interface_def.name);
+                }
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let i: mut i64 = 0;
+            while (i < cast<i64>(def.namespace_def.children.size())) {
+                let found: Option<string> = this.def_interface_simple_name(def.namespace_def.children.at(cast<u64>(i)).some, type_id);
+                if (found.is_some()) { return found; }
+                i = i + 1;
+            }
+        }
+        return new Option<string>.none();
+    }
+
+    fun type_id_display_name(this, type_id: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter type_id_display_name(type_id=" + cast<string>(type_id) + ")");
+ }
+        let prefix: string = "<global>.";
+        if (em.string_starts_with(type_id, prefix)) {
+            return string_substring(type_id, string_length(prefix), cast<i64>(string_length(type_id)) - string_length(prefix));
+        }
+        return type_id;
+    }
+}
+
+}

@@ -1,0 +1,16 @@
+namespace app {
+#template(N: i32)
+class Arr {
+    size: mut i64 = N;
+}
+#template(T: type)
+class Host {
+    tiny: mut Arr<3>;
+    fun new(mut this) {
+        this.tiny = new Arr<3>();
+    }
+    fun report(mut this) -> i64 {
+        return this.tiny.size * 10 + 7;
+    }
+}
+}

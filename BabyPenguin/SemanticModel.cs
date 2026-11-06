@@ -270,28 +270,35 @@ namespace BabyPenguin
             return null;
         }
 
-        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable, bool requireSymbolTypeInferred = true, uint expressionScopeId = 0)
+        public ISymbol? ResolveShortSymbol(string name, Predicate<ISymbol>? predicate = null, ISemanticScope? scope = null, bool isOriginName = true, bool checkImportedNamespaces = true, Mutability parentMutability = Mutability.Immutable, bool requireSymbolTypeInferred = true, uint expressionScopeId = 0, IReadOnlyCollection<ISymbol>? excludeSymbols = null)
         {
             ISymbol? symbol = null;
             var predicate_ = predicate ?? (s => true);
 
+            // Name-resolution exclusion window: symbols listed here are invisible
+            // to THIS resolution (used while compiling a `let` initializer, where
+            // the variable being declared is not in scope until the declaration
+            // completes — EmperorPenguin's binding order; a shadowed outer
+            // function of the same name must win inside the initializer).
+            bool excluded(ISymbol s) => excludeSymbols != null && excludeSymbols.Contains(s.WithoutMutability());
+
             if (scope == null)
             {
-                symbol = Symbols.FirstOrDefault(s => s.FullName() == name && predicate_(s));
+                symbol = Symbols.FirstOrDefault(s => s.FullName() == name && predicate_(s) && !excluded(s));
             }
             else
             {
                 if (scope is MergedNamespace mergedNamespace)
                 {
                     symbol = mergedNamespace.Symbols
-                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && predicate_(s));
+                        .FirstOrDefault(s => (isOriginName ? s.OriginName : s.Name) == name && predicate_(s) && !excluded(s));
                 }
                 else if (scope is ISymbolContainer symbolContainer)
                 {
                     // When resolving by OriginName, multiple symbols from different scopes
                     // may match. Use ScopeId parent chain to find the closest visible symbol.
                     var candidates = symbolContainer.Symbols
-                        .Where(s => (isOriginName ? s.OriginName : s.Name) == name && predicate_(s))
+                        .Where(s => (isOriginName ? s.OriginName : s.Name) == name && predicate_(s) && !excluded(s))
                         .ToList();
 
                     symbol = FindClosestVisibleSymbol(candidates, expressionScopeId);
@@ -299,14 +306,14 @@ namespace BabyPenguin
 
                 if (symbol == null && scope?.Parent != null)
                 {
-                    symbol = ResolveShortSymbol(name, predicate, scope.Parent, isOriginName, checkImportedNamespaces: checkImportedNamespaces, parentMutability: parentMutability, requireSymbolTypeInferred: requireSymbolTypeInferred, expressionScopeId: expressionScopeId);
+                    symbol = ResolveShortSymbol(name, predicate, scope.Parent, isOriginName, checkImportedNamespaces: checkImportedNamespaces, parentMutability: parentMutability, requireSymbolTypeInferred: requireSymbolTypeInferred, expressionScopeId: expressionScopeId, excludeSymbols: excludeSymbols);
                 }
 
                 if (symbol == null && checkImportedNamespaces)
                 {
                     foreach (var ns in scope!.GetImportedNamespaces())
                     {
-                        symbol = ResolveShortSymbol(name, predicate, ns, isOriginName, false, parentMutability, requireSymbolTypeInferred, expressionScopeId);
+                        symbol = ResolveShortSymbol(name, predicate, ns, isOriginName, false, parentMutability: parentMutability, requireSymbolTypeInferred: requireSymbolTypeInferred, expressionScopeId: expressionScopeId, excludeSymbols: excludeSymbols);
                         if (symbol != null) break;
                     }
                 }
@@ -664,9 +671,21 @@ namespace BabyPenguin
 
         public List<string> Files { get; } = [];
 
+        /// <summary>
+        /// CLI --define K=V pre-seed layer for the file-scoped conditional
+        /// compilation store (batch 2.2): cloned into every file's define
+        /// store before splicing, so all files see the CLI defines while code
+        /// #defines stay file-local. Set before <see cref="Compile"/> runs.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> CliDefines { get; set; } = new Dictionary<string, string>();
+
         public void AddSource(string? source, string fileName)
         {
             var context = PenguinParser.Parse(source ?? File.ReadAllText(fileName), fileName, Reporter);
+            // File-scoped meta splice (#define/#if/#elif/#else/#while) runs on
+            // the parse contexts before the syntax tree is built — downstream
+            // passes only ever see the unrolled, meta-free tree.
+            MetaSplicer.Rewrite(context, fileName, Reporter, CliDefines);
             var syntaxCompiler = new SyntaxCompiler(fileName, context, Reporter);
 
             syntaxCompiler.Compile();

@@ -1,0 +1,9 @@
+namespace app {
+fun describe(n: i64) -> string {
+    return "num=" + cast<string>(n);
+}
+
+initial {
+    println(describe(41));
+}
+}

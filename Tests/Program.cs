@@ -1576,11 +1576,18 @@ public sealed class BabyPenguinBackend : ICompilerBackend
 
     public ProcessStartInfo BuildCompileProcess(string repoRoot, string srcFile, string exeFile, StageSpec compile, string workDir)
     {
-        // BabyPenguin MUST run in -q for clean single output; ignore Compile.Args (BP verbosity differs and would re-introduce noise).
+        // BabyPenguin MUST run in -q for clean single output; Compile.Args are mostly
+        // EmperorPenguin flags, but --define/-D (compile-time conditional compilation,
+        // batch 2.2) is a shared surface — forward just those so CLI-define tests run
+        // on both implementations.
+        var defineArgs = SplitDefineArgs(compile.Args, workDir);
+        var arguments = new List<string> { _bpDll, "-q" };
+        arguments.AddRange(defineArgs);
+        arguments.Add(srcFile);
         var psi = new ProcessStartInfo
         {
             FileName = "dotnet",
-            Arguments = ArgumentBuilder.Build(_bpDll, "-q", srcFile),
+            Arguments = ArgumentBuilder.Build(arguments),
             WorkingDirectory = repoRoot,
         };
         EnvHelper.ApplyEnv(psi, compile.Env, workDir);
@@ -1588,6 +1595,32 @@ public sealed class BabyPenguinBackend : ICompilerBackend
     }
 
     public ProcessStartInfo? BuildRunProcess(string exeFile, StageSpec run, string workDir) => null;
+
+    /// <summary>
+    /// Extract --define/-define/-D flags (both "--define K=V" and "--define=K=V"
+    /// shapes) from a Compile.Args string; everything else is ignored for BP.
+    /// </summary>
+    internal static List<string> SplitDefineArgs(string? compileArgs, string workDir)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(compileArgs)) return result;
+        var tokens = ArgumentBuilder.SplitArgs(EnvHelper.Expand(compileArgs, workDir));
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            var token = tokens[i];
+            if (token is "--define" or "-define" or "-D")
+            {
+                result.Add(token);
+                if (i + 1 < tokens.Count)
+                    result.Add(tokens[++i]);
+            }
+            else if (token.StartsWith("--define=") || token.StartsWith("-define=") || token.StartsWith("-D="))
+            {
+                result.Add(token);
+            }
+        }
+        return result;
+    }
 }
 
 // BabyPenguin with the experimental C# lowering backend (--backend=cs). Same I/O model as

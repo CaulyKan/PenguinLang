@@ -366,7 +366,7 @@ class BindMetaCallsPass {
     // (MonomorphizePass). If the specialization symbol is not registered yet but
     // every argument is CONCRETE (not a template placeholder), the
     // specialization is created on demand (ensure_specialized_def +
-    // catch_up_def) — otherwise #sizeof(Option<i32>) in a program that never
+    // A5 bind_def_*) — otherwise #sizeof(Option<i32>) in a program that never
     // instantiates Option<i32> would silently fall back to the unspecialized
     // template's placeholder layout (payload sized as a pointer). Placeholder
     // args (template bodies pre-specialization) keep the template fallback;
@@ -397,12 +397,13 @@ class BindMetaCallsPass {
         if (spec_sym.is_none() && all_concrete) {
             // On-demand specialization: create it (idempotent) and append it to
             // the unit so the running pass loop binds its method bodies in due
-            // order — NO reentrant catch_up_def here (replaying body binding in
+            // order — NO reentrant A5 body binding here (replaying body binding in
             // the middle of an expression bind corrupts the binding state).
             // The member/field types are resolved at creation, which is all the
             // size/layout queries below need.
             let m: mut SemanticModel = this.model.some;
             let inst: BoundType = base.some.with_generic_args(type_args);
+            m.monomorphize_pass.b1_site = "intrinsic";
             let spec: Option<BoundDefinition> = m.monomorphize_pass.ensure_specialized_def(inst, m.global_scope);
             if (spec.is_some() && m.current_unit.is_some()) {
                 m.current_unit.some.definitions.push(spec.some);
@@ -894,6 +895,30 @@ class BindMetaCallsPass {
     }
 
 
+    // M4: use-site routing of VALUE-arg template instantiations through the
+    // `_template_X` JIT. Batch 3.4 window-semantics note (the "collect-phase
+    // reentry purification" checklist item):
+    //   * DURING the pass-3 fixpoint collection the stage index is 3, so the
+    //     `< 4` gate below keeps this path INERT — there is no collect-phase
+    //     M4 reentry to remove; the collector (W1/W2) never JITs.
+    //   * The path's real window is pass 4+ — in practice pass-8 body
+    //     binding, where `let x: Foo<4>` type annotations are resolved for
+    //     the FIRST time (the AST collector scans expressions only, never
+    //     type annotations, and the bound-tree collector sees only
+    //     signature/field/global surfaces — a let-local value-param template
+    //     mention is INVISIBLE to both). This routing is therefore the sole
+    //     discoverer of such instantiations: removing it in favor of
+    //     collection-time registration REQUIRES first teaching the collector
+    //     to scan type-annotation positions with a scope whose meta value
+    //     args actually evaluate (the class-scope projection cannot) — a
+    //     new collection surface, deliberately NOT taken in 3.4 (zero
+    //     M4-only coverage exists in the corpus: EP self-compile records
+    //     site=meta-type 0/469).
+    //   * Redesign A4's end state moves this to "the collector records the
+    //     request; MetaHost executes it" — until then this synchronous
+    //     create-on-resolve (ensure_specialized_type, site=meta-type) is
+    //     the behavior-preserving form, regression-locked by
+    //     Tests/MetaProgramming/MetaTemplateValueLetAnnotation.md.
     fun try_resolve_template_instantiation(this, type_name: string, generic_args: _utils.List<TypeSpecifier>, scope: BoundScope) -> Option<BoundType> {
         if (cast<i64>(generic_args.size()) == 0) { return new Option<BoundType>.none(); }
         // Only activate in JIT-linked binaries (Full project build). Without this,

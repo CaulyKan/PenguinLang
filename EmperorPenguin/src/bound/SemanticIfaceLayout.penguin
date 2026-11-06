@@ -1,11 +1,18 @@
-// Pass 6 of the SemanticModel pipeline, extracted from SemanticModel.penguin.
-// Responsibilities: for each class/enum, build a BoundVTable per interface
-// implementation (interface method -> concrete method symbol mapping), merging
-// inherited interface vtables (transitive interface inheritance), handling
-// `impl for` primitive implementations and injected (#specializing) impls.
+// B2 IFACE LAYOUT (batch 3.3b; the vtable-layout half extracted from the old
+// "pass 6 InterfacesPass" — the class keeps its position in the pipeline
+// between A5's two stage entries, i.e. the B-boundary single-threaded segment
+// of the target architecture). Responsibilities: for each class/enum, build a
+// BoundVTable per interface implementation (interface method -> concrete
+// method symbol mapping), merging inherited interface vtables (transitive
+// interface inheritance — the merge MUST stay global: IBar<u8>'s own vtable
+// has to exist before it can be folded into an implementing class's IFoo<u8>
+// slot, a cross-file topology), handling `impl for` primitive implementations
+// and injected (#specializing) impls. Libmeta-injected defs carry prebuilt
+// vtables and are skipped. Also home of extract_template_name (the mangling
+// tail splitter shared by the replay paths).
 namespace emperor {
 
-class InterfacesPass {
+class IfaceLayoutPass {
     // 共享编译状态（M1 pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
     // 破除 SemanticModel <-> 本 pass 的类环。
     model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
@@ -56,10 +63,10 @@ class InterfacesPass {
 
     fun merge_inherited_vtables_for_def(mut this, def: BoundDefinition, global_scope: BoundScope) {
         _utils.trace_enter("Enter merge_inherited_vtables_for_def");
-        // Pass 6 phase 2 (shares current_pass_index=6 with build_vtables_for_def,
-        // which runs first on the same defs): use `>` so the phase-1 marker (6)
-        // does not skip this merge; phase 1 uses `>=` to stay skipped on re-run.
-        if (this.model.some.processed_beyond(def)) { return; }
+        // Pass 6 phase 2 (batch 3.3a: per-processor constant 6, `>` so the
+        // phase-1 marker does not skip this merge; phase 1 uses `>=` to stay
+        // skipped on re-run).
+        if (BoundDefinition.get_pass_index(def) > 6) { return; }
         if (def is BoundDefinition.class_def) {
             this.merge_container_vtables(def.class_def.vtables, def.class_def.interface_impls, global_scope);
         }
@@ -72,7 +79,7 @@ class InterfacesPass {
                 this.merge_inherited_vtables_for_def(child, global_scope);
             }
         }
-        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(def, 6);
     }
 
     // Transitive interface-inheritance merge. A worklist is seeded from the
@@ -148,7 +155,7 @@ class InterfacesPass {
 
     fun build_vtables_for_specialized_def(mut this, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter build_vtables_for_specialized_def");
-        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        if (BoundDefinition.get_pass_index(bound_def) >= 6) { return bound_def; }
         if (bound_def is BoundDefinition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
             let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, this.extract_template_name(cls.name), cls.ast_source);
@@ -156,7 +163,7 @@ class InterfacesPass {
                 this.build_class_vtables(ast_def.some.class_def, cls, global_scope);
             }
             this.build_injected_impl_vtables_for_class(cls, global_scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.enum_def) {
@@ -166,7 +173,7 @@ class InterfacesPass {
                 this.build_enum_vtables(ast_def.some.enum_def, e, global_scope);
             }
             this.build_injected_impl_vtables_for_enum(e, global_scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.enum_def(e);
         }
         if (bound_def is BoundDefinition.interface_def) {
@@ -177,10 +184,10 @@ class InterfacesPass {
                     this.build_interface_vtables(ast_def.some.interface_def, iface, global_scope);
                 }
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.interface_def(iface);
         }
-        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(bound_def, 6);
         return bound_def;
     }
 
@@ -271,29 +278,29 @@ class InterfacesPass {
 
     fun build_vtables_for_def(mut this, ast_def: Definition, bound_def: BoundDefinition, global_scope: mut BoundScope) -> BoundDefinition {
         _utils.trace_enter("Enter build_vtables_for_def");
-        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        if (BoundDefinition.get_pass_index(bound_def) >= 6) { return bound_def; }
         if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
             let cls: mut BoundClassDefinition = bound_def.class_def;
             this.build_class_vtables(ast_def.class_def, cls, global_scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.class_def(cls);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
             let iface: mut BoundInterfaceDefinition = bound_def.interface_def;
             this.build_interface_vtables(ast_def.interface_def, iface, global_scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.interface_def(iface);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
             let e: mut BoundEnumDefinition = bound_def.enum_def;
             this.build_enum_vtables(ast_def.enum_def, e, global_scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.enum_def(e);
         }
         if (bound_def is BoundDefinition.impl_for_def && ast_def is Definition.impl_for_def) {
             let impl_for: mut BoundInterfaceForImplementation = bound_def.impl_for_def;
             this.process_impl_for(ast_def.impl_for_def, impl_for, global_scope, global_scope);
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.impl_for_def(impl_for);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
@@ -308,10 +315,10 @@ class InterfacesPass {
                 }
                 k = k + 1;
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 6);
             return new BoundDefinition.namespace_def(ns);
         }
-        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(bound_def, 6);
         return bound_def;
     }
 

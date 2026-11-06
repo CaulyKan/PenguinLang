@@ -89,6 +89,15 @@ namespace BabyPenguin.Parser.SyntaxNodes
                 {
                     StatementType = Type.Empty;
                 }
+                else if (context.metaIfStatement() != null || context.metaWhileStatement() != null)
+                {
+                    // The meta splicer resolves every #if/#while statement it
+                    // can reach; a survivor sits in a position the splicer
+                    // does not walk (e.g. inside a lambda body).
+                    throw new BabyPenguinException(
+                        "statement-level #if/#while was not resolved by the meta splicer (unsupported position, e.g. inside a lambda body)",
+                        SourceLocation, code: ErrorCode.E_UNSUPPORTED);
+                }
                 else throw new NotImplementedException();
 
             }

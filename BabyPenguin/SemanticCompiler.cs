@@ -15,6 +15,14 @@ namespace BabyPenguin
 
         public List<SourceInput> Sources { get; } = [];
 
+        /// <summary>
+        /// CLI --define K=V pre-seed layer for the file-scoped conditional
+        /// compilation store (#define/#if): visible to every file, and a code
+        /// #define in a file overwrites it without error. Populate before
+        /// <see cref="Compile"/>.
+        /// </summary>
+        public Dictionary<string, string> CliDefines { get; } = [];
+
         private static ulong counter = 0;
 
         public SemanticCompiler AddFile(string filePath)
@@ -31,7 +39,7 @@ namespace BabyPenguin
 
         public SemanticModel Compile(bool addBuiltin = true)
         {
-            var model = new SemanticModel(addBuiltin, Reporter);
+            var model = new SemanticModel(addBuiltin, Reporter) { CliDefines = CliDefines };
 
             foreach (var source in Sources)
             {

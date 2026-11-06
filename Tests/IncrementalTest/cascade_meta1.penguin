@@ -1,0 +1,12 @@
+namespace app {
+#template(T: type)
+class Box {
+    value: T;
+    fun new(mut this, v: T) {
+        this.value = v;
+    }
+    fun label(this) -> string {
+        return "box";
+    }
+}
+}

@@ -3,6 +3,7 @@
 Phase 5a: when the `#if` condition is false, the `#else` branch's definitions are taken. `NOPE` is never defined, so `speed()` resolves to the else body.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

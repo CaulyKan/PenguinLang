@@ -678,15 +678,15 @@ initial {
 declare ptr @_emperor_gc_frame_get()
 declare void @_emperor_gc_frame_set(ptr)
 
-define void @void_func() {
-entry:
-  ret void
-}
-
 define void @test() {
 entry:
   call void @_emperor_gc_poll()
   call void @void_func()
+  ret void
+}
+
+define void @void_func() {
+entry:
   ret void
 }")]
     public void TestLLVMVoidCall() => _batch.Value.AssertSemantic();
@@ -1157,13 +1157,6 @@ initial {
 declare ptr @_emperor_gc_frame_get()
 declare void @_emperor_gc_frame_set(ptr)
 
-define i64 @dbl(i64 %x) {
-entry:
-  %t1 = add i64 0, 2
-  %t2 = mul i64 %x, %t1
-  ret i64 %t2
-}
-
 define i64 @add_dbl(i64 %a, i64 %b) {
 entry:
   call void @_emperor_gc_poll()
@@ -1172,6 +1165,13 @@ entry:
   %t3 = call i64 @dbl(i64 %b)
   %t4 = add i64 %t2, %t3
   ret i64 %t4
+}
+
+define i64 @dbl(i64 %x) {
+entry:
+  %t1 = add i64 0, 2
+  %t2 = mul i64 %x, %t1
+  ret i64 %t2
 }")]
     public void TestLLVMNestedCalls() => _batch.Value.AssertSemantic();
 

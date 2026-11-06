@@ -1,0 +1,410 @@
+// Register/SSA-value concern of the LLVM emitter (batch 0.1 split): entry
+// allocas, temp names, value resolution & coercion, LLVM type registration,
+// the native-array metadata family and icmp-result tracking.
+namespace emperor {
+
+class LLVMValues {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    // Emit an alloca instruction to the entry block (not inline).
+    // This prevents stack growth in loops. Only call during function body emission.
+    fun emit_entry_alloca(mut this, name: string, llvm_type: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_entry_alloca(name=" + cast<string>(name) + ", llvm_value=" + cast<string>(llvm_type) + ")");
+ }
+        em.entry_allocas.append("  " + name + " = alloca " + llvm_type + "\n");
+        em.entry_allocas.append("  store " + llvm_type + " zeroinitializer, ptr " + name + "\n");
+        em.entry_alloca_names.push(name);
+        // GC v2 phase 3a: struct-typed temps (NEW_ENUM results, value-class
+        // NEWs, RDMBR .f copies, sret buffers) are frame slots when their
+        // layout bears pointers — this closes the conservative-only gap the
+        // GC_VERIFY differential reported for AST/IR objects held through
+        // struct locals.
+        if (em.string_starts_with(llvm_type, "%class.") || em.string_starts_with(llvm_type, "%enum.")) {
+            let map: string = em.metadata.gc_struct_refmap_operand(llvm_type);
+            if (map != "") {
+                em.gc_frame_slots.push(new GcSlotEntry(name, map));
+            }
+        }
+    }
+
+    fun next_tmp(mut this) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter next_tmp");
+        let name: string = "%tmp_" + cast<string>(em.tmp_counter);
+        em.tmp_counter = em.tmp_counter + 1;
+        return name;
+    }
+
+    // ---- Native arrays ----
+
+    // Find (or lazily register) the metadata entry for an element IR type.
+    fun find_array_meta(mut this, elem_ir: string) -> Option<ArrayMetaEntry> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.array_meta_entries.size())) {
+            if (em.array_meta_entries.at(cast<u64>(i)).some.elem_ir == elem_ir) {
+                return new Option<ArrayMetaEntry>.some(em.array_meta_entries.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<ArrayMetaEntry>.none();
+    }
+
+    fun sanitize_meta_key(mut this, key: string) -> string {
+        // array element keys can contain <>, ., :: — sanitize to identifier-safe
+        let sb: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < string_length(key)) {
+            let c: string = string_char_at(key, i);
+            let code: i64 = string_char_code(c);
+            let ok: bool = (code >= 97 && code <= 122) || (code >= 65 && code <= 90)
+                || (code >= 48 && code <= 57) || c == "_";
+            if (ok) {
+                sb.append(c);
+            } else {
+                sb.append("_");
+            }
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    fun ensure_array_meta(mut this, elem_ir: string) -> ArrayMetaEntry {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let found: Option<ArrayMetaEntry> = this.find_array_meta(elem_ir);
+        if (found.is_some()) { return found.some; }
+
+        // Build the element's class/enum layout BEFORE asking ir_type_to_llvm:
+        // layouts are lazy, and an enum without one degrades to i64 (8 bytes)
+        // — a stride far smaller than the real element size, so __array_set
+        // would memcpy one element over the next slots (heap corruption, the
+        // Parser's List<emperor.Definition> SIGSEGV). Nested array elements
+        // need no layout (their metadata is emitter-generated below).
+        let elem_norm: string = em.types.strip_mut_ir_prefix(elem_ir);
+        if (em.string_starts_with(elem_norm, "enum<")) {
+            em.gcscan.ensure_gc_layout(em.types.extract_type_name(elem_norm), false);
+        } else if (em.string_starts_with(elem_norm, "ref<") || em.string_starts_with(elem_norm, "struct<")) {
+            let inner: string = em.types.extract_type_name(elem_norm);
+            if (!em.string_starts_with(inner, "array<")) {
+                em.gcscan.ensure_gc_layout(inner, true);
+            }
+        } else if (em.string_starts_with(elem_norm, "%enum.")) {
+            em.gcscan.ensure_gc_layout(em.metadata.refmap_type_name(elem_norm, "%enum."), false);
+        } else if (em.string_starts_with(elem_norm, "%class.")) {
+            em.gcscan.ensure_gc_layout(em.metadata.refmap_type_name(elem_norm, "%class."), true);
+        }
+
+        let elem_llvm: mut string = em.types.ir_type_to_llvm(elem_ir);
+        // Value-class elements live INLINE in the slots: the slot type is the
+        // struct itself and the stride its size. ir_type_to_llvm spells a
+        // value class as a bare ptr (the value model), which would store
+        // POINTERS to the pushed value's stack storage — dangling after the
+        // frame returns, and no value-copy semantics at all.
+        let vstruct: string = em.types.value_class_struct_type(elem_ir);
+        let is_value_elem: mut bool = false;
+        if (vstruct != "") {
+            elem_llvm = vstruct;
+            is_value_elem = true;
+        }
+        let size: i64 = em.types.llvm_type_size(elem_llvm);
+        let align: i64 = em.types.llvm_type_align(elem_llvm);
+        let stride: mut i64 = em.types.align_up(size, align);
+        if (stride < 1) { stride = 1; }
+
+        // REFARR program, indexed like every emitter ref-map (index 0 is the
+        // total-length placeholder, the root node sits at 1):
+        //   [total, 3, stride, elem_sub, ...elem node ints]
+        // elem_sub is the node of ONE element value (0 = pointer-free).
+        let ints: mut _utils.List<i64> = new _utils.List<i64>();
+        ints.push(0);
+        ints.push(3);
+        ints.push(stride);
+        // reserve the elem_sub slot; fill after the node is appended
+        let sub_slot: i64 = cast<i64>(ints.size());
+        ints.push(0);
+        let elem_node: i64 = em.metadata.refmap_node_of_payload(elem_llvm, ints);
+        ints.set(cast<u64>(sub_slot), elem_node);
+        ints.set(cast<u64>(0), cast<i64>(ints.size()));
+
+        let key: string = this.sanitize_meta_key(elem_ir);
+        let entry: mut ArrayMetaEntry = new ArrayMetaEntry();
+        entry.elem_ir = elem_ir;
+        entry.meta_name = "__array_" + key;
+        entry.elem_llvm = elem_llvm;
+        entry.stride = stride;
+        entry.is_value_elem = is_value_elem;
+        entry.refmap_name = "__array_" + key + "_refmap";
+        entry.refmap_ints = ints;
+        em.array_meta_entries.push(entry);
+        return entry;
+    }
+
+    // %res = ARRAY_NEW_ZEROED <T> %len
+    fun emit_array_new_zeroed(mut this, inst: IRArrayNewZeroed) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let entry: ArrayMetaEntry = this.ensure_array_meta(inst.elem_type);
+        let result_name: string = inst.result.display();
+        let len_resolved: string = this.resolve_value(inst.length);
+        let len_i64: string = this.coerce_operand(len_resolved, "i64");
+        em.instructions.emit_gc_poll();
+        let raw: mut string = result_name;
+        if (em.gcscan.is_mutable_reg(result_name)) {
+            raw = this.next_tmp();
+        }
+        em.instructions.emit_line("  " + raw + " = call ptr @_emperor_array_create(ptr @" + entry.meta_name + "_metadata, i64 " + len_i64 + ", i64 " + cast<string>(entry.stride) + ")");
+        if (em.gcscan.is_mutable_reg(result_name)) {
+            em.instructions.emit_line("  store ptr " + raw + ", ptr " + this.get_alloca_name(result_name));
+        }
+        this.register_llvm_type(result_name, "ptr");
+    }
+
+    // Byte offset of element i: 16 + i*stride (materialized as SSA).
+    fun array_elem_ptr(mut this, arr_resolved: string, idx_resolved: string, meta_entry: ArrayMetaEntry) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let idx_i64: string = this.coerce_operand(idx_resolved, "i64");
+        let off_mul: string = this.next_tmp();
+        em.instructions.emit_line("  " + off_mul + " = mul i64 " + idx_i64 + ", " + cast<string>(meta_entry.stride));
+        let off: string = this.next_tmp();
+        em.instructions.emit_line("  " + off + " = add i64 16, " + off_mul);
+        let ep: string = this.next_tmp();
+        em.instructions.emit_line("  " + ep + " = getelementptr i8, ptr " + arr_resolved + ", i64 " + off);
+        let casted: string = this.next_tmp();
+        em.instructions.emit_line("  " + casted + " = bitcast ptr " + ep + " to ptr");
+        return casted;
+    }
+
+    // %res:T = ARRAY_GET %arr, %idx
+    fun emit_array_get(mut this, inst: IRArrayGet) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        // The array's element ir type: strip "[]" from the array operand's IR
+        // type (e.g. the array operand spells "array<i32>").
+        let arr_ir: string = inst.array.get_ir_type();
+        let elem_ir: string = inst.ir_type;
+        let entry: ArrayMetaEntry = this.ensure_array_meta(elem_ir);
+        let arr_resolved: string = this.resolve_value(inst.array);
+        let idx_resolved: string = this.resolve_value(inst.index);
+        let elem_ptr: string = this.array_elem_ptr(arr_resolved, idx_resolved, entry);
+        let result_name: string = inst.result.display();
+        if (entry.is_value_elem) {
+            // Value-class element: the result is a POINTER to fresh storage
+            // holding a whole-struct COPY of the slot (the value model). A
+            // bare `load ptr` here would hand out the slot's first word as a
+            // pointer — the pushed value's own storage aliased instead of a
+            // copy (e0=<huge pointer number> in ListValueElements).
+            // The SSA alloca MUST be named after the result register
+            // itself: later uses (sret tails, field loads) resolve %tN as
+            // the pointer — a differently-named temp would dangle.
+            let dst: mut string = "";
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                dst = this.get_alloca_name(result_name);
+            } else {
+                dst = result_name;
+                em.instructions.emit_line("  " + dst + " = alloca " + entry.elem_llvm + ", align 8");
+            }
+            em.instructions.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + dst + ", ptr " + elem_ptr + ", i32 " + cast<string>(entry.stride) + ", i1 false)");
+            em.plan.needs_memcpy = true;
+            this.register_llvm_type(result_name, "ptr");
+            return;
+        }
+        if (em.gcscan.is_mutable_reg(result_name)) {
+            let loaded: string = this.next_tmp();
+            em.instructions.emit_line("  " + loaded + " = load " + entry.elem_llvm + ", ptr " + elem_ptr);
+            em.instructions.emit_line("  store " + entry.elem_llvm + " " + loaded + ", ptr " + this.get_alloca_name(result_name));
+        } else {
+            em.instructions.emit_line("  " + result_name + " = load " + entry.elem_llvm + ", ptr " + elem_ptr);
+        }
+        this.register_llvm_type(result_name, entry.elem_llvm);
+    }
+
+    fun zero_literal_for(mut this, llvm_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (llvm_type == "float" || llvm_type == "double") { return "0.0"; }
+        if (em.string_starts_with(llvm_type, "%class.") || em.string_starts_with(llvm_type, "%enum.")) {
+            return "zeroinitializer";
+        }
+        return "0";
+    }
+
+    // ARRAY_SET %arr, %idx, %v
+    fun emit_array_set(mut this, inst: IRArraySet) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let elem_ir: string = inst.value.get_ir_type();
+        let entry: ArrayMetaEntry = this.ensure_array_meta(elem_ir);
+        let arr_resolved: string = this.resolve_value(inst.array);
+        let idx_resolved: string = this.resolve_value(inst.index);
+        let val_resolved: string = this.resolve_value(inst.value);
+        let elem_ptr: string = this.array_elem_ptr(arr_resolved, idx_resolved, entry);
+        if (entry.is_value_elem) {
+            // Value-class element: copy the WHOLE struct into the slot. The
+            // value resolves to a pointer to its storage — storing the
+            // pointer would leak a stack address into the array and alias
+            // the source instead of copying it.
+            let coerced: string = this.coerce_operand(val_resolved, entry.elem_llvm);
+            em.instructions.emit_line("  store " + entry.elem_llvm + " " + coerced + ", ptr " + elem_ptr);
+            return;
+        }
+        let val_coerced: string = this.coerce_operand(val_resolved, entry.elem_llvm);
+        em.instructions.emit_line("  store " + entry.elem_llvm + " " + val_coerced + ", ptr " + elem_ptr);
+    }
+
+    // %n:u64 = ARRAY_LEN %arr
+    fun emit_array_len(mut this, inst: IRArrayLen) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let arr_resolved: string = this.resolve_value(inst.array);
+        let lenp: string = this.next_tmp();
+        em.instructions.emit_line("  " + lenp + " = getelementptr i8, ptr " + arr_resolved + ", i64 8");
+        let castp: string = this.next_tmp();
+        em.instructions.emit_line("  " + castp + " = bitcast ptr " + lenp + " to ptr");
+        let result_name: string = inst.result.display();
+        if (em.gcscan.is_mutable_reg(result_name)) {
+            let loaded: string = this.next_tmp();
+            em.instructions.emit_line("  " + loaded + " = load i64, ptr " + castp);
+            em.instructions.emit_line("  store i64 " + loaded + ", ptr " + this.get_alloca_name(result_name));
+        } else {
+            em.instructions.emit_line("  " + result_name + " = load i64, ptr " + castp);
+        }
+        this.register_llvm_type(result_name, "i64");
+    }
+
+    // A stable slot address holding `coerced` (used by the fixed-ABI array
+    // externs that take element values by reference). Mutable regs already
+    // live in an alloca; other values get a fresh entry alloca + store.
+    fun materialize_value_slot(mut this, val: IRValue, coerced: string, llvm_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let name: string = val.display();
+        if (em.gcscan.is_mutable_reg(name)) {
+            return this.get_alloca_name(name);
+        }
+        let slot: string = this.next_tmp();
+        this.emit_entry_alloca(slot, llvm_type);
+        em.instructions.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + slot);
+        return slot;
+    }
+
+    // --- Value resolution ---
+
+    fun resolve_value(mut this, val: IRValue) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter resolve_value(val=" + val.display() + ")");
+ }
+        let display: string = val.display();
+        // Mutable register: emit load from alloca
+        if (em.gcscan.is_mutable_reg(display)) {
+            let alloca_name: string = this.get_alloca_name(display);
+            let llvm_type: string = this.get_llvm_type(display);
+            if (llvm_type != "" && llvm_type != "void") {
+                let loaded: string = this.next_tmp();
+                em.sb.append("  " + loaded + " = load " + llvm_type + ", ptr " + alloca_name + "\n");
+                this.register_llvm_type(loaded, llvm_type);
+                return loaded;
+            }
+        }
+        // Check register mapping (immutable registers and aliases)
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.reg_map.size())) {
+            let mapping: RegMapping = em.reg_map.at(cast<u64>(i)).some;
+            if (mapping.ir_name == display) {
+                return mapping.llvm_value;
+            }
+            i = i + 1;
+        }
+        return display;
+    }
+
+    fun get_alloca_name(this, name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_alloca_name(name=" + cast<string>(name) + ")");
+ }
+        // Hash lookup (maintained beside every alloca_map push) — the old
+        // linear scan paid a string compare per mapping on hot paths.
+        let m: i64 = em.alloca_idx_map.get(name, -1);
+        if (m >= 0) {
+            return em.alloca_map.at(cast<u64>(m)).some.llvm_value;
+        }
+        return name + ".addr";
+    }
+
+    fun register_llvm_type(mut this, reg_name: string, llvm_type: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter register_llvm_type(reg_name=" + cast<string>(reg_name) + ", llvm_type=" + cast<string>(llvm_type) + ")");
+ }
+        // GC v2 3c: a promoted register's STRUCT home is authoritative —
+        // def sites' blanket "ptr" registrations (the value-model default
+        // for enum/value-class results) must not clobber it, or later
+        // resolve_value loads would misread the slot's type.
+        if (llvm_type == "ptr") {
+            let home: string = em.gcscan.gc_only_home(reg_name);
+            if (string_length(home) > 0 && em.string_starts_with(home, "%class.")) { return; }
+            if (string_length(home) > 0 && em.string_starts_with(home, "%enum.")) { return; }
+        }
+        em.reg_type_map.push(new RegMapping(reg_name, llvm_type));
+        // Latest registration wins (get_llvm_type used to scan backward) —
+        // record the index in the per-function hash instead.
+        em.rtt_map.set(reg_name, cast<i64>(em.reg_type_map.size()) - 1);
+    }
+
+    fun get_llvm_type(this, reg_name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_llvm_type(reg_name=" + cast<string>(reg_name) + ")");
+ }
+        let m: i64 = em.rtt_map.get(reg_name, -1);
+        if (m >= 0) {
+            return em.reg_type_map.at(cast<u64>(m)).some.llvm_value;
+        }
+        return "";
+    }
+
+    fun coerce_operand(mut this, resolved: string, expected_llvm: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter coerce_operand(resolved=" + cast<string>(resolved) + ", expected_llvm=" + cast<string>(expected_llvm) + ")");
+ }
+        // Skip if expected type is ptr (opaque in LLVM)
+        if (expected_llvm == "ptr") { return resolved; }
+        // Look up actual type of register
+        let actual_type: string = this.get_llvm_type(resolved);
+        if (actual_type == "" || actual_type == expected_llvm) { return resolved; }
+        // ptr -> struct: load the value type from the reference pointer
+        if (actual_type == "ptr" && (em.string_starts_with(expected_llvm, "%class.") || em.string_starts_with(expected_llvm, "%struct.") || em.string_starts_with(expected_llvm, "%enum."))) {
+            let tmp: string = this.next_tmp();
+            em.sb.append("  " + tmp + " = load " + expected_llvm + ", ptr " + resolved + "\n");
+            this.register_llvm_type(tmp, expected_llvm);
+            // Remember where this struct value was loaded FROM, so storage-
+            // resolving paths (mut-ref payload extraction) can alias the
+            // original instead of the detached SSA copy.
+            em.struct_value_sources.push(new RegMapping(tmp, resolved));
+            return tmp;
+        }
+        // Insert truncation or extension
+        let tmp: string = this.next_tmp();
+        if (is_wider_int(actual_type, expected_llvm)) {
+            em.sb.append("  " + tmp + " = trunc " + actual_type + " " + resolved + " to " + expected_llvm + "\n");
+        } else {
+            em.sb.append("  " + tmp + " = zext " + actual_type + " " + resolved + " to " + expected_llvm + "\n");
+        }
+        this.register_llvm_type(tmp, expected_llvm);
+        return tmp;
+    }
+
+    fun is_icmp_value(this, resolved: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_icmp_value(resolved=" + cast<string>(resolved) + ")");
+ }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.icmp_results.size())) {
+            if (em.icmp_results.at(cast<u64>(i)).some == resolved) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+}
+
+}

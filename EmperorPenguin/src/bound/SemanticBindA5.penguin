@@ -1,0 +1,168 @@
+// Batch 3.3b: the A5 STAGE DRIVER (redesign §5 stage A, "BindBodies" in the
+// target architecture). In the full-compile shape of this batch, A5 owns the
+// per-def passes that the historical pipeline numbered 4/5/8/9:
+//
+//   run_symbols_and_constructors  the per-file segment walk of pass 4
+//                                 (parameter/symbol binding) + pass 5
+//                                 (constructor synthesis);
+//   run_bodies_and_validate       the dynamic flat walk of pass 8 (body
+//                                 binding) + pass 9 (control-flow validation).
+//
+// The two stage entries are separated by the GLOBAL stages that must sit
+// between them (B2 iface layout + the cross-file value-type classification
+// fixpoint) — body binding consumes vtables and classifications, so 4/5 and
+// 8/9 cannot merge into one literal per-def loop yet (single-file-segment
+// batches, roadmap batch 4, lift that ordering). What A5 DOES deliver now is
+// the "one def, one walk" semantics for LATE defs — the three bind_def_*
+// entries below are the physical replacement of the SemanticModel catch_up
+// family: a def born mid-pass-8 (bind-time specialization, synthesized spawn
+// ctx / lambda / GenCtx classes) enters the stage explicitly instead of
+// being replayed through a multi-pass catch-up that manipulated a global
+// pass pointer. Every processor guards and stamps by its own constant pass
+// number (batch 3.3a), so the replays are plain ordered calls.
+//
+// The LATE-CLASSIFICATION protocol (batch 3.4 checklist item 3) rests on
+// three defense lines, all still in force after the 3.3 restructuring:
+//   line 1 — the GLOBAL final classification run (bind() runs
+//            ClassifyValueTypesPass.run over every definition between B2 and
+//            run_bodies_and_validate; it is the only authority on the fully
+//            substituted graph);
+//   line 2 — NO eager classification at specialization creation
+//            (resolve_field_specialization's creation branch — a cycle walk
+//            before the referencing field carries its spec type sees the
+//            template graph and can settle recursive shapes as VALUE
+//            prematurely; see the comment at that site for the data-property
+//            argument);
+//   line 3 — the late SIGNATURE rebuild this driver provides
+//            (bind_def_signature / bind_def_signature_before_bodies run
+//            symbols/ctors/vtables/classification for defs born after the
+//            global run, without which the emitter defaults them to VALUE
+//            layouts and recursive shapes die as E_SIZE_CYCLE).
+//
+// ANTLR-safe compiler source (plain penguin; no meta, no nested namespaces).
+namespace emperor {
+
+class BindA5Pass {
+    // 共享编译状态（M-pass 类模式）：.none() 哑默认 + 构造函数 .some(model) 赋值，
+    // 破除 SemanticModel <-> 本 pass 的类环。
+    model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+
+    fun new(mut this, model: mut SemanticModel) {
+        this.model = new Option<SemanticModel>.some(model);
+    }
+
+    // ---- Stage entries (called from SemanticModel.bind) ----
+
+    // A5 first half: symbols + constructors, walked in per-file segment
+    // order (model.def_seg_*, built here — after pass 3 the definitions
+    // arrangement is final for this stage: AST defs in file order, libmeta
+    // injections spliced in place, fixpoint specializations appended).
+    fun run_symbols_and_constructors(mut this, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter a5_run_symbols_and_constructors");
+        let m: mut SemanticModel = this.model.some;
+        m.build_def_segments(result);
+        m.current_pass_index = 4;
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 4/9: Binding symbols..."); }
+        m.bind_symbols_pass.run(result);
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 4/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(m.errors.size()) + " errors"); }
+        m.current_pass_index = 5;
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 5/9: Generating constructors..."); }
+        m.constructors_pass.run(result);
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 5/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(m.errors.size()) + " errors"); }
+    }
+
+    // A5 second half: bodies + control-flow validation. Kept as the dynamic
+    // flat loop (bind-time synthesis appends defs mid-walk; its bound is
+    // re-read per iteration), then the validation sweep over the finished
+    // tree.
+    fun run_bodies_and_validate(mut this, unit: CompilationUnit, result: mut BoundCompilationUnit) {
+        _utils.trace_enter("Enter a5_run_bodies_and_validate");
+        let m: mut SemanticModel = this.model.some;
+        m.current_pass_index = 8;
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9: Binding expressions..."); }
+        m.bind_bodies_pass.run(unit, result);
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(m.errors.size()) + " errors"); }
+        m.current_pass_index = 9;
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9: Validating control flow..."); }
+        m.validate_control_flow_pass.run(result);
+        if (m.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(m.errors.size()) + " errors"); }
+    }
+
+    // ---- Late-def entries: the physical replacement of the catch_up family ----
+
+    // Full single-def walk: symbols -> ctors -> vtables -> classification ->
+    // BODY. The `saved` boundary reads the read-only stage indicator: during
+    // the pass-3 fixpoint the stage is 3 and nothing runs (the fixpoint's own
+    // resolve_pair + specialize_* creation own passes 1-3, and the global
+    // stages pick the def up later); from the pass-8 window on, everything
+    // including the body runs. This is the historical catch_up_def, with the
+    // processors' per-constant guards making the ordered replay sufficient.
+    fun bind_def_complete(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter a5_bind_def_complete");
+        let m: mut SemanticModel = this.model.some;
+        let saved: i64 = m.current_pass_index;
+        m.trace("a5 bind_def_complete " + m.def_display_name(def) + " (pipeline stage " + cast<string>(saved) + ")");
+        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
+        if (saved >= 4) { m.bind_symbols_pass.bind_symbols_for_def(def); }
+        if (saved >= 5) { m.constructors_pass.init_constructors_for_def(def, def_scope); }
+        if (saved >= 6) {
+            m.iface_layout_pass.build_vtables_for_specialized_def(def, def_scope);
+            m.iface_layout_pass.merge_inherited_vtables_for_def(def, def_scope);
+        }
+        if (saved >= 7) {
+            m.classify_value_types_pass.classify_def(def, new _utils.List<string>());
+            m.classify_value_types_pass.validate_interface_usage_def(def);
+        }
+        if (saved >= 8) { m.bind_bodies_pass.bind_body_for_specialized_def(def, result); }
+    }
+
+    // Signature-level walk (symbols/ctors/vtables/classification) WITHOUT the
+    // body: used by bind-time def synthesis (spawn ctx / lambda / GenCtx
+    // classes) — body binding is not re-entrant inside an expression bind;
+    // the appended def's bodies are bound later by the dynamic A5 body loop
+    // (its >=8 guard is exactly what "signature replay ends at stamp 7"
+    // leaves pending). During the pass-3 window (stage 3) nothing runs — the
+    // global stages own the def. Historical catch_up_def_before_bodies.
+    fun bind_def_signature_before_bodies(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter a5_bind_def_signature_before_bodies");
+        let m: mut SemanticModel = this.model.some;
+        let saved: i64 = m.current_pass_index;
+        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
+        if (saved >= 4) { m.bind_symbols_pass.bind_symbols_for_def(def); }
+        if (saved >= 5) { m.constructors_pass.init_constructors_for_def(def, def_scope); }
+        if (saved >= 6) {
+            m.iface_layout_pass.build_vtables_for_specialized_def(def, def_scope);
+            m.iface_layout_pass.merge_inherited_vtables_for_def(def, def_scope);
+        }
+        if (saved >= 7) {
+            m.classify_value_types_pass.classify_def(def, new _utils.List<string>());
+            m.classify_value_types_pass.validate_interface_usage_def(def);
+        }
+    }
+
+    // Unconditional signature-level walk: for pass-8-window defs born NESTED
+    // inside another def's late chain (e.g. a resolve_field_specialization
+    // creating a sibling spec while the caller resolves types). The stage
+    // indicator cannot be trusted there (the caller may sit at ANY stage), so
+    // the signature processors run unconditionally — each one's per-constant
+    // guard makes this idempotent. Without it, a pass-8-window specialization
+    // that only rides resolve_pair + push is never classified (pass 7's
+    // global run is already over) and the emitter defaults it to a VALUE
+    // class (E_SIZE_CYCLE on recursive shapes like _ChanNode.next:
+    // Option<_ChanNode>). Historical catch_up_signature_passes (which in
+    // turn replaced catch_up_def_before_bodies_as_pass8).
+    fun bind_def_signature(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
+        _utils.trace_enter("Enter a5_bind_def_signature");
+        let m: mut SemanticModel = this.model.some;
+        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
+        m.bind_symbols_pass.bind_symbols_for_def(def);
+        m.constructors_pass.init_constructors_for_def(def, def_scope);
+        m.iface_layout_pass.build_vtables_for_specialized_def(def, def_scope);
+        m.iface_layout_pass.merge_inherited_vtables_for_def(def, def_scope);
+        m.classify_value_types_pass.classify_def(def, new _utils.List<string>());
+        m.classify_value_types_pass.validate_interface_usage_def(def);
+    }
+
+}
+
+}

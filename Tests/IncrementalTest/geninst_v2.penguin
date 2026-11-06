@@ -1,0 +1,14 @@
+namespace app {
+#template(T: type)
+fun identity(v: T) -> T {
+    return v;
+}
+
+fun describe(n: i64) -> string {
+    return "num=" + cast<string>(n);
+}
+
+initial {
+    println(describe(string_length(identity<string>("ab")) + 39));
+}
+}

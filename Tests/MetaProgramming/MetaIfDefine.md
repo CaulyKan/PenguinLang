@@ -3,6 +3,7 @@
 Phase 5a conditional compilation: a top-level `#define` sets a compile-time option, and `#if (#defined(...))` includes a function that the initial block then calls. EP-only (the rewrite lives in EmperorPenguin's SemanticModel).
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

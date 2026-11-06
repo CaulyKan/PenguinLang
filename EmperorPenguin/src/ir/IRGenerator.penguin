@@ -173,7 +173,11 @@ class IRGenerator {
             let p_loc: SourceLocation = this.sym_loc_func(def.symbol);
             let _: IRValue = this.builder.func.alloc_param(p.name, this.bound_type_to_ir_type(p.bound_type), p_loc.line, p_loc.col);
             let param_full_name: string = def.full_name + ".<body>." + p.name;
-            let arg_reg: IRValue = this.builder.emit_arg(p.name, pi, this.bound_type_to_ir_type(p.bound_type), p_loc);
+            // Batch 5 (C1): the ARG instruction must reference the parameter's
+            // POST-reshape LLVM name (alloc_param reshapes label-shaped names
+            // like `entry` — see IRFunction.make_unique_reg_name).
+            let p_ir_name: string = this.builder.func.param_ir_name(pi);
+            let arg_reg: IRValue = this.builder.emit_arg(p_ir_name, pi, this.bound_type_to_ir_type(p.bound_type), p_loc);
             this.set_symbol_reg_by_name(param_full_name, arg_reg);
             if (p.name == "this") {
                 this.set_symbol_reg_by_name("_this", arg_reg);
@@ -259,7 +263,10 @@ class IRGenerator {
             let p_ir: string = this.bound_type_to_ir_type(p.bound_type);
             let _: IRValue = this.builder.func.alloc_param(p.name, p_ir, func_loc.line, func_loc.col);
             let param_full_name: string = def.full_name + ".<body>." + p.name;
-            let arg_reg: IRValue = this.builder.emit_arg(p.name, pi, p_ir, func_loc);
+            // Batch 5 (C1): same as the member path — ARG references the
+            // post-reshape parameter name.
+            let p_ir_name2: string = this.builder.func.param_ir_name(pi);
+            let arg_reg: IRValue = this.builder.emit_arg(p_ir_name2, pi, p_ir, func_loc);
             this.set_symbol_reg_by_name(param_full_name, arg_reg);
             arg_regs.push(arg_reg);
             pi = pi + 1;
@@ -650,15 +657,6 @@ class IRGenerator {
             return this.lower_expression(expr.operands.at(cast<u64>(0)).some);
         }
 
-        // Lower first operand early to derive type if bound type is void
-        let first: IRValue = this.lower_expression(expr.operands.at(cast<u64>(0)).some);
-        if (ir_type == "void" || ir_type == "unknown") {
-            let first_type: string = first.get_ir_type();
-            if (first_type != "void" && first_type != "unknown") {
-                ir_type = first_type;
-            }
-        }
-
         // Special handling for `is` expression (pattern matching / type check)
         if (cast<i64>(expr.operators.size()) > 0) {
             let first_op: BinaryOperator = expr.operators.at(cast<u64>(0)).some;
@@ -703,6 +701,16 @@ class IRGenerator {
         // false (e.g. `opt.is_some() && opt.some.field` would dereference opt.some
         // on a none Option -> NULL/wild deref). Detect a pure-&& or pure-|| chain
         // and lower it with branches so the RHS is only evaluated when needed.
+        // Batch 5 (C2, 4.4 handoff — "cross-lib bool return corrupted in ||"):
+        // this scan runs BEFORE any operand is lowered. The historical code
+        // lowered operand 0 up front ("derive type if void") and then handed
+        // the whole chain to lower_short_circuit / the `is` path, which lower
+        // every operand AGAIN — a side-effecting first operand (a method call,
+        // the LSP's cross-.so IncrementalSession.update) executed TWICE, the
+        // first result silently discarded. `changed = update(...) || changed`
+        // then observed the SECOND update (text already ingested -> false) —
+        // the "register allocation changes the manifestation" 4.4 note was
+        // this double evaluation all along, not an ABI defect.
         let all_and: mut bool = true;
         let all_or: mut bool = true;
         let oi: mut i64 = 0;
@@ -722,6 +730,17 @@ class IRGenerator {
         if (all_or) {
             if (cast<i64>(expr.operators.size()) > 0) {
                 return this.lower_short_circuit(expr, false);
+            }
+        }
+
+        // Lower first operand early to derive type if bound type is void
+        // (chain path only — the `is` and short-circuit paths above lower
+        // their operands exactly once each now).
+        let first: IRValue = this.lower_expression(expr.operands.at(cast<u64>(0)).some);
+        if (ir_type == "void" || ir_type == "unknown") {
+            let first_type: string = first.get_ir_type();
+            if (first_type != "void" && first_type != "unknown") {
+                ir_type = first_type;
             }
         }
 

@@ -3,6 +3,7 @@
 Phase 5a: boolean operators in `#if` conditions. `#defined("X") || #defined("Y")` folds true (X is defined); `!#defined("Z")` folds true (Z is undefined). Both functions are included and summed.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

@@ -1,0 +1,539 @@
+// DWARF debug-info concern of the LLVM emitter (batch 0.1 split): the
+// !DICompileUnit/!DIFile/!DILocalVariable machinery, debug locations and
+// type metadata caching.
+namespace emperor {
+
+class LLVMDebug {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    // Allocate a new debug metadata ID (returns just the number string, e.g. "0", "1")
+    fun next_debug_id(mut this) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter next_debug_id");
+        let id: string = cast<string>(em.debug_id_counter);
+        em.debug_id_counter = em.debug_id_counter + 1;
+        return id;
+    }
+
+    // Initialize debug info for a compilation unit
+    fun debug_init_compile_unit(mut this, filename: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter debug_init_compile_unit(filename=" + cast<string>(filename) + ")");
+ }
+        if (!em.debug_enabled) { return; }
+        em.debug_id_counter = 0;
+        em.debug_metadata = new _utils.List<string>();
+        em.debug_type_cache = new _utils.List<RegMapping>();
+        em.debug_file_cache = new _utils.List<RegMapping>();
+        // Allocate ids in a fixed order: file 0, then CU/subprogram-type/flags.
+        let file_id: string = this.debug_push_di_file(filename);  // 0 (also seeds the cache)
+        let cu_id: string = this.next_debug_id();                 // 1
+        let sp_type_id: string = this.next_debug_id();            // 2
+        let types_list_id: string = this.next_debug_id();         // 3
+        let mf0: string = this.next_debug_id();                   // 4
+        let mf1: string = this.next_debug_id();                   // 5
+        em.current_file_id = file_id;
+        em.current_compile_unit_id = cu_id;
+        em.debug_metadata.push("!" + cu_id + " = distinct !DICompileUnit(language: DW_LANG_C, file: !" + file_id + ", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug)");
+        em.current_subroutine_type = sp_type_id;
+        em.debug_metadata.push("!" + sp_type_id + " = !DISubroutineType(types: !" + types_list_id + ")");
+        em.debug_metadata.push("!" + types_list_id + " = !{null}");
+        em.debug_metadata.push("!" + mf0 + " = !{i32 2, !\"Dwarf Version\", i32 4}");
+        em.debug_metadata.push("!" + mf1 + " = !{i32 2, !\"Debug Info Version\", i32 3}");
+        em.current_module_flags = "!" + mf0 + ", !" + mf1;
+    }
+
+    // Begin debug info for a function
+    fun debug_begin_function(mut this, func_name: string, loc: SourceLocation) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter debug_begin_function(func_name=" + cast<string>(func_name) + ")");
+ }
+        if (!em.debug_enabled) { return; }
+        // Attribute the function (and the locals/types emitted while it is
+        // current) to its own source file, not whichever file was used to init
+        // the compile unit. Without this every function's DISubprogram pointed
+        // at main.penguin, so a debugger showed all parser code as main.penguin.
+        em.current_file_id = this.debug_get_file(loc.filename);
+        let sp_id: string = this.next_debug_id();
+        em.current_subprogram_id = sp_id;
+        let line_str: string = cast<string>(loc.line);
+        // DW_AT_name carries the SOURCE-LEVEL name (fib, Point.magnitude_squared)
+        // so `break fib` / pretty backtraces work. Deliberately NO linkageName:
+        // gdb's cooked index drops the natural name from lookup when
+        // DW_AT_linkage_name is present (break/info-functions by "fib" then
+        // fail) — the mangled ELF symbol stays reachable via the ELF symtab.
+        let display: string = this.debug_display_name(func_name);
+        em.debug_metadata.push("!" + sp_id + " = distinct !DISubprogram(name: \"" + display + "\", file: !" + em.current_file_id + ", line: " + line_str + ", scope: !" + em.current_file_id + ", type: !" + em.current_subroutine_type + ", isLocal: false, isDefinition: true, scopeLine: " + line_str + ", isOptimized: false, unit: !" + em.current_compile_unit_id + ")");
+        // Cache the !dbg suffix for this function's scope (used for instructions without source loc)
+        let scope_loc_id: string = this.next_debug_id();
+        em.debug_metadata.push("!" + scope_loc_id + " = !DILocation(line: " + line_str + ", column: 0, scope: !" + sp_id + ")");
+        em.current_scope_dbg = ", !dbg !" + scope_loc_id;
+        em.current_scope_loc_id = scope_loc_id;
+        em.current_loc_id = scope_loc_id;
+    }
+
+    // Get-or-create a !DIFile metadata node for `filename` (cached so each source
+    // file maps to a single DIFile id). Falls back to the compile-unit's file
+    // for an empty filename so functions without a location still resolve.
+    fun debug_get_file(mut this, filename: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter debug_get_file(filename=" + cast<string>(filename) + ")");
+ }
+        if (string_length(filename) == 0) { return em.current_file_id; }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.debug_file_cache.size())) {
+            let entry: RegMapping = em.debug_file_cache.at(cast<u64>(i)).some;
+            if (entry.ir_name == filename) { return entry.llvm_value; }
+            i = i + 1;
+        }
+        let file_id: string = this.debug_push_di_file(filename);
+        return file_id;
+    }
+
+    // Allocate a DIFile id and push the node. The DWARF file entry always
+    // carries a non-empty directory: an absolute path is split into
+    // (directory, basename), a relative path gets the compile-time working
+    // directory. gdb refuses to index a compile unit whose file entry has an
+    // empty directory (address-based line lookup works, but `break <name>`
+    // finds nothing), so this split is required for name-based breakpoints.
+    fun debug_push_di_file(mut this, filename: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let file_id: string = this.next_debug_id();
+        let base: mut string = filename;
+        let dir: mut string = "";
+        let len: i64 = string_length(filename);
+        if (len > 0 && string_char_at(filename, 0) == "/") {
+            // Absolute: split at the last '/'. "/x" keeps directory "/".
+            let us: mut i64 = -1;
+            let i: mut i64 = 0;
+            while (i < len) {
+                if (string_char_at(filename, i) == "/") { us = i; }
+                i = i + 1;
+            }
+            if (us > 0) {
+                dir = string_substring(filename, 0, us);
+                base = string_substring(filename, us + 1, len - us - 1);
+            } else {
+                dir = "/";
+                base = string_substring(filename, 1, len - 1);
+            }
+        } else if (len > 0) {
+            dir = _utils.getenv("PWD");
+        }
+        em.debug_metadata.push("!" + file_id + " = !DIFile(filename: \"" + base + "\", directory: \"" + dir + "\")");
+        em.debug_file_cache.push(new RegMapping(filename, file_id));
+        return file_id;
+    }
+
+    // Source-level display name for DWARF: strip the "<global>." and the
+    // "_ns_<file>_<hash>." per-file namespace prefix so a debugger shows
+    // "fib" / "Point.magnitude_squared" instead of the full IR name. The mangled
+    // symbol remains available via DW_AT_linkage_name.
+    fun debug_display_name(this, func_name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let key: string = em.globals.strip_global_prefix(func_name);
+        if (em.string_starts_with(key, "_ns_")) {
+            // shape: _ns_<filestem>_<hash>.<rest> — the hash is a digits-only
+            // run after the LAST '_' before the first '.'.
+            let dot: i64 = string_find(key, ".");
+            if (dot > 0) {
+                let head: string = string_substring(key, 0, dot);
+                let us: mut i64 = -1;
+                let i: mut i64 = 0;
+                while (i < string_length(head)) {
+                    if (string_char_at(head, i) == "_") { us = i; }
+                    i = i + 1;
+                }
+                if (us > 0) {
+                    let digits: string = string_substring(head, us + 1, string_length(head) - us - 1);
+                    let all_digits: mut bool = string_length(digits) > 0;
+                    let di: mut i64 = 0;
+                    while (di < string_length(digits) && all_digits) {
+                        let code: i64 = string_char_code(string_char_at(digits, di));
+                        if (code < 48 || code > 57) { all_digits = false; }
+                        di = di + 1;
+                    }
+                    if (all_digits) {
+                        return string_substring(key, dot + 1, string_length(key) - dot - 1);
+                    }
+                }
+            }
+        }
+        return key;
+    }
+
+    // Get debug location suffix for an instruction at the given source location
+    // Always emits !dbg when debug is enabled (LLVM requires all instructions in debug functions to have !dbg)
+    fun debug_loc(mut this, loc: SourceLocation) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter debug_loc");
+        if (!em.debug_enabled) { return ""; }
+        let line: i64 = loc.line;
+        let col: i64 = loc.col;
+        if (line == 0) {
+            // No source location — use the function scope location
+            em.current_loc_id = em.current_scope_loc_id;
+            return em.current_scope_dbg;
+        }
+        let loc_id: string = this.next_debug_id();
+        em.debug_metadata.push("!" + loc_id + " = !DILocation(line: " + cast<string>(line) + ", column: " + cast<string>(col) + ", scope: !" + em.current_subprogram_id + ")");
+        em.current_loc_id = loc_id;
+        return ", !dbg !" + loc_id;
+    }
+
+    // Emit all debug metadata at the end of the module
+    fun debug_emit_metadata(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter debug_emit_metadata");
+        if (!em.debug_enabled) { return; }
+        if (cast<i64>(em.debug_metadata.size()) == 0) { return; }
+        em.sb.append("\n!llvm.dbg.cu = !{!" + em.current_compile_unit_id + "}\n");
+        em.sb.append("!llvm.module.flags = !{" + em.current_module_flags + "}\n");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.debug_metadata.size())) {
+            em.sb.append(em.debug_metadata.at(cast<u64>(i)).some + "\n");
+            i = i + 1;
+        }
+    }
+
+    // --- Debug variable helpers ---
+
+    // A register display string is a temp (%tN) iff, after '%', it is 't' followed by digits.
+    fun is_debug_temp(this, display: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_debug_temp(display=" + cast<string>(display) + ")");
+ }
+        let s: string = display;
+        if (string_length(s) < 2) { return false; }
+        if (string_char_at(s, 0) != "%") { return false; }
+        if (string_char_at(s, 1) != "t") { return false; }
+        let i: mut i64 = 2;
+        while (i < string_length(s)) {
+            let c: string = string_char_at(s, i);
+            let code: i64 = string_char_code(c);
+            if (code < string_char_code("0") || code > string_char_code("9")) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fun is_debug_param(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_debug_param(name=" + cast<string>(name) + ")");
+ }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.param_names.size())) {
+            if (em.param_names.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // Create a !DILocalVariable node; arg_no>0 means parameter (1-based), 0 means local. Returns the var id.
+    fun debug_make_local(mut this, name: string, ir_type: string, line: i64, arg_no: i64) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter debug_make_local(name=" + cast<string>(name) + ", ir_type=" + cast<string>(ir_type) + ", line=" + cast<string>(line) + ", arg_no=" + cast<string>(arg_no) + ")");
+ }
+        let type_id: string = this.get_debug_type(ir_type);
+        let var_id: string = this.next_debug_id();
+        let line_str: string = cast<string>(line);
+        if (arg_no > 0) {
+            em.debug_metadata.push("!" + var_id + " = !DILocalVariable(name: \"" + name + "\", arg: " + cast<string>(arg_no) + ", scope: !" + em.current_subprogram_id + ", file: !" + em.current_file_id + ", line: " + line_str + ", type: !" + type_id + ")");
+        } else {
+            em.debug_metadata.push("!" + var_id + " = !DILocalVariable(name: \"" + name + "\", scope: !" + em.current_subprogram_id + ", file: !" + em.current_file_id + ", line: " + line_str + ", type: !" + type_id + ")");
+        }
+        return var_id;
+    }
+
+    // Emit a `#dbg_declare` record binding an alloca slot to a variable (LLVM 22+ record form).
+    fun emit_dbg_declare(mut this, alloca_name: string, var_id: string, loc_id: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_dbg_declare(alloca_name=" + cast<string>(alloca_name) + ", var_id=" + cast<string>(var_id) + ", loc_id=" + cast<string>(loc_id) + ")");
+ }
+        em.sb.append("  #dbg_declare(ptr " + alloca_name + ", !" + var_id + ", !DIExpression(), !" + loc_id + ")\n");
+    }
+
+    // Emit a `#dbg_value` record binding an SSA value to a variable (LLVM 22+ record form).
+    fun emit_dbg_value(mut this, llvm_type: string, value_str: string, var_id: string, loc_id: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_dbg_value(llvm_type=" + cast<string>(llvm_type) + ", value_str=" + cast<string>(value_str) + ", var_id=" + cast<string>(var_id) + ", loc_id=" + cast<string>(loc_id) + ")");
+ }
+        em.sb.append("  #dbg_value(" + llvm_type + " " + value_str + ", !" + var_id + ", !DIExpression(), !" + loc_id + ")\n");
+    }
+
+    // For an immutable (single-def) named local: emit a dbg.value right after its SSA definition.
+    // Skips temps, params, mutable locals (handled elsewhere), and value-less dests.
+    fun maybe_emit_imm_dbg(mut this, dest: IRValue, dbg_suffix: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter maybe_emit_imm_dbg(dbg_suffix=" + cast<string>(dbg_suffix) + ")");
+ }
+        if (!em.debug_enabled) { return; }
+        if (!(dest is IRValue.named_reg)) { return; }
+        let name: string = dest.named_reg.name;
+        let display: string = dest.display();
+        if (this.is_debug_temp(display)) { return; }
+        if (this.is_debug_param(name)) { return; }
+        if (em.gcscan.is_mutable_reg(display)) { return; }
+        let ir_type: string = dest.get_ir_type();
+        if (ir_type == "" || ir_type == "unknown") { return; }
+        let llvm_type: string = em.types.ir_type_to_llvm(ir_type);
+        if (em.types.is_aggregate_llvm_type(llvm_type)) { return; }
+        let var_id: string = this.debug_make_local(name, ir_type, dest.named_reg.location.line, 0);
+        let resolved: string = em.values.resolve_value(dest);
+        if (string_length(resolved) > 0 && string_char_at(resolved, 0) == "@") {
+            // Constant/global value: a #dbg_value of a global is dropped from DWARF, so back the
+            // variable with a dedicated debug alloca (entry slot) + store + #dbg_declare.
+            let dbg_alloca: string = em.values.next_tmp();
+            em.values.emit_entry_alloca(dbg_alloca, llvm_type);
+            em.sb.append("  store " + llvm_type + " " + resolved + ", ptr " + dbg_alloca + "\n");
+            this.emit_dbg_declare(dbg_alloca, var_id, em.current_loc_id);
+        } else {
+            this.emit_dbg_value(llvm_type, resolved, var_id, em.current_loc_id);
+        }
+    }
+
+    // --- DWARF debug type cache ---
+
+    fun debug_type_cache_get(this, key: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter debug_type_cache_get(key=" + cast<string>(key) + ")");
+ }
+        let i: mut i64 = cast<i64>(em.debug_type_cache.size()) - 1;
+        while (i >= 0) {
+            if (em.debug_type_cache.at(cast<u64>(i)).some.ir_name == key) {
+                return em.debug_type_cache.at(cast<u64>(i)).some.llvm_value;
+            }
+            i = i - 1;
+        }
+        return "";
+    }
+
+    fun debug_type_cache_set(mut this, key: string, id: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter debug_type_cache_set(key=" + cast<string>(key) + ", id=" + cast<string>(id) + ")");
+ }
+        em.debug_type_cache.push(new RegMapping(key, id));
+    }
+
+    // Build (or fetch cached) a !DIBasicType and return its metadata id.
+    fun make_debug_basic_type(mut this, key: string, name: string, size_bits: i64, align_bits: i64, encoding: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter make_debug_basic_type(key=" + cast<string>(key) + ", name=" + cast<string>(name) + ", size_bits=" + cast<string>(size_bits) + ", align_bits=" + cast<string>(align_bits) + ", encoding=" + cast<string>(encoding) + ")");
+ }
+        let cached: string = this.debug_type_cache_get(key);
+        if (cached != "") { return cached; }
+        let id: string = this.next_debug_id();
+        this.debug_type_cache_set(key, id);
+        em.debug_metadata.push("!" + id + " = !DIBasicType(name: \"" + name + "\", size: " + cast<string>(size_bits) + ", align: " + cast<string>(align_bits) + ", encoding: " + encoding + ")");
+        return id;
+    }
+
+    // Map a bound PrimitiveType to its IR-type string (for debug type lookup).
+    fun primitive_to_debug_ir(this, p: PrimitiveType) -> string {
+        _utils.trace_enter("Enter primitive_to_debug_ir");
+        if (p is PrimitiveType.BoolType) { return "bool"; }
+        if (p is PrimitiveType.I8) { return "i8"; }
+        if (p is PrimitiveType.I16) { return "i16"; }
+        if (p is PrimitiveType.I32) { return "i32"; }
+        if (p is PrimitiveType.I64) { return "i64"; }
+        if (p is PrimitiveType.U8) { return "u8"; }
+        if (p is PrimitiveType.U16) { return "u16"; }
+        if (p is PrimitiveType.U32) { return "u32"; }
+        if (p is PrimitiveType.U64) { return "u64"; }
+        if (p is PrimitiveType.F32) { return "f32"; }
+        if (p is PrimitiveType.F64) { return "f64"; }
+        if (p is PrimitiveType.CharType) { return "char"; }
+        if (p is PrimitiveType.StringType) { return "ref<string>"; }
+        if (p is PrimitiveType.VoidType) { return "void"; }
+        return "ptr";
+    }
+
+    // Map a BoundType to an IR-type string for debug purposes (reuses layout name resolution for generics).
+    fun bound_type_to_debug_ir(this, bt: BoundType) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter bound_type_to_debug_ir");
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            return this.primitive_to_debug_ir(bt.primitive);
+        }
+        if (bt.kind is TypeKind.ClassKind) {
+            return "ref<" + em.types.resolve_type_layout_name(bt) + ">";
+        }
+        if (bt.kind is TypeKind.EnumKind) {
+            return "enum<" + em.types.resolve_type_layout_name(bt) + ">";
+        }
+        return "ptr";
+    }
+
+    // Normalize an LLVM type string to an IR-type-ish key for debug lookup.
+    fun llvm_type_to_debug_ir(this, lt: string) -> string {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter llvm_type_to_debug_ir(lt=" + cast<string>(lt) + ")");
+ }
+        if (lt == "float") { return "f32"; }
+        if (lt == "double") { return "f64"; }
+        return lt;
+    }
+
+    // Build a `!{...}` elements metadata node from a list of member ids; returns the list node id.
+    fun debug_make_elements_list(mut this, member_ids: _utils.List<string>) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter debug_make_elements_list");
+        let id: string = this.next_debug_id();
+        let s: mut string = "!" + id + " = !{";
+        let first: mut bool = true;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(member_ids.size())) {
+            if (!first) { s = s + ", "; }
+            first = false;
+            s = s + "!" + member_ids.at(cast<u64>(i)).some;
+            i = i + 1;
+        }
+        s = s + "}";
+        em.debug_metadata.push(s);
+        return id;
+    }
+
+    // Main entry: get (creating if needed) the DWARF type metadata id for an IR type.
+    fun get_debug_type(mut this, ir_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_debug_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        if (!em.debug_enabled) { return ""; }
+        let cached: string = this.debug_type_cache_get(ir_type);
+        if (cached != "") { return cached; }
+
+        // Primitives → DIBasicType
+        if (ir_type == "i8") { return this.make_debug_basic_type("i8", "i8", 8, 8, "DW_ATE_signed"); }
+        if (ir_type == "i16") { return this.make_debug_basic_type("i16", "i16", 16, 16, "DW_ATE_signed"); }
+        if (ir_type == "i32") { return this.make_debug_basic_type("i32", "i32", 32, 32, "DW_ATE_signed"); }
+        if (ir_type == "i64") { return this.make_debug_basic_type("i64", "i64", 64, 64, "DW_ATE_signed"); }
+        if (ir_type == "u8") { return this.make_debug_basic_type("u8", "u8", 8, 8, "DW_ATE_unsigned"); }
+        if (ir_type == "u16") { return this.make_debug_basic_type("u16", "u16", 16, 16, "DW_ATE_unsigned"); }
+        if (ir_type == "u32") { return this.make_debug_basic_type("u32", "u32", 32, 32, "DW_ATE_unsigned"); }
+        if (ir_type == "u64") { return this.make_debug_basic_type("u64", "u64", 64, 64, "DW_ATE_unsigned"); }
+        if (ir_type == "f32") { return this.make_debug_basic_type("f32", "float", 32, 32, "DW_ATE_float"); }
+        if (ir_type == "f64") { return this.make_debug_basic_type("f64", "double", 64, 64, "DW_ATE_float"); }
+        if (ir_type == "bool") { return this.make_debug_basic_type("bool", "bool", 8, 8, "DW_ATE_boolean"); }
+        if (ir_type == "char") { return this.make_debug_basic_type("char", "char", 32, 32, "DW_ATE_unsigned"); }
+
+        // ref<string> → char* (GDB prints the C string)
+        if (ir_type == "ref<string>") {
+            let char_id: string = this.make_debug_basic_type("c_char", "char", 8, 8, "DW_ATE_signed");
+            let id: string = this.next_debug_id();
+            this.debug_type_cache_set(ir_type, id);
+            em.debug_metadata.push("!" + id + " = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !" + char_id + ", size: 64, align: 64)");
+            return id;
+        }
+
+        // ref<Name> / mut ref<Name> → pointer to DICompositeType(Name)
+        if (em.types.is_any_ref_ir_type(ir_type)) {
+            let name: string = em.types.extract_type_name(ir_type);
+            let id: string = this.next_debug_id();
+            this.debug_type_cache_set(ir_type, id);  // reserve before building composite (recursion-safe)
+            let comp_id: string = this.get_debug_composite(name);
+            if (comp_id != "") {
+                em.debug_metadata.push("!" + id + " = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !" + comp_id + ", size: 64, align: 64)");
+            } else {
+                em.debug_metadata.push("!" + id + " = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64, align: 64)");
+            }
+            return id;
+        }
+
+        // enum<Name> → enum struct composite (struct { metadata, tag, payload })
+        if (em.string_starts_with(ir_type, "enum<")) {
+            let name: string = em.types.extract_type_name(ir_type);
+            let comp_id: string = this.get_debug_enum_type(name);
+            if (comp_id != "") { return comp_id; }
+        }
+
+        // ptr, funptr, void, unknown → opaque pointer
+        let id: string = this.next_debug_id();
+        this.debug_type_cache_set(ir_type, id);
+        em.debug_metadata.push("!" + id + " = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64, align: 64)");
+        return id;
+    }
+
+    // Build a DICompositeType (struct) for a class from its ClassLayout. Reserve-before-build for recursion.
+    fun get_debug_composite(mut this, name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_debug_composite(name=" + cast<string>(name) + ")");
+ }
+        let cache_key: string = "composite:" + name;
+        let cached: string = this.debug_type_cache_get(cache_key);
+        if (cached != "") { return cached; }
+        let found: Option<ClassLayout> = em.types.find_class_layout(name);
+        if (found.is_none()) { return ""; }
+        let layout: ClassLayout = found.some;
+        let id: string = this.next_debug_id();
+        this.debug_type_cache_set(cache_key, id);  // reserve before building members (recursion-safe)
+
+        let member_ids: mut _utils.List<string> = new _utils.List<string>();
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(layout.fields.size())) {
+            let f: FieldLayout = layout.fields.at(cast<u64>(fi)).some;
+            let field_ir_type: mut string = "ptr";
+            if (f.bound_type.is_some()) {
+                field_ir_type = this.bound_type_to_debug_ir(f.bound_type.some);
+            } else {
+                field_ir_type = this.llvm_type_to_debug_ir(f.llvm_type);
+            }
+            let field_type_id: string = this.get_debug_type(field_ir_type);
+            let field_size: i64 = em.types.llvm_type_size(f.llvm_type);
+            let member_id: string = this.next_debug_id();
+            em.debug_metadata.push("!" + member_id + " = !DIDerivedType(tag: DW_TAG_member, name: \"" + f.field_name + "\", scope: !" + id + ", baseType: !" + field_type_id + ", size: " + cast<string>(field_size * 8) + ", offset: " + cast<string>(f.byte_offset * 8) + ")");
+            member_ids.push(member_id);
+            fi = fi + 1;
+        }
+        let elems_id: string = this.debug_make_elements_list(member_ids);
+        let size_bits: i64 = layout.sizeof_object * 8;
+        em.debug_metadata.push("!" + id + " = !DICompositeType(tag: DW_TAG_structure_type, name: \"" + name + "\", file: !" + em.current_file_id + ", size: " + cast<string>(size_bits) + ", elements: !" + elems_id + ", identifier: \"" + name + "\")");
+        return id;
+    }
+
+    // Build a DICompositeType (struct) for an enum: { ptr metadata, i32 tag, payload? }.
+    fun get_debug_enum_type(mut this, name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_debug_enum_type(name=" + cast<string>(name) + ")");
+ }
+        let cache_key: string = "enumstruct:" + name;
+        let cached: string = this.debug_type_cache_get(cache_key);
+        if (cached != "") { return cached; }
+        let found: Option<EnumLayout> = em.types.find_enum_layout(name);
+        if (found.is_none()) { return ""; }
+        let layout: EnumLayout = found.some;
+        let id: string = this.next_debug_id();
+        this.debug_type_cache_set(cache_key, id);
+
+        let member_ids: mut _utils.List<string> = new _utils.List<string>();
+        let tag_type_id: string = this.get_debug_type("i64");
+        let tag_member: string = this.next_debug_id();
+        // The tag field is i64 (emit_type_definitions), at byte 8.
+        em.debug_metadata.push("!" + tag_member + " = !DIDerivedType(tag: DW_TAG_member, name: \"tag\", scope: !" + id + ", baseType: !" + tag_type_id + ", size: 64, offset: 64)");
+        member_ids.push(tag_member);
+        if (layout.has_payload) {
+            if (string_length(layout.payload_llvm_type) > 0) {
+                let payload_ir: string = this.llvm_type_to_debug_ir(layout.payload_llvm_type);
+                let payload_type_id: string = this.get_debug_type(payload_ir);
+                // payload sits at fixed offset 16 (after ptr + i64 tag) —
+                // mirrors llvm_type_size / emit_type_definitions.
+                let payload_offset: i64 = 16;
+                let payload_size: i64 = em.types.llvm_type_size(layout.payload_llvm_type);
+                let payload_member: string = this.next_debug_id();
+                em.debug_metadata.push("!" + payload_member + " = !DIDerivedType(tag: DW_TAG_member, name: \"payload\", scope: !" + id + ", baseType: !" + payload_type_id + ", size: " + cast<string>(payload_size * 8) + ", offset: " + cast<string>(payload_offset * 8) + ")");
+                member_ids.push(payload_member);
+            }
+        }
+        let elems_id: string = this.debug_make_elements_list(member_ids);
+        let size_bits: i64 = em.types.llvm_type_size(layout.llvm_struct_type) * 8;
+        em.debug_metadata.push("!" + id + " = !DICompositeType(tag: DW_TAG_structure_type, name: \"" + name + "\", file: !" + em.current_file_id + ", size: " + cast<string>(size_bits) + ", elements: !" + elems_id + ", identifier: \"" + name + "\")");
+        return id;
+    }
+}
+
+}

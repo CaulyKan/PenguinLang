@@ -23,8 +23,13 @@ class MetaEngine {
     // trampoline penguin_jit_call_i64_0 — no fixed-arity C trampoline needed.
     stub_keys: mut _utils.List<string> = new _utils.List<string>();
     stub_ptrs: mut _utils.List<u64> = new _utils.List<u64>();
-    option_keys: mut _utils.List<string> = new _utils.List<string>();
-    option_values: mut _utils.List<string> = new _utils.List<string>();
+    // File-scoped define view for #fun-internal queries (batch 2.1+2.3): the
+    // engine keeps NO store of its own — has_option/get_option/set_option
+    // bridge to the owning SemanticModel's unified store (owner_model), keyed
+    // by `option_view_file`. compile_meta_function and every call_meta_function_*
+    // entry set it to the #fun's DEFINING file (bmf.location.filename), so a
+    // #fun sees its own file's defines + the CLI seeds, never another file's.
+    option_view_file: string = "";
     host_type_registry: mut BoundTypeRegistry = new BoundTypeRegistry();
     global_scope: Option<BoundScope> = new Option<BoundScope>.none();
     // Phase 6 v2: collected `#class` source (build_text of each), fed into unit B
@@ -186,32 +191,20 @@ class MetaEngine {
 
     fun base_meta_sources(this) -> mut _utils.List<SourceInput> {
         let result: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
-        result.push(new SourceInput("core_builtin.penguin", read_compiler_source("EmperorPenguin/std/penguin/core_builtin.penguin")));
-        result.push(new SourceInput("utils.penguin", read_compiler_source("EmperorPenguin/src/utils.penguin")));
-        // (temporarily removed for bisection)
-        // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
-        // EmperorPenguinPass1.penguins), so its emperor.penguin_meta_* extern calls
-        // resolve against the <meta_externs> injected in compile_meta_function.
-        result.push(new SourceInput("meta_runtime.penguin", read_compiler_source("EmperorPenguin/src/meta/meta_runtime.penguin")));
-        let bound_files: mut _utils.List<string> = new _utils.List<string>();
-        bound_files.push("BoundType"); bound_files.push("BoundDefinition"); bound_files.push("BoundSymbol");
-        bound_files.push("BoundScope"); bound_files.push("BoundExpression"); bound_files.push("BoundStatement");
-        bound_files.push("BoundTypeRegistry"); bound_files.push("BoundCompilationUnit");
-        let bi: mut i64 = 0;
-        while (bi < cast<i64>(bound_files.size())) {
-            let bn: string = bound_files.at(cast<u64>(bi)).some;
-            result.push(new SourceInput(bn + ".penguin", read_compiler_source("EmperorPenguin/src/bound/" + bn + ".penguin")));
-            bi = bi + 1;
+        let paths: mut _utils.List<string> = base_meta_source_rel_paths();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(paths.size())) {
+            let rel: string = paths.at(cast<u64>(i)).some;
+            // The display name is the BASENAME (historical shape: bound files
+            // appear as "BoundType.penguin", ast files as "AST.penguin").
+            let slash: i64 = base_meta_last_slash(rel);
+            let display: mut string = rel;
+            if (slash >= 0) {
+                display = string_substring(rel, slash + 1, string_length(rel) - slash - 1);
+            }
+            result.push(new SourceInput(display, read_compiler_source(rel)));
+            i = i + 1;
         }
-        let ast_files: mut _utils.List<string> = new _utils.List<string>();
-        ast_files.push("AST"); ast_files.push("Token"); ast_files.push("SourceLocation");
-        let ai: mut i64 = 0;
-        while (ai < cast<i64>(ast_files.size())) {
-            let an: string = ast_files.at(cast<u64>(ai)).some;
-            result.push(new SourceInput(an + ".penguin", read_compiler_source("EmperorPenguin/src/ast/" + an + ".penguin")));
-            ai = ai + 1;
-        }
-        result.push(new SourceInput("ErrorCode.penguin", read_compiler_source("EmperorPenguin/src/project/ErrorCode.penguin")));
         return result;
     }
 
@@ -395,6 +388,9 @@ class MetaEngine {
     }
 
     fun compile_meta_function(mut this, bmf: BoundMetaFunctionDefinition) -> bool {
+        // The unit-B rewrite folds #defined reads and #define writes
+        // against the #fun's DEFINING file's define view (file-scoped store).
+        this.option_view_file = bmf.location.filename;
         // ---- Step (a): synthesize a plain FunctionDefinition from bmf ----
         let synth: FunctionDefinition = new FunctionDefinition(bmf.name);
 
@@ -651,6 +647,10 @@ class MetaEngine {
     // #create_definition token). Lazily compiles if not yet JIT-compiled.
     // -----------------------------------------------------------------
     fun call_meta_function_i64_0(mut this, bmf: BoundMetaFunctionDefinition) -> i64 {
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (cached calls skip compile_meta_function,
+        // so every call entry re-stamps the view).
+        this.option_view_file = bmf.location.filename;
         let ptr: mut u64 = this.find_ptr(bmf.name);
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
@@ -663,6 +663,10 @@ class MetaEngine {
     }
 
     fun call_meta_function_i64_i64(mut this, bmf: BoundMetaFunctionDefinition, arg: i64) -> i64 {
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (cached calls skip compile_meta_function,
+        // so every call entry re-stamps the view).
+        this.option_view_file = bmf.location.filename;
         let ptr: mut u64 = this.find_ptr(bmf.name);
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
@@ -681,6 +685,10 @@ class MetaEngine {
     // Lazily compiles the function if not already JIT-compiled.
     // -----------------------------------------------------------------
     fun call_meta_function_i64_i64_i64(mut this, bmf: BoundMetaFunctionDefinition, a: i64, b: i64) -> i64 {
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (cached calls skip compile_meta_function,
+        // so every call entry re-stamps the view).
+        this.option_view_file = bmf.location.filename;
         let ptr: mut u64 = this.find_ptr(bmf.name);
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
@@ -699,6 +707,10 @@ class MetaEngine {
     // (arity 3). Lazily compiles the function if not already JIT-compiled.
     // -----------------------------------------------------------------
     fun call_meta_function_i64_i64_i64_i64(mut this, bmf: BoundMetaFunctionDefinition, a: i64, b: i64, c: i64) -> i64 {
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (cached calls skip compile_meta_function,
+        // so every call entry re-stamps the view).
+        this.option_view_file = bmf.location.filename;
         let ptr: mut u64 = this.find_ptr(bmf.name);
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
@@ -719,6 +731,10 @@ class MetaEngine {
     // Lazily compiles the function if not already JIT-compiled.
     // -----------------------------------------------------------------
     fun call_meta_function_ptr_ptr(mut this, bmf: BoundMetaFunctionDefinition, arg: u64) -> u64 {
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (cached calls skip compile_meta_function,
+        // so every call entry re-stamps the view).
+        this.option_view_file = bmf.location.filename;
         let ptr: mut u64 = this.find_ptr(bmf.name);
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
@@ -738,6 +754,10 @@ class MetaEngine {
     // Lazily compiles the function if not already JIT-compiled.
     // -----------------------------------------------------------------
     fun call_meta_function_ptr_ptr_ptr(mut this, bmf: BoundMetaFunctionDefinition, a: u64, b: u64) -> u64 {
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (cached calls skip compile_meta_function,
+        // so every call entry re-stamps the view).
+        this.option_view_file = bmf.location.filename;
         let ptr: mut u64 = this.find_ptr(bmf.name);
         if (ptr == 0) {
             let ok: bool = this.compile_meta_function(bmf);
@@ -774,6 +794,9 @@ class MetaEngine {
             }
             gi = gi + 1;
         }
+        // Route option reads/writes during this #fun's execution to its
+        // DEFINING file's define view (see call_meta_function_* above).
+        this.option_view_file = bmf.location.filename;
         let fn_ptr: mut u64 = this.find_ptr(bmf.name);
         if (fn_ptr == 0) {
             this.compiling_meta_names.push(bmf.name);
@@ -1005,34 +1028,31 @@ class MetaEngine {
     }
 
     // -----------------------------------------------------------------
-    // Option store: compile-time options (#define / #defined / #option)
+    // Option bridge (batch 2.1+2.3): #defined folds inside #fun
+    // bodies (rewrite_meta_call_dispatch) and #compiler() facade calls
+    // (penguin_meta_* host responders) land here. The engine has NO store —
+    // everything routes to the owning SemanticModel's unified file-scoped
+    // define store under option_view_file (the #fun's defining file), so
+    // CLI --define seeds and code #defines of that file are visible and
+    // writes land in the same view. Defensive none-owner fallbacks keep a
+    // standalone engine inert instead of crashing.
     // -----------------------------------------------------------------
     fun has_option(this, key: string) -> bool {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.option_keys.size())) {
-            if (this.option_keys.at(cast<u64>(i)).some == key) { return true; }
-            i = i + 1;
-        }
-        return false;
+        if (this.owner_model.is_none()) { return false; }
+        return this.owner_model.some.meta_define_has(this.option_view_file, key);
     }
 
     fun get_option(this, key: string) -> Option<string> {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.option_keys.size())) {
-            if (this.option_keys.at(cast<u64>(i)).some == key) { return new Option<string>.some(this.option_values.at(cast<u64>(i)).some); }
-            i = i + 1;
-        }
-        return new Option<string>.none();
+        if (this.owner_model.is_none()) { return new Option<string>.none(); }
+        return this.owner_model.some.meta_define_lookup(this.option_view_file, key);
     }
 
     fun set_option(mut this, key: string, value: string) {
-        let i: mut i64 = 0;
-        while (i < cast<i64>(this.option_keys.size())) {
-            if (this.option_keys.at(cast<u64>(i)).some == key) { this.option_values.set(cast<u64>(i), value); return; }
-            i = i + 1;
-        }
-        this.option_keys.push(key);
-        this.option_values.push(value);
+        if (this.owner_model.is_none()) { return; }
+        // Rebind the Option payload to a mutable binding first
+        // (meta_define_code_write takes `mut this`).
+        let m: mut SemanticModel = this.owner_model.some;
+        m.meta_define_code_write(this.option_view_file, key, value);
     }
 
     fun strip_string_quotes(this, quoted: string) -> string {
@@ -1418,7 +1438,7 @@ class MetaEngine {
     // -----------------------------------------------------------------
     // rewrite_meta_calls_in_expr
     //
-    // Pre-walk an Expression AST, replacing #defined(K)/#option(K)/#define(K,V)
+    // Pre-walk an Expression AST, replacing #defined(K)/#define(K,V)
     // MetaCallExpression nodes with resolved literals. Container expressions
     // are rebuilt with rewritten children. Leaves (constant/identifier/
     // string_literal/bool_literal/void_literal) pass through unchanged.
@@ -1568,7 +1588,7 @@ class MetaEngine {
     //
     // Dispatch a MetaCallExpression by func_name. Handles:
     //   #defined(K)         -> BoolLiteral(true|false)
-    //   #option(K)          -> StringLiteral(value or "")
+    //   #option(K)          -> RETIRED (batch 2.3) — passthrough, unit-A error
     //   #define(K,V)        -> set_option(K,V); VoidLiteral (side effect)
     //   #typeof / #compiler / unknown -> passthrough (unchanged)
     // -----------------------------------------------------------------
@@ -1604,22 +1624,10 @@ class MetaEngine {
             }
             return new Expression.meta_call(mc);
         }
-        if (mc.func_name == "option") {
-            if (cast<i64>(mc.arguments.size()) >= 1) {
-                let arg: Expression = mc.arguments.at(cast<u64>(0)).some;
-                if (arg is Expression.string_literal) {
-                    let key: string = this.strip_string_quotes(arg.string_literal.value);
-                    let val_opt: Option<string> = this.get_option(key);
-                    if (val_opt.is_some()) {
-                        let sl: StringLiteralExpression = new StringLiteralExpression("\"" + val_opt.some + "\"");
-                        return new Expression.string_literal(sl);
-                    }
-                    let sl: StringLiteralExpression = new StringLiteralExpression("\"\"");
-                    return new Expression.string_literal(sl);
-                }
-            }
-            return new Expression.meta_call(mc);
-        }
+        // #option(K) — RETIRED (batch 2.3, redesign §3): the global option
+        // table is gone, replaced by the file-scoped #define store + bare-name
+        // condition reads. No unit-B fold here: the meta call passes through
+        // unchanged and the unit-A bind reports the unknown # call.
         if (mc.func_name == "define") {
             if (cast<i64>(mc.arguments.size()) >= 2) {
                 let arg_k: Expression = mc.arguments.at(cast<u64>(0)).some;
@@ -1835,6 +1843,46 @@ class AstToken {
     expr: mut Option<Expression> = new Option<Expression>.none();
     def: mut Option<Definition> = new Option<Definition>.none();
     defs: mut _utils.List<Definition> = new _utils.List<Definition>();
+}
+
+// Batch 5 (whole-seed memo, redesign §7): the FIXED base source set of unit B
+// as exe-relative paths, in compile order. SHARED by MetaEngine.base_meta_sources
+// (the actual unit-B inputs) and the seed-fingerprint computation in
+// SemanticMetaRewrite — one list, so the fingerprint can never drift from what
+// unit B actually compiles (a missing file here = a missing fingerprint
+// component = a stale seed).
+fun base_meta_source_rel_paths() -> mut _utils.List<string> {
+    let paths: mut _utils.List<string> = new _utils.List<string>();
+    paths.push("EmperorPenguin/std/penguin/core_builtin.penguin");
+    paths.push("EmperorPenguin/src/utils.penguin");
+    // #compiler() facade: ICompiler + CompilerContext, unit-B only (never in
+    // EmperorPenguinPass1.penguins), so its emperor.penguin_meta_* extern calls
+    // resolve against the <meta_externs> injected in compile_meta_function.
+    paths.push("EmperorPenguin/src/meta/meta_runtime.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundType.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundDefinition.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundSymbol.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundScope.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundExpression.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundStatement.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundTypeRegistry.penguin");
+    paths.push("EmperorPenguin/src/bound/BoundCompilationUnit.penguin");
+    paths.push("EmperorPenguin/src/ast/AST.penguin");
+    paths.push("EmperorPenguin/src/ast/Token.penguin");
+    paths.push("EmperorPenguin/src/ast/SourceLocation.penguin");
+    paths.push("EmperorPenguin/src/project/ErrorCode.penguin");
+    return paths;
+}
+
+// Index of the last '/' in a path (-1 when none) — basename extraction for
+// base_meta_sources' display names.
+fun base_meta_last_slash(rel: string) -> i64 {
+    let i: mut i64 = string_length(rel) - 1;
+    while (i >= 0) {
+        if (string_char_at(rel, i) == "/") { return i; }
+        i = i - 1;
+    }
+    return -1;
 }
 
 // Locate one of the compiler's own source files for unit B. The historical

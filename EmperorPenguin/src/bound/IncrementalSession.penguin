@@ -1,0 +1,2849 @@
+// Batch 4.1/4.2 (roadmap batch 4, redesign §1/§4/§6): the incremental
+// SESSION layer — the envelope around EmperorPenguinCompiler.compile_sources.
+// The full-compile path is untouched (bootstrap/CLI keep calling
+// compile_sources directly); the session owns the cross-transaction state a
+// didChange-driven consumer (the LSP, batch 4.4) needs:
+//
+//   FileSnapshot    per-file frozen view of one finished compilation:
+//                   text_hash / AST-signature fingerprint (the fast-lane
+//                   adjudication key of 4.2), the GlobalIndex per-file view
+//                   (exports / impl edges / instances owned / referenced
+//                   targets / errors) and the def-segment range into
+//                   result.definitions (batch 3.3a's def_seg_* tables).
+//   IncrementalSession
+//                   holds the inputs (file order, current texts, lib
+//                   routing), the CLI defines fingerprint (batch ④
+//                   invalidation key), the epoch counter (B-boundary
+//                   switch, 4.2) and the per-input AST cache (the SLOW
+//                   lane's parse skip — SourceInput.preparsed_defs).
+//
+// Batch 4.2 — the TWO-LANE didChange transaction (redesign §6):
+//   short-circuit  every changed file's text hash still matches the
+//                  published snapshots (and the defines fingerprint held):
+//                  the compilation cannot have changed — return last_result.
+//   FAST lane      every changed file's AST-signature fingerprint is
+//                  UNCHANGED (bodies differ, symbolic surface identical) and
+//                  the session is fast-eligible globally (no meta surface on
+//                  the changed files, no RTL surface anywhere, no suspension,
+//                  no mt scheduler): REPLAY passes 3-9 on the RETAINED model
+//                  + result tree — changed files' AST defs are swapped in
+//                  place, their bound defs' stamps are rolled back to 7 so
+//                  passes 4/5 short-circuit (signatures identical) and 8/9
+//                  rebind only the changed bodies, dead specializations are
+//                  evicted (request-ledger reconciliation), per-file
+//                  synthetic-name counters are reset, and errors / users
+//                  entries are REPLAYED from the snapshots so the merged
+//                  output is byte-identical to a fresh full compile.
+//   SLOW lane      anything else (structural change / meta / RTL / first
+//                  compile): AST cache for the unchanged files (parse skip)
+//                  + a full fresh pipeline (new model). Output identical to
+//                  a plain full compile by construction.
+//
+// FREEZE DISCIPLINE (redesign §4, "publish-then-readonly"): a snapshot is
+// built once at the end of a compile and never mutated afterwards — the
+// fields below have no writer besides build_snapshot/snapshot_from_inputs.
+// Ownership separation: the Bound* object tree stays in last_result (owned
+// by the session, replaced wholesale at each slow-lane boundary — or, on
+// the fast lane, surgically updated in place); the snapshot holds only
+// COPIED view data (plain lists of names), so no snapshot field aliases
+// mutable model state. The one deliberate exception: errors_kept holds
+// READ-ONLY SemanticError object references (never rewritten after being
+// recorded) — PenguinLang has no const, the discipline is enforced by
+// construction plus this contract.
+//
+// ANTLR-safe compiler source (plain penguin; no meta, flat namespace).
+
+namespace emperor {
+
+// ── text/signature hashing (djb2, same masked arithmetic as GlobalIndex) ──
+
+// The stable text hash of one source file. Same algorithm as _gi_step so
+// fingerprints and text hashes live in one fold family.
+fun session_text_hash(text: string) -> i64 {
+    return _gi_step(5381, text);
+}
+
+// The CLI defines fingerprint: fold of (key, value) pairs in declaration
+// order. Part of every snapshot's cache key (redesign §3: the CLI defines
+// set is a global input; a change invalidates EVERYTHING — batch 4.3 ④).
+fun session_defines_fp(keys: _utils.List<string>, values: _utils.List<string>) -> i64 {
+    let h: mut i64 = 5381;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(keys.size())) {
+        h = _gi_step(h, keys.at(cast<u64>(i)).some);
+        if (i < cast<i64>(values.size())) {
+            h = _gi_step(h, values.at(cast<u64>(i)).some);
+        }
+        i = i + 1;
+    }
+    return h;
+}
+
+// Conservative meta-surface probe: any '#' directive that is NOT #template
+// (generics are plain-penguin surface; everything else — #fun, #define,
+// #if, #specializing, #class, ... — is prepass/JIT territory the fast lane
+// of 4.2 does not adjudicate). False positives (a '#' inside a string
+// literal or comment) only demote the file to the slow lane — harmless.
+fun session_text_has_meta(text: string) -> bool {
+    let i: mut i64 = 0;
+    let n: i64 = string_length(text);
+    while (i < n) {
+        if (string_char_at(text, i) == "#") {
+            let rest: string = string_substring(text, i + 1, n - i - 1);
+            if (string_length(rest) < 8 || string_substring(rest, 0, 8) != "template") {
+                return true;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// ── AST signature extraction (fast-lane fingerprint, 4.2's key) ──────────
+//
+// The signature of a def = its SYMBOLIC surface (names, types, generics,
+// member shapes) with every BODY excluded. Two versions of a file with
+// equal signatures differ only in bodies — the fast lane re-binds the
+// changed bodies and reuses everything else. This is strictly finer than
+// GlobalIndex's per-file fingerprint (which is name-level by design — see
+// GlobalIndex.walk_def): field types, enum payloads and method signatures
+// all fold in here.
+
+fun session_type_sig(ts: Option<TypeSpecifier>) -> string {
+    if (ts.is_none()) { return "?"; }
+    let t: TypeSpecifier = ts.some;
+    let s: mut string = t.name;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(t.qualified_parts.size())) {
+        s = s + "." + t.qualified_parts.at(cast<u64>(i)).some;
+        i = i + 1;
+    }
+    if (cast<i64>(t.generic_args.size()) > 0) {
+        s = s + "<";
+        let g: mut i64 = 0;
+        while (g < cast<i64>(t.generic_args.size())) {
+            if (g > 0) { s = s + ","; }
+            s = s + session_type_sig(new Option<TypeSpecifier>.some(t.generic_args.at(cast<u64>(g)).some));
+            g = g + 1;
+        }
+        s = s + ">";
+    }
+    if (t.is_value_arg) { s = s + "=v" + t.value_arg_text; }
+    if (t.is_mutable) { s = s + " mut"; }
+    if (t.is_not_mutable) { s = s + " !mut"; }
+    if (t.is_function_type) { s = s + " fn"; }
+    if (t.is_async_function_type) { s = s + " afn"; }
+    return s;
+}
+
+fun session_param_sig(p: Parameter) -> string {
+    let s: mut string = "";
+    if (p.is_mutable) { s = s + "mut "; }
+    s = s + p.name + ":" + session_type_sig(p.type_spec);
+    return s;
+}
+
+fun session_template_sig(td: Option<TemplateDeclaration>) -> string {
+    if (td.is_none()) { return ""; }
+    let t: TemplateDeclaration = td.some;
+    let s: mut string = "#tpl(";
+    let i: mut i64 = 0;
+    while (i < cast<i64>(t.parameters.size())) {
+        if (i > 0) { s = s + ","; }
+        let tp: TemplateParameter = t.parameters.at(cast<u64>(i)).some;
+        s = s + tp.name + ":" + tp.type_constraint;
+        if (tp.is_value_param) { s = s + "*"; }
+        i = i + 1;
+    }
+    return s + ")";
+}
+
+// Append one def's signature (recursing into members) — bodies excluded.
+fun session_def_sig(def: Definition, sb: mut StringBuilder) {
+    if (def is Definition.function_def) {
+        let f: FunctionDefinition = def.function_def;
+        sb.append("fun ");
+        if (f.is_extern) { sb.append("extern "); }
+        if (f.is_pure) { sb.append("pure "); }
+        if (f.is_not_pure) { sb.append("!pure "); }
+        if (f.is_async) { sb.append("async "); }
+        if (f.is_new) { sb.append("new "); }
+        sb.append(session_template_sig(f.template_decl));
+        sb.append(f.name);
+        sb.append("(");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(f.parameters.size())) {
+            if (i > 0) { sb.append(","); }
+            sb.append(session_param_sig(f.parameters.at(cast<u64>(i)).some));
+            i = i + 1;
+        }
+        sb.append(")->");
+        sb.append(session_type_sig(f.return_type));
+        sb.append(";");
+        return;
+    }
+    if (def is Definition.class_def) {
+        let c: ClassDefinition = def.class_def;
+        sb.append("class ");
+        sb.append(session_template_sig(c.template_decl));
+        sb.append(c.name);
+        sb.append("{");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(c.members.size())) {
+            session_def_sig(c.members.at(cast<u64>(i)).some, sb);
+            i = i + 1;
+        }
+        sb.append("}");
+        return;
+    }
+    if (def is Definition.enum_def) {
+        let e: EnumDefinition = def.enum_def;
+        sb.append("enum ");
+        sb.append(session_template_sig(e.template_decl));
+        sb.append(e.name);
+        sb.append("{");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(e.members.size())) {
+            session_def_sig(e.members.at(cast<u64>(i)).some, sb);
+            i = i + 1;
+        }
+        sb.append("}");
+        return;
+    }
+    if (def is Definition.interface_def) {
+        let d: InterfaceDefinition = def.interface_def;
+        sb.append("interface ");
+        sb.append(session_template_sig(d.template_decl));
+        sb.append(d.name);
+        sb.append("{");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(d.members.size())) {
+            session_def_sig(d.members.at(cast<u64>(i)).some, sb);
+            i = i + 1;
+        }
+        sb.append("}");
+        return;
+    }
+    if (def is Definition.namespace_def) {
+        let ns: NamespaceDefinition = def.namespace_def;
+        sb.append("ns ");
+        sb.append(ns.name);
+        sb.append("{");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(ns.children.size())) {
+            session_def_sig(ns.children.at(cast<u64>(i)).some, sb);
+            i = i + 1;
+        }
+        sb.append("}");
+        return;
+    }
+    if (def is Definition.impl_def) {
+        let im: InterfaceImplementation = def.impl_def;
+        sb.append("impl ");
+        sb.append(session_type_sig(im.type_spec));
+        sb.append("{");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(im.functions.size())) {
+            session_def_sig(im.functions.at(cast<u64>(i)).some, sb);
+            i = i + 1;
+        }
+        sb.append("}");
+        return;
+    }
+    if (def is Definition.impl_for_def) {
+        let iff: InterfaceForImplementation = def.impl_for_def;
+        sb.append("implfor ");
+        sb.append(session_type_sig(iff.type_spec));
+        sb.append(" for ");
+        sb.append(session_type_sig(iff.for_type_spec));
+        sb.append("{");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(iff.functions.size())) {
+            session_def_sig(iff.functions.at(cast<u64>(i)).some, sb);
+            i = i + 1;
+        }
+        sb.append("}");
+        return;
+    }
+    if (def is Definition.initial_routine) {
+        sb.append("initial;");
+        return;
+    }
+    if (def is Definition.construct_def) {
+        // Top-level construct: its whole body is symbolic surface (hoisted
+        // variables + connections shape the module topology), so the count
+        // alone is NOT enough — the fast lane must not treat construct
+        // edits as body-only. The desugared pre-body never reaches this
+        // branch (constructs are split before snapshots are taken).
+        sb.append("construct@");
+        sb.append(construct_sig_text(def));
+        return;
+    }
+    if (def is Definition.port_def) {
+        let p: PortDefinition = def.port_def;
+        sb.append("port ");
+        sb.append(p.name);
+        sb.append(":");
+        sb.append(session_type_sig(p.type_spec));
+        sb.append(";");
+        return;
+    }
+    if (def is Definition.type_ref_def) {
+        let t: TypeReferenceDefinition = def.type_ref_def;
+        sb.append("type ");
+        sb.append(t.name);
+        sb.append("=");
+        sb.append(session_type_sig(t.type_spec));
+        sb.append(";");
+        return;
+    }
+    if (def is Definition.class_field) {
+        let cf: ClassFieldDefinition = def.class_field;
+        sb.append("field ");
+        sb.append(cf.name);
+        sb.append(":");
+        sb.append(session_type_sig(cf.type_spec));
+        sb.append(";");
+        return;
+    }
+    if (def is Definition.global_var) {
+        let g: GlobalVariableDefinition = def.global_var;
+        sb.append("gvar ");
+        if (g.is_mutable) { sb.append("mut "); }
+        sb.append(g.name);
+        sb.append(":");
+        sb.append(session_type_sig(g.type_spec));
+        // initializer intentionally EXCLUDED (body-level; the fast lane
+        // re-binds it)
+        sb.append(";");
+        return;
+    }
+    if (def is Definition.enum_member) {
+        // enum payloads are signature surface (they change enum layouts)
+        let em: EnumMemberDefinition = def.enum_member;
+        sb.append("variant ");
+        sb.append(em.name);
+        sb.append(":");
+        sb.append(session_type_sig(em.type_spec));
+        sb.append(";");
+        return;
+    }
+    // meta defs reaching a snapshot cannot happen (fast lane is gated on
+    // meta-free files; slow lane re-runs the prepass) — record opaquely.
+    sb.append("meta;");
+}
+
+// The body statement shape of a construct block: every statement's kind +
+// the connect endpoints (topology is symbolic). Kept in AST.penguin's
+// statement vocabulary; conservative (an edit inside a non-connect
+// statement's nested expression changes nothing here only when the
+// statement KIND matches — connect-shape edits are always caught).
+fun construct_sig_text(def: Definition) -> string {
+    let sb: mut StringBuilder = new StringBuilder();
+    let cd: ConstructDefinition = def.construct_def;
+    if (cd.body.is_some()) {
+        let body: Expression = cd.body.some;
+        if (body is Expression.code_block) {
+            let blk: CodeBlockExpression = body.code_block;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(blk.statements.size())) {
+                let s: Statement = blk.statements.at(cast<u64>(i)).some;
+                if (s is Statement.let_decl) {
+                    let ld: LetDeclarationStatement = s.let_decl;
+                    sb.append("let ");
+                    sb.append(ld.variable_name);
+                    sb.append(":");
+                    sb.append(session_type_sig(ld.type_spec));
+                    sb.append(";");
+                } else if (s is Statement.connect_stmt) {
+                    let cn: ConnectStatement = s.connect_stmt;
+                    sb.append("connect(");
+                    sb.append(expr_sig_text(cn.source));
+                    sb.append(",");
+                    sb.append(expr_sig_text(cn.sink));
+                    sb.append(");");
+                } else {
+                    sb.append("stmt;");
+                }
+                i = i + 1;
+            }
+        }
+    }
+    return sb.to_string();
+}
+
+// Symbolic sub-shape of a connect endpoint expression (identifier chains
+// and member paths; anything else renders opaquely).
+fun expr_sig_text(e: Option<Expression>) -> string {
+    if (e.is_none()) { return "?"; }
+    let x: Expression = e.some;
+    if (x is Expression.identifier) {
+        return x.identifier.name;
+    }
+    if (x is Expression.member_access) {
+        let ma: MemberAccessExpression = x.member_access;
+        return expr_sig_text(ma.base_expr) + "." + ma.member_name;
+    }
+    return "<expr>";
+}
+
+// The AST-signature fingerprint of one file's defs (post-prepass shapes —
+// what the parse cache holds). Fold order = def order (deterministic).
+fun session_ast_fingerprint(defs: _utils.List<Definition>) -> i64 {
+    let sb: mut StringBuilder = new StringBuilder();
+    let i: mut i64 = 0;
+    while (i < cast<i64>(defs.size())) {
+        session_def_sig(defs.at(cast<u64>(i)).some, sb);
+        i = i + 1;
+    }
+    return _gi_step(5381, sb.to_string());
+}
+
+// ── FileSnapshot ──────────────────────────────────────────────────────────
+
+// Frozen per-file view of one finished compilation. Built by the session at
+// the end of every compile; READ ONLY afterwards (see the file-header freeze
+// discipline). All name lists are copied-out data — no aliasing into the
+// model. errors_kept holds read-only SemanticError references (the fast
+// lane's error replay re-emits them verbatim).
+export class FileSnapshot {
+    file: string = "";
+    // cache keys
+    text_hash: i64 = 0;
+    ast_fp: i64 = 0;
+    defines_fp: i64 = 0;
+    has_meta_surface: bool = false;
+    // GlobalIndex per-file view (diagnostic/invalidation face)
+    exports: mut _utils.List<string> = new _utils.List<string>();
+    impl_edge_keys: mut _utils.List<string> = new _utils.List<string>();
+    instances_owned: mut _utils.List<string> = new _utils.List<string>();
+    refs_targets: mut _utils.List<string> = new _utils.List<string>();
+    error_texts: mut _utils.List<string> = new _utils.List<string>();
+    error_count: i64 = 0;
+    // Batch 4.2: the error OBJECTS of this file in collection order (read
+    // only after build) + the users replay ledger (the per-target order of
+    // this file's body-bind resolutions — the exact order the full compile
+    // would re-collect them in, so the fast lane's users_pending replay is
+    // byte-faithful).
+    errors_kept: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
+    users_targets: mut _utils.List<string> = new _utils.List<string>();
+    // the def segment into last_result.definitions (batch 3.3a def_seg_*)
+    def_seg_start: i64 = 0;
+    def_seg_count: i64 = 0;
+
+    fun new(mut this, file: string) {
+        this.file = file;
+    }
+}
+
+// ── fast-lane helpers (4.2) ───────────────────────────────────────────────
+
+// The full name of a bound def (the GlobalIndex key space). Empty for
+// container shapes that carry none.
+fun bound_def_full_name(def: BoundDefinition) -> string {
+    if (def is BoundDefinition.function_def) { return def.function_def.full_name; }
+    if (def is BoundDefinition.class_def) { return def.class_def.full_name; }
+    if (def is BoundDefinition.enum_def) { return def.enum_def.full_name; }
+    if (def is BoundDefinition.interface_def) { return def.interface_def.full_name; }
+    if (def is BoundDefinition.namespace_def) { return def.namespace_def.full_name; }
+    if (def is BoundDefinition.initial_routine) { return def.initial_routine.full_name; }
+    if (def is BoundDefinition.type_ref_def) { return def.type_ref_def.name; }
+    if (def is BoundDefinition.class_field) { return def.class_field.name; }
+    if (def is BoundDefinition.global_var_def) { return def.global_var_def.full_name; }
+    return "";
+}
+
+// Recursively swap a bound def's ast_source to the new AST def and roll its
+// pass stamp back to `stamp`. The pass-8 namespace/class member rebinds use
+// the AST passed DOWN the recursion (the new tree), but the carried
+// ast_source of every member must also point at the new tree: specialized
+// defs replay their template body through replay_find_ast_def(ast_source),
+// which returns the carried reference VERBATIM — a stale reference would
+// silently replay the OLD body into future specializations.
+fun session_swap_ast(def: BoundDefinition, new_ast: Definition, stamp: i64) {
+    BoundDefinition.set_pass_index(def, stamp);
+    if (def is BoundDefinition.function_def) {
+        def.function_def.ast_source = new Option<Definition>.some(new_ast);
+        return;
+    }
+    if (def is BoundDefinition.class_def) {
+        let cls: mut BoundClassDefinition = def.class_def;
+        cls.ast_source = new Option<Definition>.some(new_ast);
+        if (new_ast is Definition.class_def) {
+            let ac: ClassDefinition = new_ast.class_def;
+            // positional member pairing is safe: the fingerprint gate
+            // guarantees an identical member list in the same order
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cls.methods.size()) && mi < cast<i64>(ac.members.size())) {
+                session_swap_member(cls.methods.at(cast<u64>(mi)).some, ac.members.at(cast<u64>(mi)).some, stamp);
+                mi = mi + 1;
+            }
+        }
+        return;
+    }
+    if (def is BoundDefinition.enum_def) {
+        let en: mut BoundEnumDefinition = def.enum_def;
+        en.ast_source = new Option<Definition>.some(new_ast);
+        if (new_ast is Definition.enum_def) {
+            let ae: EnumDefinition = new_ast.enum_def;
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(en.methods.size()) && mi < cast<i64>(ae.members.size())) {
+                session_swap_member(en.methods.at(cast<u64>(mi)).some, ae.members.at(cast<u64>(mi)).some, stamp);
+                mi = mi + 1;
+            }
+        }
+        return;
+    }
+    if (def is BoundDefinition.interface_def) {
+        let iface: mut BoundInterfaceDefinition = def.interface_def;
+        iface.ast_source = new Option<Definition>.some(new_ast);
+        return;
+    }
+    if (def is BoundDefinition.namespace_def) {
+        let ns: mut BoundNamespaceDefinition = def.namespace_def;
+        // BoundNamespaceDefinition has no ast_source field; children are
+        // matched BY NAME against the new AST children (the pass-8 protocol).
+        if (new_ast is Definition.namespace_def) {
+            let an: NamespaceDefinition = new_ast.namespace_def;
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(ns.children.size())) {
+                let child: BoundDefinition = ns.children.at(cast<u64>(ci)).some;
+                let cname: string = BoundDefinition.get_name(child);
+                let ai: mut i64 = 0;
+                while (ai < cast<i64>(an.children.size())) {
+                    if (ast_def_name(an.children.at(cast<u64>(ai)).some) == cname) {
+                        session_swap_ast(child, an.children.at(cast<u64>(ai)).some, stamp);
+                        ai = cast<i64>(an.children.size());
+                    }
+                    ai = ai + 1;
+                }
+                ci = ci + 1;
+            }
+        }
+        return;
+    }
+    if (def is BoundDefinition.initial_routine) {
+        // no ast_source field: pass 8 pairs initial routines by index (the
+        // run loop's unit.definitions[i] <-> result.definitions[i]); the
+        // stamp rollback below is all that is needed.
+        return;
+    }
+    if (def is BoundDefinition.global_var_def) {
+        let gv: mut BoundGlobalVariableDefinition = cast<mut BoundGlobalVariableDefinition>(def.global_var_def);
+        gv.ast_source = new Option<Definition>.some(new_ast);
+        return;
+    }
+}
+
+// Member-shape dispatch for session_swap_ast (methods inside classes/enums).
+fun session_swap_member(def: BoundDefinition, new_ast: Definition, stamp: i64) {
+    session_swap_ast(def, new_ast, stamp);
+}
+
+// The bare name of an AST def (name matching for namespace children).
+fun ast_def_name(def: Definition) -> string {
+    if (def is Definition.function_def) { return def.function_def.name; }
+    if (def is Definition.class_def) { return def.class_def.name; }
+    if (def is Definition.enum_def) { return def.enum_def.name; }
+    if (def is Definition.interface_def) { return def.interface_def.name; }
+    if (def is Definition.namespace_def) { return def.namespace_def.name; }
+    if (def is Definition.initial_routine) { return "<initial>"; }
+    if (def is Definition.global_var) { return def.global_var.name; }
+    return "";
+}
+
+// Conservative RTL-surface text probe: any of the RTL keywords (construct /
+// connect / port declarations) ANYWHERE in the text demotes the file (and
+// thereby the session) to the slow lane. False positives (the words inside
+// strings/comments) only demote — harmless. Used on the raw editor text so
+// it works both pre- and post-desugar (the parse cache holds post-desugar
+// shapes where constructs have already been eliminated — a cache-based
+// probe would under-detect).
+fun session_text_has_rtl(text: string) -> bool {
+    if (string_find(text, "construct") >= 0) { return true; }
+    if (string_find(text, "connect(") >= 0) { return true; }
+    if (string_find(text, "input ") >= 0) { return true; }
+    if (string_find(text, "output ") >= 0) { return true; }
+    return false;
+}
+
+// Does the def list contain RTL surface (ports / constructs)? Post-parse
+// shape probe (the fast lane parses the changed file's NEW text before the
+// desugar would eliminate the shapes).
+fun session_defs_have_rtl(defs: _utils.List<Definition>) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(defs.size())) {
+        let def: Definition = defs.at(cast<u64>(i)).some;
+        if (def is Definition.construct_def) { return true; }
+        if (def is Definition.port_def) { return true; }
+        if (def is Definition.namespace_def) {
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(def.namespace_def.children.size())) {
+                let child: Definition = def.namespace_def.children.at(cast<u64>(ci)).some;
+                if (child is Definition.construct_def) { return true; }
+                if (child is Definition.port_def) { return true; }
+                ci = ci + 1;
+            }
+        }
+        if (def is Definition.class_def) {
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(def.class_def.members.size())) {
+                if (def.class_def.members.at(cast<u64>(mi)).some is Definition.port_def) { return true; }
+                mi = mi + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// ── IncrementalSession ────────────────────────────────────────────────────
+
+// The envelope around compile_sources. The session survives across compile
+// transactions; the model/result inside do not (each B boundary installs a
+// fresh pair — epoch counting the boundaries). The FAST lane (4.2) is the
+// one exception: it RETAINS the model/result across a boundary and updates
+// them surgically (see the file header).
+export class IncrementalSession {
+    // configuration mirror (what compile_sources needs)
+    verbose: mut i64 = 0;
+    enable_coroutine: bool = false;
+    enable_mt_scheduler: bool = false;
+    warn_concurrency: bool = false;
+    strict_handoff: bool = false;
+    dump_index: bool = false;
+    cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
+    cli_define_values: mut _utils.List<string> = new _utils.List<string>();
+    lib_instances: mut _utils.List<string> = new _utils.List<string>();
+    prebuilt_lib_metas: mut _utils.List<string> = new _utils.List<string>();
+
+    // input ledger (built by the first compile; file order is the order of
+    // the FIRST inputs list — didChange never reorders)
+    input_files: mut _utils.List<string> = new _utils.List<string>();
+    input_sources: mut _utils.List<string> = new _utils.List<string>();
+    input_is_lib: mut _utils.List<bool> = new _utils.List<bool>();
+    input_is_decl_slot: mut _utils.List<bool> = new _utils.List<bool>();
+    // per-input post-parse AST defs of the CURRENT state (null entry = not
+    // parsed yet in this session — every entry is filled after a compile)
+    input_ast_cache: mut _utils.List<_utils.List<Definition>> = new _utils.List<_utils.List<Definition>>();
+
+    // session state
+    epoch: mut i64 = 0;
+    defines_fp: mut i64 = 0;
+    snapshots: mut _utils.List<FileSnapshot> = new _utils.List<FileSnapshot>();
+    last_result: mut Option<BoundCompilationUnit> = new Option<BoundCompilationUnit>.none();
+    last_errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
+    last_index_summary: mut string = "";
+    has_compiled: mut bool = false;
+    // Batch 4.2: the compiler of the last compile (fast lane retains its
+    // model + unit; slow lane replaces it every time).
+    last_compiler: mut Option<EmperorPenguinCompiler> = new Option<EmperorPenguinCompiler>.none();
+    // Batch 4.2: global fast-lane eligibility, probed at snapshot build
+    // time. RTL surface anywhere (any file) or a suspended unit demote the
+    // SESSION permanently to the slow lane (conservative, simple, and both
+    // carry cross-file global state the fast lane does not replay).
+    snapshot_has_rtl: mut bool = false;
+    snapshot_has_suspension: mut bool = false;
+    // Batch 4.2: file-less (empty-location) errors of the last compile —
+    // several report sites carry no location (e.g. E_RESOLVE_SYMBOL from
+    // bind_identifier), so they never enter any per-file bucket; the error
+    // replay re-emits them verbatim (they are reproducibly reported only by
+    // passes the fast lane does not re-run for clean files).
+    global_errors_kept: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
+    // Batch 4.3: the last recompute's invalidation report (information
+    // face — "affected clean files | dependency classes"; printed by the
+    // CLI's --dump-invalidation, consumed by the LSP later).
+    last_invalidation_report: mut _utils.List<string> = new _utils.List<string>();
+    // P0 (stage timing): per-transaction stage timing, gated by
+    // EMPEROR_INCREMENTAL_TIMING (probed once in compile_first). When on,
+    // every compile/recompute prints one "[SessionTiming]" line to stderr
+    // with the stage breakdown + key counters; the monomorphize fixpoint
+    // additionally records per-round statistics (MonomorphizePass.stat_*).
+    // Pure observability — no decision reads any of it.
+    timing_enabled: mut bool = false;
+    // P0: the recompute() adjudication stage cost (changed-set scan +
+    // fast-lane parse/fingerprint + the invalidation report), handed to
+    // recompute_fast's timing line. Reset on every recompute.
+    timing_adj_ms: mut i64 = 0;
+    // ── O2: reconciliation split (emit path vs diagnostics path) ─────────
+    // The dead-specialization eviction (the O(full tree) reconciliation
+    // walk) is an EMIT-PATH requirement: a CLI compile that will lower .ll
+    // must not carry dead instances into the product. A diagnostics-only
+    // consumer (the LSP) does not emit — skipping the walk there removes a
+    // full-tree cost from every keystroke round, at the price of dead defs
+    // lingering on the retained tree until the next reconciliation.
+    //
+    //   reconcile_interval = 1  every fast-lane round reconciles (the CLI /
+    //                           emit path — the historical behavior, and
+    //                           the default: a plain compile() caller never
+    //                           observes a difference)
+    //   reconcile_interval = N>1  reconcile every Nth fast-lane round (the
+    //                           LSP sets 20 — a memory bound: skipped
+    //                           rounds may accumulate dead defs, the Nth
+    //                           round's walk evicts them all)
+    // rounds_since_reconcile counts fast-lane rounds since the last
+    // reconciliation (reset by every full/slow-lane compile — a fresh tree
+    // carries no dead defs); stat_reconcile_deferrals is the cumulative
+    // skip counter for the -v log.
+    reconcile_interval: mut i64 = 1;
+    rounds_since_reconcile: mut i64 = 0;
+    stat_reconcile_deferrals: mut i64 = 0;
+    // O2c: the full + bare names evicted by the LAST reconciliation (empty
+    // when it was deferred). The error replay drops snapshot-carried
+    // errors whose owner_def matches — a dead specialization's stale error
+    // would otherwise survive as a phantom diagnostic (repro: the O2c
+    // scenario / IncrementalDeadSpecializationStaleError.md).
+    last_evicted_dead: mut _utils.List<string> = new _utils.List<string>();
+    // ── O1: per-file instantiation-request cache + fixpoint incrementality ──
+    //
+    // req_cache: file -> "\n"-joined unique request keys. A key is the
+    // canonical identity of one instantiation request (the would-be
+    // specialization mangle — see MonomorphizePass.attrib_*). Maintained
+    // from the A4 collector's occurrence attribution: the first full
+    // compile fills every bucket; a fast-lane transaction UNION-adds the
+    // dirty rescan's + the cascade's occurrences. Buckets may therefore
+    // over-record stale keys (a request that disappeared with a body edit,
+    // a specialization the reconciliation evicted) — benign by design:
+    // death is owned by the O2 reconciliation, and every verify_interval
+    // rounds the safety net rebuilds the buckets from a full-collection
+    // attribution (clearing the noise). The DANGEROUS direction is
+    // UNDER-recording (the cache missing a key a full sweep would find =
+    // the incremental path skipped something real) — that is what the
+    // safety net reports and counts.
+    req_cache: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    // The safety net: every verify_interval fast-lane rounds, run the
+    // fixpoint's collection FULL once more (after the incremental fixpoint
+    // converged) and (a) let B1 heal anything the incremental path missed,
+    // (b) compare the full per-file attribution against the cache, (c)
+    // rebuild the cache. Independent of reconcile_interval on purpose: the
+    // CLI --incremental --edit tests drive a single fast round and must
+    // exercise the incremental path, not the verifier. Overridable via
+    // EMPEROR_INCREMENTAL_VERIFY_INTERVAL (compile_first probes it once,
+    // same pattern as the timing gate); <= 1 verifies every round.
+    verify_interval: mut i64 = 20;
+    rounds_since_verify: mut i64 = 0;
+    // stats: cache adds that introduced a new key; verify-round counters
+    // (rounds / cache misses (under-recording — must stay 0) / benign
+    // over-recorded keys / specializations the verification fixpoint had
+    // to create (the incremental path's misses — must stay 0)).
+    stat_req_new: mut i64 = 0;
+    stat_verify_rounds: mut i64 = 0;
+    stat_verify_miss: mut i64 = 0;
+    stat_verify_over: mut i64 = 0;
+    stat_verify_healed: mut i64 = 0;
+    // stats (cache reuse measurements — the acceptance numbers)
+    stat_parse_cache_hits: mut i64 = 0;
+    stat_parse_cache_misses: mut i64 = 0;
+    stat_fast_hits: mut i64 = 0;
+    stat_fast_fallbacks: mut i64 = 0;
+
+    // The texts are owned per INPUT (a filename may appear once; lib decl
+    // slots are pseudo-files with empty sources). update() replaces the
+    // text of the matching input; the AST cache slot is invalidated.
+    fun update(mut this, file: string, new_text: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.input_files.size())) {
+            if (this.input_files.at(cast<u64>(i)).some == file) {
+                let old_hash: i64 = session_text_hash(this.input_sources.at(cast<u64>(i)).some);
+                let new_hash: i64 = session_text_hash(new_text);
+                this.input_sources.set(cast<u64>(i), new_text);
+                if (old_hash != new_hash) {
+                    // text changed: the AST cache slot is stale until the
+                    // next compile refills it
+                    this.input_ast_cache.set(cast<u64>(i), new _utils.List<Definition>());
+                }
+                return old_hash != new_hash;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // Set the CLI defines set (batch 4.3 ④: a change here invalidates the
+    // whole session — recompute() falls back to a full re-compile).
+    fun set_cli_defines(mut this, keys: _utils.List<string>, values: _utils.List<string>) {
+        this.cli_define_keys = new _utils.List<string>();
+        this.cli_define_values = new _utils.List<string>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(keys.size())) {
+            this.cli_define_keys.push(keys.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        let j: mut i64 = 0;
+        while (j < cast<i64>(values.size())) {
+            this.cli_define_values.push(values.at(cast<u64>(j)).some);
+            j = j + 1;
+        }
+        this.defines_fp = session_defines_fp(this.cli_define_keys, this.cli_define_values);
+    }
+
+    // ── the FULL lane (first compile + every slow-lane re-compile) ───────
+    //
+    // Compiles the current input ledger through compile_sources. When
+    // use_parse_cache is true, inputs whose AST cache is filled skip
+    // lexing/parsing (SourceInput.preparsed_defs) — the byte-identical
+    // guarantee rests on prepass/desugar being source-form-eliminating
+    // (see the batch reconnaissance table). Returns the fresh result and
+    // installs snapshots/epoch.
+    fun compile(mut this, use_parse_cache: bool) -> BoundCompilationUnit {
+        _utils.trace_enter("Enter session compile");
+        let t_total: mut i64 = 0;
+        let t_inputs: mut i64 = 0;
+        if (this.timing_enabled) { t_total = __builtin.now_ms(); }
+        let inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.input_files.size())) {
+            let src: string = this.input_sources.at(cast<u64>(i)).some;
+            let si: mut SourceInput = new SourceInput(this.input_files.at(cast<u64>(i)).some, src);
+            si.is_lib = this.input_is_lib.at(cast<u64>(i)).some;
+            si.is_lib_decl_slot = this.input_is_decl_slot.at(cast<u64>(i)).some;
+            // Bugfix #4 (batch 5 handover): META-BEARING FILES NEVER REPLAY
+            // from the parse cache. The cache slot holds references into the
+            // very AST objects the prepass splices IN PLACE — for a
+            // meta-free file the splice is content-preserving (every def
+            // passes through collect_resolved_definitions unchanged, so the
+            // pop/push rewrite leaves an identical list), but a file with
+            // meta surface has its SHARED container children lists rewritten
+            // (#class unwrapped into a plain class, #define/#if consumed and
+            // dropped) and its function bodies' statement lists spliced.
+            // After the first compile the cached copy of such a file no
+            // longer carries the meta defs, so a replay compiles with a LOST
+            // meta surface: collect_meta_class_defs/collect_meta_define_texts
+            // find nothing, the seed fingerprint drifts (memo MISS) and the
+            // fresh engine lacks the classes — a later meta call over them
+            // fails the whole compile (repro: a #class in a namespace of an
+            // unchanged file + a #fun using it in the edited file). Design
+            // choice vs the two COW alternatives: (a) deep-copying the cache
+            // at capture time pays a full AST copy of every file on EVERY
+            // compile; (b) making the prepass itself copy-on-write needs a
+            // shape-complete AST clone covering containers AND bodies (the
+            // statement-level splice mutates bodies too). Skipping the cache
+            // for meta files instead re-parses exactly the files whose
+            // cached shape is NOT prepass-invariant — replay byte-parity
+            // with the full compile holds by construction, and only the
+            // handful of meta files pay a parse.
+            if (use_parse_cache && !session_text_has_meta(src)
+                && cast<i64>(this.input_ast_cache.at(cast<u64>(i)).some.size()) > 0) {
+                si.preparsed_defs = new Option<_utils.List<Definition>>.some(this.input_ast_cache.at(cast<u64>(i)).some);
+                this.stat_parse_cache_hits = this.stat_parse_cache_hits + 1;
+            } else {
+                this.stat_parse_cache_misses = this.stat_parse_cache_misses + 1;
+            }
+            inputs.push(si);
+            i = i + 1;
+        }
+        let compiler: mut EmperorPenguinCompiler = new EmperorPenguinCompiler();
+        compiler.verbose = this.verbose;
+        compiler.timing_enabled = this.timing_enabled;
+        compiler.enable_coroutine = this.enable_coroutine;
+        compiler.enable_mt_scheduler = this.enable_mt_scheduler;
+        compiler.warn_concurrency = this.warn_concurrency;
+        compiler.strict_handoff = this.strict_handoff;
+        compiler.dump_index = this.dump_index;
+        // O1: every session compile records request attribution (the
+        // per-file cache fill; plain compile_sources callers keep it off).
+        compiler.attrib_requests = true;
+        compiler.cli_define_keys = this.cli_define_keys;
+        compiler.cli_define_values = this.cli_define_values;
+        let li: mut i64 = 0;
+        while (li < cast<i64>(this.lib_instances.size())) {
+            compiler.lib_instances.push(this.lib_instances.at(cast<u64>(li)).some);
+            li = li + 1;
+        }
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(this.prebuilt_lib_metas.size())) {
+            compiler.prebuilt_lib_metas.push(this.prebuilt_lib_metas.at(cast<u64>(mi)).some);
+            mi = mi + 1;
+        }
+        let t_pipeline: mut i64 = 0;
+        if (this.timing_enabled) { t_inputs = __builtin.now_ms() - t_total; }
+        let result: BoundCompilationUnit = compiler.compile_sources(inputs);
+        let t_snap0: mut i64 = 0;
+        if (this.timing_enabled) {
+            t_pipeline = __builtin.now_ms() - t_total - t_inputs;
+            t_snap0 = __builtin.now_ms();
+        }
+        this.last_compiler = new Option<EmperorPenguinCompiler>.some(compiler);
+        // harvest the parse cache (per-input post-parse defs — includes
+        // the just-parsed texts of the misses)
+        this.input_ast_cache = new _utils.List<_utils.List<Definition>>();
+        let pc: mut i64 = 0;
+        while (pc < cast<i64>(compiler.parse_cache_defs.size())) {
+            this.input_ast_cache.push(compiler.parse_cache_defs.at(cast<u64>(pc)).some);
+            pc = pc + 1;
+        }
+        // build the per-file snapshots from the model's GlobalIndex + def
+        // segments + the result's errors
+        this.build_snapshots(compiler, result);
+        this.build_pending_ledgers(compiler.last_model.some);
+        this.last_result = new Option<BoundCompilationUnit>.some(result);
+        this.last_errors = result.errors;
+        this.last_index_summary = compiler.index_summary;
+        this.epoch = this.epoch + 1;
+        this.has_compiled = true;
+        // O2: a fresh full-lane tree carries no dead specializations — the
+        // deferred-reconciliation counter restarts.
+        this.rounds_since_reconcile = 0;
+        this.last_evicted_dead = new _utils.List<string>();
+        // O1: the full lane's final fixpoint sweep attributed the whole
+        // tree — rebuild the per-file request cache from it and restart the
+        // verify cadence (a fresh full compile IS ground truth).
+        this.req_rebuild_from_model(compiler.last_model.some);
+        this.rounds_since_verify = 0;
+        if (this.verbose >= 1) {
+            __builtin.eprintln("[EmperorPenguin Session] compile done: epoch=" + cast<string>(this.epoch)
+                + " files=" + cast<string>(this.input_files.size())
+                + " snapshots=" + cast<string>(this.snapshots.size())
+                + " parse_cache_hit=" + cast<string>(this.stat_parse_cache_hits)
+                + " miss=" + cast<string>(this.stat_parse_cache_misses));
+        }
+        if (this.timing_enabled) {
+            let t_snap_ms: i64 = __builtin.now_ms() - t_snap0;
+            let sb: mut StringBuilder = new StringBuilder();
+            sb.append("[SessionTiming] full epoch=" + cast<string>(this.epoch)
+                + " total=" + cast<string>(t_inputs + t_pipeline + t_snap_ms)
+                + "ms inputs=" + cast<string>(t_inputs)
+                + " pipeline=" + cast<string>(t_pipeline));
+            let model0: SemanticModel = compiler.last_model.some;
+            sb.append(" fixpoint=" + cast<string>(model0.monomorphize_pass.stat_collect_ms + model0.monomorphize_pass.stat_adjudicate_ms)
+                + "ms r=" + cast<string>(model0.monomorphize_pass.stat_rounds)
+                + " rounds=");
+            session_append_i64_list(sb, model0.monomorphize_pass.stat_round_ms);
+            sb.append(" new=");
+            session_append_i64_list(sb, model0.monomorphize_pass.stat_round_new);
+            sb.append(" a4=" + cast<string>(model0.monomorphize_pass.stat_collect_ms)
+                + " b1=" + cast<string>(model0.monomorphize_pass.stat_adjudicate_ms));
+            sb.append(" snapshots=" + cast<string>(t_snap_ms)
+                + " defs=" + cast<string>(result.definitions.size())
+                + " errors=" + cast<string>(result.errors.size())
+                + " cache_hit=" + cast<string>(this.stat_parse_cache_hits)
+                + " cache_miss=" + cast<string>(this.stat_parse_cache_misses));
+            __builtin.eprintln(sb.to_string());
+        }
+        return result;
+    }
+
+    // First-compile entry: adopt the inputs (file order fixed from here
+    // on) and run the full lane without a cache.
+    fun compile_first(mut this, inputs: _utils.List<SourceInput>) -> BoundCompilationUnit {
+        // P0: probe the timing gate once per session (the LSP and the CLI
+        // both enter through compile_first; plain compile() callers keep
+        // the default false — zero clock reads).
+        if (_utils.getenv("EMPEROR_INCREMENTAL_TIMING") != "") {
+            this.timing_enabled = true;
+        }
+        // O1: the safety-net cadence knob (a test sets 1 to exercise the
+        // verification round on a single fast-lane transaction; anything
+        // non-positive keeps the default).
+        let vspec: string = _utils.getenv("EMPEROR_INCREMENTAL_VERIFY_INTERVAL");
+        if (vspec != "") {
+            let v: i64 = __builtin.string_to_int(vspec);
+            if (v > 0) { this.verify_interval = v; }
+        }
+        this.input_files = new _utils.List<string>();
+        this.input_sources = new _utils.List<string>();
+        this.input_is_lib = new _utils.List<bool>();
+        this.input_is_decl_slot = new _utils.List<bool>();
+        this.input_ast_cache = new _utils.List<_utils.List<Definition>>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(inputs.size())) {
+            let si: SourceInput = inputs.at(cast<u64>(i)).some;
+            this.input_files.push(si.filename);
+            this.input_sources.push(si.source);
+            this.input_is_lib.push(si.is_lib);
+            this.input_is_decl_slot.push(si.is_lib_decl_slot);
+            this.input_ast_cache.push(new _utils.List<Definition>());
+            i = i + 1;
+        }
+        return this.compile(false);
+    }
+
+    // ── the recompute transaction (4.2: short-circuit / fast / slow) ─────
+    //
+    // After one or more update() calls:
+    //   * every changed input's text hash + the defines fingerprint still
+    //     match the published snapshots -> whole-transaction short-circuit
+    //     (redesign §6 "text_hash unchanged -> done");
+    //   * changed files exist and every one of them kept its AST-signature
+    //     fingerprint AND the session is fast-eligible -> FAST lane
+    //     (passes 3-9 replayed on the retained model — see recompute_fast);
+    //   * otherwise -> SLOW lane (parse cache + full fresh pipeline).
+    fun recompute(mut this) -> BoundCompilationUnit {
+        _utils.trace_enter("Enter session recompute");
+        if (!this.has_compiled) {
+            return this.compile(false);
+        }
+        // Batch 4.3 ④: the defines set is part of every cache key — any
+        // change invalidates the whole session (full re-compile).
+        if (cast<i64>(this.snapshots.size()) > 0) {
+            if (this.snapshots.at(cast<u64>(0)).some.defines_fp != this.defines_fp) {
+                if (this.verbose >= 1) {
+                    __builtin.eprintln("[EmperorPenguin Session] recompute: defines fingerprint changed (batch ④ invalidation) — full lane");
+                }
+                return this.compile(true);
+            }
+        }
+        // The changed-input ledger (file order).
+        let changed: mut _utils.List<i64> = new _utils.List<i64>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.input_files.size())) {
+            let snap: FileSnapshot = this.snapshots.at(cast<u64>(i)).some;
+            if (snap.text_hash != session_text_hash(this.input_sources.at(cast<u64>(i)).some)) {
+                changed.push(i);
+            }
+            i = i + 1;
+        }
+        if (cast<i64>(changed.size()) == 0) {
+            if (this.verbose >= 1) {
+                __builtin.eprintln("[EmperorPenguin Session] recompute: all inputs unchanged (epoch " + cast<string>(this.epoch) + ", short-circuit)");
+            }
+            return this.last_result.some;
+        }
+        // ── fast-lane adjudication ──
+        // (batch 4.3: the four-class invalidation report is produced for
+        // EVERY recompute — with the fast lane's parsed defs when it
+        // adjudicated, conservative otherwise — and parked on the session)
+        let t_adj0: mut i64 = 0;
+        if (this.timing_enabled) { t_adj0 = __builtin.now_ms(); }
+        let fast_defs: mut _utils.List<_utils.List<Definition>> = new _utils.List<_utils.List<Definition>>();
+        let fast_ok: bool = (!this.snapshot_has_rtl && !this.snapshot_has_suspension && !this.enable_mt_scheduler)
+            && this.try_adjudicate_fast(changed, fast_defs);
+        if (fast_ok) {
+            this.stat_fast_hits = this.stat_fast_hits + 1;
+        } else {
+            this.stat_fast_fallbacks = this.stat_fast_fallbacks + 1;
+        }
+        this.last_invalidation_report = this.invalidate_report(changed, fast_defs);
+        if (this.timing_enabled) { this.timing_adj_ms = __builtin.now_ms() - t_adj0; }
+        if (fast_ok) {
+            return this.recompute_fast(changed, fast_defs);
+        }
+        return this.compile(true);
+    }
+
+    // Parse + fingerprint every changed input. True = every changed file's
+    // signature fingerprint is unchanged AND it has no meta surface (the
+    // fast lane's parse products are handed back through fast_defs; on
+    // failure the parsed defs are stored into the parse-cache slots so the
+    // slow lane does not parse them again).
+    fun try_adjudicate_fast(mut this, changed: _utils.List<i64>, fast_defs: mut _utils.List<_utils.List<Definition>>) -> bool {
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(changed.size())) {
+            let idx: i64 = changed.at(cast<u64>(ci)).some;
+            let fname: string = this.input_files.at(cast<u64>(idx)).some;
+            let text: string = this.input_sources.at(cast<u64>(idx)).some;
+            // meta surface: conservative text probe (demotes to slow lane)
+            if (session_text_has_meta(text)) {
+                return false;
+            }
+            // parse the new text (plain lex+parse; no prepass — meta-free
+            // files are prepass-invariant)
+            let mut lexer = new Lexer(text, fname);
+            let tokens = lexer.tokenize();
+            let mut p = new Parser(tokens);
+            let unit: CompilationUnit = p.parse_compilationUnit();
+            if (p.has_errors()) {
+                // parse errors changed (a structural edit) — slow lane
+                // re-reports them through the standard path
+                return false;
+            }
+            let defs: _utils.List<Definition> = unit.definitions;
+            // RTL surface in the new text — refuse the SESSION (the probe
+            // is also recorded for future rounds via snapshot rebuild; a
+            // construct edit means the fingerprint changed anyway, this is
+            // belt-and-braces)
+            if (session_defs_have_rtl(defs)) {
+                return false;
+            }
+            // the fast-lane key: AST-signature fingerprint equality
+            let snap: FileSnapshot = this.snapshots.at(cast<u64>(idx)).some;
+            let new_fp: i64 = session_ast_fingerprint(defs);
+            if (new_fp != snap.ast_fp) {
+                // structural change — the parsed defs still serve the slow
+                // lane (fill the cache slot: identical to what the full
+                // parse would produce for this text) AND the invalidation
+                // report (parsed_defs semantics: what the file parses to,
+                // whether or not the fast lane proceeds)
+                this.input_ast_cache.set(cast<u64>(idx), defs);
+                fast_defs.push(defs);
+                return false;
+            }
+            fast_defs.push(defs);
+            ci = ci + 1;
+        }
+        return true;
+    }
+
+    // ── the FAST lane ─────────────────────────────────────────────────────
+    //
+    // Preconditions (try_adjudicate_fast verified): every changed file kept
+    // its signature fingerprint, is meta-free and RTL-free; the session has
+    // no RTL surface, no suspension, no mt scheduler; the defines set held.
+    // Execution (redesign §6, "fingerprint unchanged -> rebind bodies only"):
+    //   1. swap changed files' AST defs in place (unit.definitions) + roll
+    //      their bound defs' stamps back to 7 (pass 4/5 short-circuit —
+    //      signatures identical; pass 8/9 rebind the bodies);
+    //   2. evict the changed files' bind-time synthesized classes (they are
+    //      requested ONLY by the changed bodies) and reset their per-file
+    //      synthetic-name counters (full-compile numbering restarts at 0);
+    //   3. clear model.errors and replay passes 3-9 on the retained model
+    //      (clean defs short-circuit on their stamps; global stages 6/7
+    //      recompute; changed files rebind);
+    //   4. reconcile specializations: the live request set (fresh collect
+    //      + the users ledger) decides which specialized defs stay; dead
+    //      ones are evicted from the tree + scopes;
+    //   5. rebuild the error list (replayed clean + fresh changed-file
+    //      entries, ordered by (pass_idx, file order, intra-file order))
+    //      and the users pending ledger (clean files replayed from their
+    //      snapshots in file order); rebuild the GlobalIndex; snapshot.
+    fun recompute_fast(mut this, changed: _utils.List<i64>, fast_defs: _utils.List<_utils.List<Definition>>) -> BoundCompilationUnit {
+        _utils.trace_enter("Enter session recompute_fast");
+        // P0 stage-timing anchors: swap(steps 1+2) → fixpoint(pass 3) →
+        // replay(passes 4-9) → reconcile(step 4) → err/users/rebuild/
+        // snapshots(step 5, split). All zero unless timing_enabled.
+        let t_total0: mut i64 = 0;
+        let t_swap: mut i64 = 0;
+        let t_fix: mut i64 = 0;
+        let t_rep: mut i64 = 0;
+        let t_rec: mut i64 = 0;
+        let t_err: mut i64 = 0;
+        let t_users: mut i64 = 0;
+        let t_rebuild: mut i64 = 0;
+        if (this.timing_enabled) { t_total0 = __builtin.now_ms(); }
+        let compiler: EmperorPenguinCompiler = this.last_compiler.some;
+        let model: mut SemanticModel = compiler.last_model.some;
+        let result: mut BoundCompilationUnit = this.last_result.some;
+        let unit: mut CompilationUnit = compiler.last_unit.some;
+        if (this.verbose >= 1) {
+            __builtin.eprintln("[EmperorPenguin Session] fast lane: " + cast<string>(changed.size()) + " changed file(s), epoch " + cast<string>(this.epoch) + " -> " + cast<string>(this.epoch + 1));
+        }
+
+        // ── 1. AST swap + stamp rollback ────────────────────────────────
+        // The changed file's TOP-LEVEL AST defs occupy a contiguous run in
+        // unit.definitions (first-appearance order; namespaces collapse to
+        // one top-level def each). Locate by source_file, swap elementwise
+        // (the fingerprint guarantees an equal count in the same order),
+        // then translate the run's index into the bound tree (libmeta
+        // injections sit between) and roll stamps back on the bound side.
+        // O1: the translated [bnd_s, bnd_s + n) pairs are captured as this
+        // transaction's DIRTY BOUND SEGMENTS — the incremental fixpoint's
+        // round-0 scan set. Step 2's evictions only touch indices >=
+        // appended_from (after every original segment) and pass 3 only
+        // appends, so the ranges stay index-valid through the fixpoint.
+        let dirty_lo: mut _utils.List<i64> = new _utils.List<i64>();
+        let dirty_hi: mut _utils.List<i64> = new _utils.List<i64>();
+        let dirty_names: mut _utils.List<string> = new _utils.List<string>();
+        // O3-lite: the dirty segments' TOP-LEVEL def positions in
+        // result.definitions — the interner def-cache invalidation set
+        // (their bodies were re-bound, so their type-surface
+        // contributions may have moved).
+        let dirty_positions: mut _utils.List<i64> = new _utils.List<i64>();
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(changed.size())) {
+            let idx: i64 = changed.at(cast<u64>(ci)).some;
+            let fname: string = this.input_files.at(cast<u64>(idx)).some;
+            let new_defs: _utils.List<Definition> = fast_defs.at(cast<u64>(ci)).some;
+            // find the AST run [ast_s, ast_e)
+            let ast_s: mut i64 = -1;
+            let ast_e: mut i64 = -1;
+            let ai: mut i64 = 0;
+            while (ai < cast<i64>(unit.definitions.size())) {
+                if (ast_def_filename(unit.definitions.at(cast<u64>(ai)).some) == fname) {
+                    if (ast_s < 0) { ast_s = ai; }
+                    ast_e = ai + 1;
+                }
+                ai = ai + 1;
+            }
+            if (ast_s < 0 || ast_e - ast_s != cast<i64>(new_defs.size())) {
+                // unreachable under the fingerprint gate (equal count in
+                // the same order) — bail out loudly rather than corrupt
+                if (this.verbose >= 1) {
+                    __builtin.eprintln("[EmperorPenguin Session] fast lane: AST segment mismatch for " + fname + " — falling back to the full lane");
+                }
+                return this.compile(true);
+            }
+            let bi: mut i64 = 0;
+            while (bi < cast<i64>(new_defs.size())) {
+                unit.definitions.set(cast<u64>(ast_s + bi), new_defs.at(cast<u64>(bi)).some);
+                bi = bi + 1;
+            }
+            // translate the AST run's start into the bound tree (libmeta
+            // injections sit between: walk the bound list skipping injected
+            // positions, counting AST defs, until the counter hits ast_s)
+            let bnd_s: mut i64 = -1;
+            let ai2: mut i64 = 0;
+            let bi2: mut i64 = 0;
+            while (bi2 < cast<i64>(result.definitions.size())) {
+                if (model.libmeta_is_injected(bi2)) {
+                    bi2 = bi2 + 1;
+                    continue;
+                }
+                if (ai2 == ast_s) {
+                    bnd_s = bi2;
+                    bi2 = cast<i64>(result.definitions.size());
+                }
+                ai2 = ai2 + 1;
+                bi2 = bi2 + 1;
+            }
+            if (bnd_s < 0) {
+                if (this.verbose >= 1) {
+                    __builtin.eprintln("[EmperorPenguin Session] fast lane: bound segment not found for " + fname + " — falling back to the full lane");
+                }
+                return this.compile(true);
+            }
+            let bj: mut i64 = 0;
+            while (bj < cast<i64>(new_defs.size())) {
+                let bdef: BoundDefinition = result.definitions.at(cast<u64>(bnd_s + bj)).some;
+                session_swap_ast(bdef, new_defs.at(cast<u64>(bj)).some, 7);
+                dirty_positions.push(bnd_s + bj);
+                bj = bj + 1;
+            }
+            dirty_names.push(fname);
+            dirty_lo.push(bnd_s);
+            dirty_hi.push(bnd_s + cast<i64>(new_defs.size()));
+            ci = ci + 1;
+        }
+
+        // ── 2. synthesized-class eviction + counter reset ───────────────
+        // Everything past the original AST defs + injections is append
+        // territory (fixpoint specializations + bind-time synthesis). The
+        // changed files' synthesized classes live only at the request of
+        // their bodies — evict. (Their specializations are NOT evicted
+        // here: they belong to their TEMPLATE's file and are reconciled
+        // against the live request set in step 4.)
+        let appended_from: i64 = cast<i64>(unit.definitions.size()) + model.libmeta_total_injected();
+        // O3-lite: any synthesized-class eviction in this round forces the
+        // FULL index rebuild + snapshot pass (an eviction breaks the
+        // definitions list's append-only monotonicity the incremental
+        // differential relies on, and StrMap has no remove for the tables'
+        // rows). Zero on ordinary body-edit rounds.
+        let evicted_synth: mut i64 = 0;
+        ci = 0;
+        while (ci < cast<i64>(changed.size())) {
+            let idx: i64 = changed.at(cast<u64>(ci)).some;
+            let fname: string = this.input_files.at(cast<u64>(idx)).some;
+            // Batch 3.4's file tag is embedded in every synthesized name
+            // (__lambda_<tag>_<n> ...) — match on it, NOT on
+            // bound_def_source_file (synthesized defs carry a synthetic AST
+            // whose source_file is empty).
+            let stag: string = synth_name_file_tag(fname);
+            let di: mut i64 = cast<i64>(result.definitions.size()) - 1;
+            while (di >= appended_from) {
+                let def: BoundDefinition = result.definitions.at(cast<u64>(di)).some;
+                let dname: string = bound_def_full_name(def);
+                if (session_is_synth_name(dname) && string_find(dname, stag) >= 0) {
+                    result.definitions.remove(cast<u64>(di));
+                    cast<mut BoundScope>(result.global_scope).remove_symbol_in_tree(dname);
+                    // O1: the recreated successor must re-enter the
+                    // incremental fixpoint's scan set (it lands in the
+                    // append zone uncovered).
+                    model.monomorphize_pass.scan_uncover(dname);
+                    evicted_synth = evicted_synth + 1;
+                }
+                di = di - 1;
+            }
+            // per-file synthetic counters restart at 0 (the full compile
+            // numbers THIS file's synthetics from 0)
+            let tag: string = synth_name_file_tag(fname);
+            model.spawn_site_counter.set(tag, 0);
+            model.lambda_site_counter.set(tag, 0);
+            model.generator_site_counter.set(tag, 0);
+            model.construct_counter.set(tag, 0);
+            model.connect_wire_counter.set(tag, 0);
+            model.connect_relay_counter.set(tag, 0);
+            model.variable_net_counter.set(tag, 0);
+            ci = ci + 1;
+        }
+
+        // ── 3. passes 3-9 replayed on the retained model ────────────────
+        if (this.timing_enabled) { t_swap = __builtin.now_ms() - t_total0; }
+        model.errors = new _utils.List<SemanticError>();
+        model.current_pass_index = 3;
+        // O1: the incremental fixpoint. The A4 sweeps scan ONLY the dirty
+        // bound segments + the uncovered append zone (the scan ledger), so
+        // the collection cost is O(dirty + cascade) instead of O(tree);
+        // each round's new specializations are the next round's scan set
+        // (the cascade) until nothing new appears. B1 adjudication, the
+        // dedup and the finalize are UNTOUCHED (full-mode semantics).
+        let do_verify: bool = this.verify_interval <= 1
+            || this.rounds_since_verify + 1 >= this.verify_interval;
+        let t_verify0: mut i64 = 0;
+        let verify_created: mut i64 = 0;
+        {
+            let mp0: mut MonomorphizePass = model.monomorphize_pass;
+            mp0.attrib_on = true;
+            mp0.inc_configure(dirty_names, dirty_lo, dirty_hi);
+            mp0.run(unit, result);
+            this.req_harvest_incremental(mp0);
+            mp0.inc_reset();
+            if (do_verify) {
+                // The SAFETY NET (O1 stage 2): run the fixpoint FULL once
+                // more on the same tree. Every collected request
+                // re-adjudicates — a dedup no-op when the incremental path
+                // was complete; anything it CREATES was missed (healed
+                // here + counted; must stay 0). Then compare the full
+                // per-file attribution against the request cache (only the
+                // under-recording direction alarms) and rebuild the cache.
+                this.stat_verify_rounds = this.stat_verify_rounds + 1;
+                if (this.timing_enabled) { t_verify0 = __builtin.now_ms(); }
+                // P0 stat continuity: the verification run resets the pass
+                // stats — save the incremental run's and merge back so the
+                // timing line reports the whole pass-3 cost.
+                let s_a4: i64 = mp0.stat_collect_ms;
+                let s_b1: i64 = mp0.stat_adjudicate_ms;
+                let s_rounds: i64 = mp0.stat_rounds;
+                let s_rms: _utils.List<i64> = mp0.stat_round_ms;
+                let s_rnw: _utils.List<i64> = mp0.stat_round_new;
+                let s_scanned: i64 = mp0.stat_inc_scanned;
+                let defs_before: i64 = cast<i64>(result.definitions.size());
+                mp0.run(unit, result);
+                verify_created = cast<i64>(result.definitions.size()) - defs_before;
+                this.stat_verify_healed = this.stat_verify_healed + verify_created;
+                this.req_verify(mp0);
+                this.rounds_since_verify = 0;
+                mp0.stat_collect_ms = mp0.stat_collect_ms + s_a4;
+                mp0.stat_adjudicate_ms = mp0.stat_adjudicate_ms + s_b1;
+                mp0.stat_rounds = s_rounds + mp0.stat_rounds;
+                mp0.stat_inc_scanned = s_scanned + mp0.stat_inc_scanned;
+                {
+                    let mi2: mut i64 = 0;
+                    let merged_ms: mut _utils.List<i64> = new _utils.List<i64>();
+                    while (mi2 < cast<i64>(s_rms.size())) {
+                        merged_ms.push(s_rms.at(cast<u64>(mi2)).some);
+                        mi2 = mi2 + 1;
+                    }
+                    let mi3: mut i64 = 0;
+                    while (mi3 < cast<i64>(mp0.stat_round_ms.size())) {
+                        merged_ms.push(mp0.stat_round_ms.at(cast<u64>(mi3)).some);
+                        mi3 = mi3 + 1;
+                    }
+                    mp0.stat_round_ms = merged_ms;
+                }
+                {
+                    let mi2: mut i64 = 0;
+                    let merged_nw: mut _utils.List<i64> = new _utils.List<i64>();
+                    while (mi2 < cast<i64>(s_rnw.size())) {
+                        merged_nw.push(s_rnw.at(cast<u64>(mi2)).some);
+                        mi2 = mi2 + 1;
+                    }
+                    let mi3: mut i64 = 0;
+                    while (mi3 < cast<i64>(mp0.stat_round_new.size())) {
+                        merged_nw.push(mp0.stat_round_new.at(cast<u64>(mi3)).some);
+                        mi3 = mi3 + 1;
+                    }
+                    mp0.stat_round_new = merged_nw;
+                }
+                if (this.timing_enabled) { t_verify0 = __builtin.now_ms() - t_verify0; }
+            } else {
+                this.rounds_since_verify = this.rounds_since_verify + 1;
+            }
+            mp0.attrib_on = false;
+        }
+        this.current_unit_fixup(model, result);
+        if (this.timing_enabled) { t_fix = __builtin.now_ms() - t_total0 - t_swap; }
+        model.current_pass_index = 4;
+        model.a5_pass.run_symbols_and_constructors(result);
+        model.current_pass_index = 6;
+        model.iface_layout_pass.run(unit, result);
+        model.current_pass_index = 7;
+        model.classify_value_types_pass.run(result);
+        model.classify_value_types_pass.validate_interface_usage(result);
+        model.current_pass_index = 7;
+        model.a5_pass.run_bodies_and_validate(unit, result);
+        // (mt scheduler + port topology are fast-ineligible by the gate —
+        // nothing to replay here)
+        if (this.timing_enabled) { t_rep = __builtin.now_ms() - t_total0 - t_swap - t_fix; }
+
+        // ── 4. specialization reconciliation (O2: emit path every round,
+        //    diagnostics path every Nth — see reconcile_interval) ─────────
+        // The live request set: every specialized def that is still asked
+        // for. Sources: (a) a fresh collection sweep (signatures + AST
+        // bodies — the same face the fixpoint collects), (b) the users
+        // ledger (body-bind resolution hits: every live CALL/TYPE hit in
+        // clean and changed bodies records the target; specialized function
+        // calls reach the ledger through bind_identifier), (c) the pending
+        // users of THIS round (the changed files' fresh hits). Anything in
+        // the b1 ledger but not in the live set is dead — evict.
+        {
+            let do_reconcile: bool = this.reconcile_interval <= 1
+                || this.rounds_since_reconcile + 1 >= this.reconcile_interval;
+            if (do_reconcile) {
+                this.evict_dead_specializations(model, unit, result);
+                this.rounds_since_reconcile = 0;
+            } else {
+                this.rounds_since_reconcile = this.rounds_since_reconcile + 1;
+                this.stat_reconcile_deferrals = this.stat_reconcile_deferrals + 1;
+                this.last_evicted_dead = new _utils.List<string>();
+                if (this.verbose >= 1) {
+                    __builtin.eprintln("[EmperorPenguin Session] reconciliation deferred (fast-lane round " + cast<string>(this.rounds_since_reconcile) + "/" + cast<string>(this.reconcile_interval) + ")");
+                }
+            }
+        }
+
+        // ── 5. error + users replay, index rebuild, snapshot ────────────
+        if (this.timing_enabled) { t_rec = __builtin.now_ms() - t_total0 - t_swap - t_fix - t_rep; }
+        this.replay_errors(model, result, changed);
+        if (this.timing_enabled) { t_err = __builtin.now_ms() - t_total0 - t_swap - t_fix - t_rep - t_rec; }
+        this.replay_users(model, changed);
+        if (this.timing_enabled) { t_users = __builtin.now_ms() - t_total0 - t_swap - t_fix - t_rep - t_rec - t_err; }
+        model.current_pass_index = 10;
+        // ── O3-lite: the incremental index + snapshot refresh ────────────
+        // An eviction-free round (no synthesized-class eviction in step 2,
+        // no dead specialization evicted by the reconciliation — the
+        // ordinary body-edit shape) keeps the definitions list
+        // append-only, so the GlobalIndex can be maintained by the append
+        // differential (rebuild_incremental) and the snapshots by
+        // clean-file object reuse (build_snapshots_incremental). Any
+        // eviction falls back to the full rebuild + snapshot pass — the
+        // correctness net.
+        let incremental_index: bool = evicted_synth == 0 && cast<i64>(this.last_evicted_dead.size()) == 0;
+        if (incremental_index) {
+            model.global_index.rebuild_incremental(model, unit, result, dirty_positions);
+        } else {
+            model.global_index.rebuild(model, result);
+        }
+        model.build_def_segments(result);
+        result.errors = model.errors;
+        if (this.timing_enabled) { t_rebuild = __builtin.now_ms() - t_total0 - t_swap - t_fix - t_rep - t_rec - t_err - t_users; }
+        // refresh the parse cache slots of the changed files (their new
+        // post-bind AST state — prepass-invariant under the meta-free gate)
+        ci = 0;
+        while (ci < cast<i64>(changed.size())) {
+            this.input_ast_cache.set(cast<u64>(changed.at(cast<u64>(ci)).some), fast_defs.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+        // snapshot + epoch bump (the compiler/model/unit pair is RETAINED)
+        if (incremental_index) {
+            this.build_snapshots_incremental(compiler, result, changed);
+        } else {
+            this.build_snapshots(compiler, result);
+            this.build_pending_ledgers(model);
+        }
+        this.last_result = new Option<BoundCompilationUnit>.some(result);
+        this.last_errors = result.errors;
+        if (this.dump_index) {
+            let summary: string = model.global_index.render_summary();
+            compiler.index_summary = summary;
+            this.last_index_summary = summary;
+        }
+        this.epoch = this.epoch + 1;
+        if (this.verbose >= 1) {
+            __builtin.eprintln("[EmperorPenguin Session] fast lane done: epoch=" + cast<string>(this.epoch)
+                + " definitions=" + cast<string>(result.definitions.size())
+                + " errors=" + cast<string>(result.errors.size())
+                + " [O1] req_new=" + cast<string>(this.stat_req_new)
+                + " verify_rounds=" + cast<string>(this.stat_verify_rounds)
+                + " verify_miss=" + cast<string>(this.stat_verify_miss)
+                + " verify_healed=" + cast<string>(this.stat_verify_healed));
+        }
+        if (this.timing_enabled) {
+            let t_total_ms: i64 = __builtin.now_ms() - t_total0;
+            let t_snap_ms: i64 = t_total_ms - t_swap - t_fix - t_rep - t_rec - t_err - t_users - t_rebuild;
+            let mp: MonomorphizePass = model.monomorphize_pass;
+            let sb: mut StringBuilder = new StringBuilder();
+            sb.append("[SessionTiming] fast epoch=" + cast<string>(this.epoch)
+                + " total=" + cast<string>(t_total_ms)
+                + "ms adj=" + cast<string>(this.timing_adj_ms)
+                + " swap=" + cast<string>(t_swap)
+                + " fixpoint=" + cast<string>(t_fix)
+                + "(r=" + cast<string>(mp.stat_rounds)
+                + " rounds=");
+            session_append_i64_list(sb, mp.stat_round_ms);
+            sb.append(" new=");
+            session_append_i64_list(sb, mp.stat_round_new);
+            sb.append(" a4=" + cast<string>(mp.stat_collect_ms)
+                + " b1=" + cast<string>(mp.stat_adjudicate_ms)
+                + " scanned=" + cast<string>(mp.stat_inc_scanned) + ")");
+            let idx_inc_tag: string = if (incremental_index) { "1" } else { "0" };
+            sb.append(" replay4_9=" + cast<string>(t_rep)
+                + " reconcile=" + cast<string>(t_rec)
+                + " errors=" + cast<string>(t_err)
+                + " users=" + cast<string>(t_users)
+                + " rebuild=" + cast<string>(t_rebuild)
+                + " snapshots=" + cast<string>(t_snap_ms)
+                + " idx_inc=" + idx_inc_tag
+                + " defs=" + cast<string>(result.definitions.size())
+                + " errcount=" + cast<string>(result.errors.size())
+                + " verify=" + cast<string>(t_verify0) + "ms(created=" + cast<string>(verify_created) + ")"
+                + " reqnew=" + cast<string>(this.stat_req_new)
+                + " verify_rounds=" + cast<string>(this.stat_verify_rounds)
+                + " verify_miss=" + cast<string>(this.stat_verify_miss)
+                + " verify_healed=" + cast<string>(this.stat_verify_healed));
+            __builtin.eprintln(sb.to_string());
+        }
+        return result;
+    }
+
+    // BindA5's run entries set model.current_unit around the pass-8 walk;
+    // the replay calls the pass objects directly, so the unit pointer is
+    // installed here for the same reason (bind_body_for_def consumers).
+    fun current_unit_fixup(mut this, model: mut SemanticModel, result: mut BoundCompilationUnit) {
+        model.current_unit = new Option<BoundCompilationUnit>.some(result);
+    }
+
+    // Is this full name one of the bind-time synthesized shapes? (Only the
+    // synthesized classes are evicted wholesale in step 2 — specializations
+    // go through the reconciliation instead.)
+    fun session_is_synth_name(name: string) -> bool {
+        if (string_find(name, "__SpawnCtx_") >= 0) { return true; }
+        if (string_find(name, "__SpawnFut_") >= 0) { return true; }
+        if (string_find(name, "__lambda_") >= 0) { return true; }
+        if (string_find(name, "__GenCtx_") >= 0) { return true; }
+        if (string_find(name, "__conn_wire_") >= 0) { return true; }
+        if (string_find(name, "__conn_relay_") >= 0) { return true; }
+        return false;
+    }
+
+    // ── step 4: the specialization reconciliation ────────────────────────
+    //
+    // The LIVE set is collected by a full BOUND-TREE REFERENCE WALK (the
+    // request-replay approach — collect sweep + users ledger — under-covers:
+    // the collect sweep folds template names (type_definition points at the
+    // TEMPLATE), the users ledger misses new-expression targets, and
+    // pass-8-only (on-demand) specializations are invisible to both). The
+    // walk visits every def's signature types + bound bodies and records:
+    //   * each referenced BoundType's type_definition full name (template
+    //     name) AND its mangle fold (template full name + generic args —
+    //     the specialized def's full name), recursively over generic args;
+    //   * every resolved symbol's full name (identifiers, callees, member
+    //     targets, constructors, type symbols, enum variants).
+    // A specialized def whose full name never appears is dead — evicted
+    // from the tree and the scopes.
+    fun evict_dead_specializations(mut this, model: mut SemanticModel, unit: mut CompilationUnit, result: mut BoundCompilationUnit) {
+        let t_walk0: mut i64 = 0;
+        if (this.timing_enabled) { t_walk0 = __builtin.now_ms(); }
+        this.last_evicted_dead = new _utils.List<string>();
+        let live: mut _utils.List<string> = new _utils.List<string>();
+        let di0: mut i64 = 0;
+        while (di0 < cast<i64>(result.definitions.size())) {
+            session_walk_def(result.definitions.at(cast<u64>(di0)).some, live);
+            di0 = di0 + 1;
+        }
+        let t_walk_ms: mut i64 = 0;
+        if (this.timing_enabled) { t_walk_ms = __builtin.now_ms() - t_walk0; }
+        if (this.verbose >= 1) {
+            __builtin.eprintln("[EmperorPenguin Session] reconcile: live=" + cast<string>(cast<i64>(live.size())));
+        }
+        // evict: every def whose full name is in the b1 ledger (i.e. was
+        // created as a specialization) but not in the live set
+        let ledger_keys: _utils.List<string> = model.monomorphize_pass.b1_adjudicated.keys();
+        let di: mut i64 = cast<i64>(result.definitions.size()) - 1;
+        let evicted: mut i64 = 0;
+        while (di >= 0) {
+            let def: BoundDefinition = result.definitions.at(cast<u64>(di)).some;
+            let dname: string = bound_def_full_name(def);
+            // the def's BARE name is the mangle fold (what the walker's
+            // generic-call mangle produces); the full name adds the scope
+            // prefix. Either form in the live set keeps the def alive.
+            let bare: string = BoundDefinition.get_name(def);
+            if (string_length(dname) > 0 && session_list_contains(ledger_keys, dname)) {
+                if (!session_list_contains(live, dname) && !session_list_contains(live, bare)) {
+                    result.definitions.remove(cast<u64>(di));
+                    cast<mut BoundScope>(result.global_scope).remove_symbol_in_tree(dname);
+                    // blank the ledger entry (StrMap has no remove; a blank
+                    // record never matches a def again since the def is
+                    // gone, and a re-request re-creates through the scope
+                    // dedup path)
+                    model.monomorphize_pass.b1_adjudicated.set(dname, "|");
+                    // O1: drop the scan-ledger mark so a recreated
+                    // specialization of the same name re-enters the
+                    // incremental fixpoint's scan set (its requests must be
+                    // re-collected when the specialization is born again).
+                    model.monomorphize_pass.scan_uncover(dname);
+                    evicted = evicted + 1;
+                    // O2c: record the dead name (both spellings) — the error
+                    // replay drops this def's snapshot-carried errors
+                    this.last_evicted_dead.push(dname);
+                    if (string_length(bare) > 0) {
+                        this.last_evicted_dead.push(bare);
+                    }
+                    if (this.verbose >= 1) {
+                        __builtin.eprintln("[EmperorPenguin Session] evict: " + dname);
+                    }
+                }
+            }
+            di = di - 1;
+        }
+        if (this.verbose >= 1 && evicted > 0) {
+            __builtin.eprintln("[EmperorPenguin Session] specialization reconciliation: evicted " + cast<string>(evicted) + " dead specialization(s)");
+        }
+        if (this.timing_enabled) {
+            __builtin.eprintln("[SessionTiming] reconcile.walk=" + cast<string>(t_walk_ms)
+                + "ms(live=" + cast<string>(cast<i64>(live.size()))
+                + ") reconcile.evict=" + cast<string>(__builtin.now_ms() - t_walk0 - t_walk_ms)
+                + "ms(evicted=" + cast<string>(evicted) + ")");
+        }
+    }
+
+    // O2c: does this (replayed) error belong to a def the LAST
+    // reconciliation evicted? Such errors are phantom diagnostics — the
+    // def is gone from the tree, a full compile of the current texts would
+    // not report them. Fresh errors never need this (their def just ran);
+    // only snapshot-carried replays can outlive their owner.
+    fun error_of_dead_instance(this, err: SemanticError) -> bool {
+        if (string_length(err.owner_def) == 0) { return false; }
+        if (cast<i64>(this.last_evicted_dead.size()) == 0) { return false; }
+        return session_list_contains(this.last_evicted_dead, err.owner_def);
+    }
+
+    // ── step 5a: the error replay ────────────────────────────────────────
+    //
+    // model.errors at this point holds ONLY this round's products (global
+    // stage errors — re-run stages re-report them — plus the changed files'
+    // pass-3..9 entries). The replay re-adds: every CLEAN file's full error
+    // set (their defs short-circuited, so their entries would otherwise be
+    // lost) and the changed files' pass-1/2 entries (those passes did not
+    // re-run; the signature fingerprint guarantees the same entries). The
+    // merged list is ordered by (pass_idx, file order, intra-file order) —
+    // the full compile's collection order — with file-less (global) errors
+    // appended at their pass layer's end.
+    fun replay_errors(mut this, model: mut SemanticModel, result: mut BoundCompilationUnit, changed: _utils.List<i64>) {
+        let fresh: _utils.List<SemanticError> = model.errors;
+        let out: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
+        let pass_idx_max: mut i64 = 11;
+        let p: mut i64 = 0;
+        while (p <= pass_idx_max) {
+            // file-owned buckets in file order
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(this.input_files.size())) {
+                let fname: string = this.input_files.at(cast<u64>(fi)).some;
+                let is_changed: bool = session_list_contains_i(changed, fi);
+                if (is_changed) {
+                    // fresh entries of this (file, pass) — the changed file
+                    // re-ran passes 3-9, so p >= 3 comes from this round
+                    let ei: mut i64 = 0;
+                    while (ei < cast<i64>(fresh.size())) {
+                        let err: SemanticError = fresh.at(cast<u64>(ei)).some;
+                        if (err.location.filename == fname && err.pass_idx == p) {
+                            out.push(err);
+                        }
+                        ei = ei + 1;
+                    }
+                    // replayed pre-pipeline (parser, pass 1/2) entries —
+                    // those stages did not re-run, and the signature
+                    // fingerprint guarantees the identical entries
+                    if (p <= 2) {
+                        let snap: FileSnapshot = this.snapshots.at(cast<u64>(fi)).some;
+                        let si2: mut i64 = 0;
+                        while (si2 < cast<i64>(snap.errors_kept.size())) {
+                            let err: SemanticError = snap.errors_kept.at(cast<u64>(si2)).some;
+                            if (err.pass_idx == p && !this.error_of_dead_instance(err)) {
+                                out.push(err);
+                            }
+                            si2 = si2 + 1;
+                        }
+                    }
+                } else {
+                    // replayed snapshot entries (all passes — clean defs
+                    // short-circuited, nothing of theirs re-ran)
+                    let snap: FileSnapshot = this.snapshots.at(cast<u64>(fi)).some;
+                    let si2: mut i64 = 0;
+                    while (si2 < cast<i64>(snap.errors_kept.size())) {
+                        let err: SemanticError = snap.errors_kept.at(cast<u64>(si2)).some;
+                        if (err.pass_idx == p && !this.error_of_dead_instance(err)) {
+                            out.push(err);
+                        }
+                        si2 = si2 + 1;
+                    }
+                }
+                fi = fi + 1;
+            }
+            // file-less entries: fresh ones first (the global stages that
+            // re-ran re-report them), then the snapshot's replayed ones
+            // (location-less errors of passes that only ran for clean files
+            // — e.g. pass-8 E_RESOLVE_SYMBOL reports)
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(fresh.size())) {
+                let err: SemanticError = fresh.at(cast<u64>(gi)).some;
+                if (string_length(err.location.filename) == 0 && err.pass_idx == p) {
+                    out.push(err);
+                }
+                gi = gi + 1;
+            }
+            let gk: mut i64 = 0;
+            while (gk < cast<i64>(this.global_errors_kept.size())) {
+                let rerr: SemanticError = this.global_errors_kept.at(cast<u64>(gk)).some;
+                // Batch 4.4 fix: replay location-less entries only for the
+                // pre-pipeline passes (0-2 — they never re-run). Pass 3+
+                // location-less reports (e.g. pass-8 E_RESOLVE_SYMBOL)
+                // cannot be attributed to a file: replaying them verbatim
+                // resurrects errors the changed file's re-bind just FIXED
+                // (the changed file's live ones re-report fresh above);
+                // stale ones from clean files may drop for a round — the
+                // safer failure mode (self-healing, not phantom).
+                if (rerr.pass_idx == p && p <= 2 && !this.error_of_dead_instance(rerr)) {
+                    out.push(rerr);
+                }
+                gk = gk + 1;
+            }
+            p = p + 1;
+        }
+        model.errors = out;
+        this.last_errors = out;
+    }
+
+    // ── step 5b: the users ledger replay ─────────────────────────────────
+    //
+    // Rebuild users_pending in the FULL COLLECTION ORDER (file segment
+    // order; within a file, the body-bind resolution order): changed files
+    // contribute this round's pending entries (already in collection
+    // order), clean files replay their snapshot ledgers verbatim. The
+    // GlobalIndex fold (first-seen file order per target) then reproduces
+    // the full-compile users table exactly.
+    //
+    // O3-lite fix (first exposed by the byte-level dump reconciliation):
+    // a CLEAN file's fresh pending entries must be MERGED IN, not
+    // dropped. This round's pending holds (a) the changed files' re-bound
+    // bodies AND (b) the catch-up body binds of NEWLY CREATED
+    // specializations — whose index_current_file is the TEMPLATE's file,
+    // which is typically clean. Clean defs short-circuit and produce
+    // nothing, so every clean-file entry in this round's pending IS a new
+    // specialization's record; dropping it (the old clean branch) lost
+    // exactly those rows from the users table. Order within the merged
+    // clean segment (ledger then fresh) does not matter: the users value
+    // is a deduped SET (and the dump renders it sorted).
+    fun replay_users(mut this, model: mut SemanticModel, changed: _utils.List<i64>) {
+        let pending_t: mut _utils.List<string> = new _utils.List<string>();
+        let pending_f: mut _utils.List<string> = new _utils.List<string>();
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.input_files.size())) {
+            let fname: string = this.input_files.at(cast<u64>(fi)).some;
+            if (session_list_contains_i(changed, fi)) {
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(model.users_pending_target.size())) {
+                    if (model.users_pending_file.at(cast<u64>(pi)).some == fname) {
+                        pending_t.push(model.users_pending_target.at(cast<u64>(pi)).some);
+                        pending_f.push(fname);
+                    }
+                    pi = pi + 1;
+                }
+            } else {
+                let snap: FileSnapshot = this.snapshots.at(cast<u64>(fi)).some;
+                let si2: mut i64 = 0;
+                while (si2 < cast<i64>(snap.users_targets.size())) {
+                    pending_t.push(snap.users_targets.at(cast<u64>(si2)).some);
+                    pending_f.push(fname);
+                    si2 = si2 + 1;
+                }
+                // the clean file's FRESH entries: this round's new
+                // specializations' catch-up binds (template file = here).
+                // No dedup needed: the fold set-adds (idempotent).
+                let pi2: mut i64 = 0;
+                while (pi2 < cast<i64>(model.users_pending_target.size())) {
+                    if (model.users_pending_file.at(cast<u64>(pi2)).some == fname) {
+                        pending_t.push(model.users_pending_target.at(cast<u64>(pi2)).some);
+                        pending_f.push(fname);
+                    }
+                    pi2 = pi2 + 1;
+                }
+            }
+            fi = fi + 1;
+        }
+        model.users_pending_target = pending_t;
+        model.users_pending_file = pending_f;
+    }
+
+    // ── O1: the per-file instantiation-request cache ──────────────────────
+    //
+    // Buckets map file -> "\n"-joined unique request keys (mangle-encoded
+    // identities — see MonomorphizePass.attrib_*). Union-only updates from
+    // the incremental sweeps' attribution; exact rebuilds from full-sweep
+    // attribution (first compile, slow lane, verify rounds).
+
+    fun req_bucket_has(this, file: string, key: string) -> bool {
+        let v: string = this.req_cache.get(file, "");
+        if (string_length(v) == 0) { return false; }
+        return string_find("\n" + v + "\n", "\n" + key + "\n") >= 0;
+    }
+
+    // Add one (file, key); true when the key was new to the bucket.
+    fun req_bucket_add(mut this, file: string, key: string) -> bool {
+        let v: string = this.req_cache.get(file, "");
+        if (string_length(v) == 0) {
+            this.req_cache.set(file, key);
+            return true;
+        }
+        if (string_find("\n" + v + "\n", "\n" + key + "\n") >= 0) { return false; }
+        this.req_cache.set(file, v + "\n" + key);
+        return true;
+    }
+
+    // Union-add one transaction's attribution occurrences (the dirty rescan
+    // + the cascade over new specializations). stat_req_new counts the adds
+    // that introduced a new key — the 差分 telemetry's "new" side. The
+    // "disappeared" side is deliberately NOT tracked here: a bucket holds
+    // occurrences of BOTH a file's own defs and the specializations owned
+    // by its templates, and without per-def records the two are
+    // indistinguishable — death is owned by the O2 reconciliation's tree
+    // walk, and stale keys are cleaned by the verify-round rebuild.
+    fun req_harvest_incremental(mut this, mp: MonomorphizePass) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(mp.attrib_files.size())) {
+            if (this.req_bucket_add(mp.attrib_files.at(cast<u64>(i)).some, mp.attrib_keys.at(cast<u64>(i)).some)) {
+                this.stat_req_new = this.stat_req_new + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    // Build fresh buckets from a (full-mode) attribution record set.
+    fun req_buckets_from_attribution(mut this, mp: MonomorphizePass) -> mut _utils.StrMap<string> {
+        let out: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(mp.attrib_files.size())) {
+            let f: string = mp.attrib_files.at(cast<u64>(i)).some;
+            let k: string = mp.attrib_keys.at(cast<u64>(i)).some;
+            let v: string = out.get(f, "");
+            if (string_length(v) == 0) {
+                out.set(f, k);
+            } else {
+                if (string_find("\n" + v + "\n", "\n" + k + "\n") < 0) {
+                    out.set(f, v + "\n" + k);
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Wholesale cache rebuild from a finished compile's attribution (the
+    // full lane ran with attrib_on — see compile()).
+    fun req_rebuild_from_model(mut this, model: SemanticModel) {
+        this.req_cache = this.req_buckets_from_attribution(model.monomorphize_pass);
+    }
+
+    // The SAFETY NET's compare + rebuild. mp.attrib_* holds a FULL-mode
+    // fixpoint's per-file occurrence records (the ground truth of "what a
+    // full collection finds right now"). The DANGEROUS direction — the
+    // full sweep finds a (file, key) the incrementally-maintained cache
+    // lacks — means the incremental path skipped a real request face; it
+    // is reported (-v) and counted (stat_verify_miss, must stay 0). The
+    // opposite direction (stale cache keys: disappeared requests, evicted
+    // specializations) is benign — counted as stat_verify_over and cleaned
+    // by the rebuild below.
+    fun req_verify(mut this, mp: MonomorphizePass) {
+        let full: mut _utils.StrMap<string> = this.req_buckets_from_attribution(mp);
+        let miss: mut i64 = 0;
+        let over: mut i64 = 0;
+        let fk: _utils.List<string> = full.keys();
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(fk.size())) {
+            let f: string = fk.at(cast<u64>(fi)).some;
+            let keys: _utils.List<string> = session_split_lines(full.get(f, ""));
+            let ki: mut i64 = 0;
+            while (ki < cast<i64>(keys.size())) {
+                if (!this.req_bucket_has(f, keys.at(cast<u64>(ki)).some)) { miss = miss + 1; }
+                ki = ki + 1;
+            }
+            fi = fi + 1;
+        }
+        let ck: _utils.List<string> = this.req_cache.keys();
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(ck.size())) {
+            let f2: string = ck.at(cast<u64>(ci)).some;
+            let fv: string = full.get(f2, "");
+            let keys2: _utils.List<string> = session_split_lines(this.req_cache.get(f2, ""));
+            let ki2: mut i64 = 0;
+            while (ki2 < cast<i64>(keys2.size())) {
+                if (string_find("\n" + fv + "\n", "\n" + keys2.at(cast<u64>(ki2)).some + "\n") < 0) { over = over + 1; }
+                ki2 = ki2 + 1;
+            }
+            ci = ci + 1;
+        }
+        this.stat_verify_miss = this.stat_verify_miss + miss;
+        this.stat_verify_over = this.stat_verify_over + over;
+        if ((miss > 0 || over > 0) && this.verbose >= 1) {
+            __builtin.eprintln("[EmperorPenguin Session] request-cache verification: miss=" + cast<string>(miss) + " (incremental path under-recorded — must be 0) over=" + cast<string>(over) + " (stale keys, rebuilt)");
+        }
+        this.req_cache = full;
+    }
+
+    // Extract the per-file snapshot views from the finished compile.
+    // Copies only — the model/index/result stay owned by the session's
+    // last_* slots and are never handed out through a snapshot.
+    fun build_snapshots(mut this, compiler: EmperorPenguinCompiler, result: BoundCompilationUnit) {
+        if (compiler.last_model.is_none()) { return; }
+        let model: SemanticModel = compiler.last_model.some;
+        let index: GlobalIndex = model.global_index;
+        this.snapshots = new _utils.List<FileSnapshot>();
+        this.snapshot_has_rtl = false;
+        this.snapshot_has_suspension = result.has_suspension;
+        this.global_errors_kept = new _utils.List<SemanticError>();
+        {
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(result.errors.size())) {
+                let gerr: SemanticError = result.errors.at(cast<u64>(gi)).some;
+                if (string_length(gerr.location.filename) == 0) {
+                    this.global_errors_kept.push(gerr);
+                }
+                gi = gi + 1;
+            }
+        }
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.input_files.size())) {
+            let fname: string = this.input_files.at(cast<u64>(fi)).some;
+            let snap: mut FileSnapshot = new FileSnapshot(fname);
+            snap.text_hash = session_text_hash(this.input_sources.at(cast<u64>(fi)).some);
+            snap.defines_fp = this.defines_fp;
+            snap.has_meta_surface = session_text_has_meta(this.input_sources.at(cast<u64>(fi)).some);
+            if (cast<i64>(this.input_ast_cache.at(cast<u64>(fi)).some.size()) > 0) {
+                snap.ast_fp = session_ast_fingerprint(this.input_ast_cache.at(cast<u64>(fi)).some);
+                // RTL probe on the post-parse shapes (a raw-text probe would
+                // fire on the word "construct"/"input" inside comments — the
+                // stdlib's own comments trip it). Post-DESUGAR constructs are
+                // eliminated, so a cache-based probe under-detects RTL — but
+                // an RTL project implies enable_coroutine, the scheduler
+                // preload, and has_suspension=true, which independently
+                // blocks the fast lane (the belt-and-braces pair).
+                if (session_defs_have_rtl(this.input_ast_cache.at(cast<u64>(fi)).some)) {
+                    this.snapshot_has_rtl = true;
+                }
+            }
+            // def segment for this file (first matching segment; "" files
+            // inherit — see build_def_segments)
+            let si: mut i64 = 0;
+            while (si < cast<i64>(model.def_seg_files.size())) {
+                if (model.def_seg_files.at(cast<u64>(si)).some == fname) {
+                    snap.def_seg_start = model.def_seg_starts.at(cast<u64>(si)).some;
+                    snap.def_seg_count = model.def_seg_counts.at(cast<u64>(si)).some;
+                    si = cast<i64>(model.def_seg_files.size());
+                }
+                si = si + 1;
+            }
+            // exports (exp_names/exp_files parallel lists)
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(index.exp_names.size())) {
+                if (index.exp_files.at(cast<u64>(ei)).some == fname) {
+                    snap.exports.push(index.exp_names.at(cast<u64>(ei)).some);
+                }
+                ei = ei + 1;
+            }
+            // impl edges owned by this file
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(index.ifaces_iface.size())) {
+                if (index.ifaces_origin.at(cast<u64>(ii)).some != "primitive"
+                    && index.ifaces_file.at(cast<u64>(ii)).some == fname) {
+                    snap.impl_edge_keys.push(index.ifaces_iface.at(cast<u64>(ii)).some + " |> " + index.ifaces_for.at(cast<u64>(ii)).some);
+                }
+                ii = ii + 1;
+            }
+            // instances owned (template_file == fname)
+            let ik: _utils.List<string> = index.instances.keys();
+            let ix: mut i64 = 0;
+            while (ix < cast<i64>(ik.size())) {
+                let rec: string = index.instances.get(ik.at(cast<u64>(ix)).some, "");
+                let tf: string = index_value_col(rec, 1);
+                if (tf == fname) {
+                    snap.instances_owned.push(ik.at(cast<u64>(ix)).some);
+                }
+                ix = ix + 1;
+            }
+            // referenced targets (users reverse view: targets this file
+            // references — value "\n"-joined file sets). The REPLAY LEDGER
+            // (users_targets: the same targets in this file's body-bind
+            // resolution order) is captured separately — see
+            // build_pending_ledgers, which reads the GlobalIndex's
+            // last_pending_* copy (the rebuild's fold destroys the pending
+            // order, so GlobalIndex keeps a folded-away copy for the
+            // session's replay needs).
+            let uk: _utils.List<string> = index.users.keys();
+            let ux: mut i64 = 0;
+            while (ux < cast<i64>(uk.size())) {
+                let val: string = index.users.get(uk.at(cast<u64>(ux)).some, "");
+                if (session_users_value_has(val, fname)) {
+                    snap.refs_targets.push(uk.at(cast<u64>(ux)).some);
+                }
+                ux = ux + 1;
+            }
+            // errors: objects (replay source) + rendered texts
+            let ri: mut i64 = 0;
+            while (ri < cast<i64>(result.errors.size())) {
+                let err: SemanticError = result.errors.at(cast<u64>(ri)).some;
+                if (err.location.filename == fname) {
+                    snap.errors_kept.push(err);
+                    snap.error_texts.push(session_error_text(err));
+                }
+                ri = ri + 1;
+            }
+            snap.error_count = cast<i64>(snap.error_texts.size());
+            this.snapshots.push(snap);
+            fi = fi + 1;
+        }
+    }
+
+    // ── O3-lite: the fast lane's incremental snapshot refresh ────────────
+    //
+    // Runs only on eviction-free rounds (the same gate as
+    // rebuild_incremental — the caller checks it). CLEAN files keep their
+    // previous snapshot OBJECTS (the freeze discipline of 4.1 finally
+    // cashed in: a published snapshot is never mutated afterwards, so
+    // reuse is safe), with one append — instances_owned grows when this
+    // round's new specializations belong to a CLEAN file's templates (a
+    // clean owner can still gain instances: DIRTY bodies drive the
+    // requests). CHANGED files get fresh snapshots built from the
+    // incremental tables' per-file buckets and this round's data — no
+    // keys()-per-file table sweeps (the O(files x tables) cost the full
+    // build_snapshots pays). The users ledger / refs views come from the
+    // GlobalIndex's last_pending copy (the fold's pre-consumption order —
+    // identical to what build_pending_ledgers extracts after the full
+    // path's rebuild).
+    fun build_snapshots_incremental(mut this, compiler: EmperorPenguinCompiler, result: BoundCompilationUnit, changed: _utils.List<i64>) {
+        if (compiler.last_model.is_none()) { return; }
+        let model: SemanticModel = compiler.last_model.some;
+        let index: GlobalIndex = model.global_index;
+        this.snapshot_has_suspension = result.has_suspension;
+        // global (location-less) errors: re-collect from this round's
+        // merged error list (the replay produced it in order)
+        this.global_errors_kept = new _utils.List<SemanticError>();
+        {
+            let gi: mut i64 = 0;
+            while (gi < cast<i64>(result.errors.size())) {
+                let gerr: SemanticError = result.errors.at(cast<u64>(gi)).some;
+                if (string_length(gerr.location.filename) == 0) {
+                    this.global_errors_kept.push(gerr);
+                }
+                gi = gi + 1;
+            }
+        }
+        // clean snapshots: append this round's new instances to their
+        // owner snapshots (dirty owners get a fresh snapshot below), and
+        // refresh the users ledger (this round's pending may carry FRESH
+        // entries for a clean file — the catch-up binds of its new
+        // specializations; the next round's replay reads them from here —
+        // see the replay_users O3-lite fix). last_pending holds the full
+        // replayed order (ledger + fresh per file), so the assignment
+        // reproduces exactly what the full path's build_pending_ledgers
+        // would extract.
+        {
+            let ni: mut i64 = 0;
+            while (ni < cast<i64>(index.inc_new_instances.size())) {
+                let iname: string = index.inc_new_instances.at(cast<u64>(ni)).some;
+                let iowner: string = index.inc_new_instance_files.at(cast<u64>(ni)).some;
+                let fj: mut i64 = 0;
+                let did_owner: mut bool = false;
+                while (fj < cast<i64>(this.snapshots.size())) {
+                    if (this.snapshots.at(cast<u64>(fj)).some.file == iowner) {
+                        if (!session_list_contains_i(changed, fj)) {
+                            let csnap: mut FileSnapshot = cast<mut FileSnapshot>(this.snapshots.at(cast<u64>(fj)).some);
+                            csnap.instances_owned.push(iname);
+                            if (!did_owner) {
+                                did_owner = true;
+                                let new_ledger: mut _utils.List<string> = new _utils.List<string>();
+                                let li: mut i64 = 0;
+                                while (li < cast<i64>(index.last_pending_target.size())) {
+                                    if (index.last_pending_file.at(cast<u64>(li)).some == iowner) {
+                                        new_ledger.push(index.last_pending_target.at(cast<u64>(li)).some);
+                                    }
+                                    li = li + 1;
+                                }
+                                csnap.users_targets = new_ledger;
+                            }
+                        }
+                        fj = cast<i64>(this.snapshots.size());
+                    }
+                    fj = fj + 1;
+                }
+                ni = ni + 1;
+            }
+        }
+        // changed snapshots: fresh objects from the buckets + this round
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(changed.size())) {
+            let idx: i64 = changed.at(cast<u64>(ci)).some;
+            let fname: string = this.input_files.at(cast<u64>(idx)).some;
+            let snap: mut FileSnapshot = new FileSnapshot(fname);
+            snap.text_hash = session_text_hash(this.input_sources.at(cast<u64>(idx)).some);
+            snap.defines_fp = this.defines_fp;
+            snap.has_meta_surface = session_text_has_meta(this.input_sources.at(cast<u64>(idx)).some);
+            if (cast<i64>(this.input_ast_cache.at(cast<u64>(idx)).some.size()) > 0) {
+                snap.ast_fp = session_ast_fingerprint(this.input_ast_cache.at(cast<u64>(idx)).some);
+            }
+            // def segment (first matching segment — same lookup as
+            // build_snapshots; build_def_segments was recomputed by the
+            // caller)
+            {
+                let si: mut i64 = 0;
+                while (si < cast<i64>(model.def_seg_files.size())) {
+                    if (model.def_seg_files.at(cast<u64>(si)).some == fname) {
+                        snap.def_seg_start = model.def_seg_starts.at(cast<u64>(si)).some;
+                        snap.def_seg_count = model.def_seg_counts.at(cast<u64>(si)).some;
+                        si = cast<i64>(model.def_seg_files.size());
+                    }
+                    si = si + 1;
+                }
+            }
+            // exports / impl edges: the per-file buckets (== the table rows
+            // this file owns, def-walk / row order)
+            {
+                let names: _utils.List<string> = session_split_lines(index.inc_exp_bucket.get(fname, ""));
+                let ni: mut i64 = 0;
+                while (ni < cast<i64>(names.size())) {
+                    snap.exports.push(names.at(cast<u64>(ni)).some);
+                    ni = ni + 1;
+                }
+            }
+            {
+                let rows: _utils.List<string> = session_split_lines(index.inc_if_bucket.get(fname, ""));
+                let ri: mut i64 = 0;
+                while (ri < cast<i64>(rows.size())) {
+                    let row: string = rows.at(cast<u64>(ri)).some;
+                    let bar: i64 = string_find(row, "#");
+                    if (bar >= 0) {
+                        snap.impl_edge_keys.push(string_substring(row, 0, bar));
+                    }
+                    ri = ri + 1;
+                }
+            }
+            // instances owned: the previous snapshot's list (death is
+            // eviction territory — this path only runs eviction-free)
+            // plus this round's new instances of this file's templates
+            {
+                let old: FileSnapshot = this.snapshots.at(cast<u64>(idx)).some;
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(old.instances_owned.size())) {
+                    snap.instances_owned.push(old.instances_owned.at(cast<u64>(pi)).some);
+                    pi = pi + 1;
+                }
+                let ni2: mut i64 = 0;
+                while (ni2 < cast<i64>(index.inc_new_instances.size())) {
+                    if (index.inc_new_instance_files.at(cast<u64>(ni2)).some == fname) {
+                        let iname2: string = index.inc_new_instances.at(cast<u64>(ni2)).some;
+                        if (!session_list_contains(snap.instances_owned, iname2)) {
+                            snap.instances_owned.push(iname2);
+                        }
+                    }
+                    ni2 = ni2 + 1;
+                }
+            }
+            // referenced targets + the users replay ledger: this file's
+            // lines of the fold's pre-consumption pending order (identical
+            // to the full path's users table + ledger extraction: a target
+            // is referenced by this file ⟺ a (target, file) line exists)
+            {
+                let pi: mut i64 = 0;
+                while (pi < cast<i64>(index.last_pending_target.size())) {
+                    if (index.last_pending_file.at(cast<u64>(pi)).some == fname) {
+                        let t: string = index.last_pending_target.at(cast<u64>(pi)).some;
+                        if (string_length(t) > 0) {
+                            snap.users_targets.push(t);
+                            if (!session_list_contains(snap.refs_targets, t)) {
+                                snap.refs_targets.push(t);
+                            }
+                        }
+                    }
+                    pi = pi + 1;
+                }
+            }
+            // errors: this round's merged list (fresh + replayed, ordered
+            // by the replay)
+            {
+                let ri: mut i64 = 0;
+                while (ri < cast<i64>(result.errors.size())) {
+                    let err: SemanticError = result.errors.at(cast<u64>(ri)).some;
+                    if (err.location.filename == fname) {
+                        snap.errors_kept.push(err);
+                        snap.error_texts.push(session_error_text(err));
+                    }
+                    ri = ri + 1;
+                }
+            }
+            snap.error_count = cast<i64>(snap.error_texts.size());
+            this.snapshots.set(cast<u64>(idx), snap);
+            ci = ci + 1;
+        }
+    }
+
+    // ── Batch 4.3: the four-class invalidation report ───────────────────
+    //
+    // Answers "which CLEAN files are affected by this change set, and why"
+    // from the SNAPSHOT tables alone (no re-compile needed — the LSP's
+    // workspace-diagnostics原料). The four dependency classes of redesign
+    // section 6:
+    //   ① symbol references  refs(g) ∩ changed_exports(F) ≠ ∅
+    //   ② impl reverse       F's impl edge surface changed -> every file
+    //                        referencing F's types (users reverse lookup)
+    //                        [ICopy/IRef classification flips ride along]
+    //   ③ template injection F (a template owner) changed its signature ->
+    //                        every file using F-owned instances
+    //   ④ CLI defines        the defines set changed -> EVERYTHING (checked
+    //                        in recompute() proper; reported here for
+    //                        completeness when it fires)
+    // The fast/slow lane decision is NOT taken here — this is the
+    // information face; recompute() remains the executor.
+    //
+    // `changed` = input indices whose text hash moved. `parsed_defs` =
+    // the changed files' fresh top-level defs (nullable per entry — a
+    // caller that only has texts passes none and the export diff degrades
+    // to "the whole file's export set changed", the conservative bound).
+    fun invalidate_report(mut this, changed: _utils.List<i64>, parsed_defs: _utils.List<_utils.List<Definition>>) -> mut _utils.List<string> {
+        let out: mut _utils.List<string> = new _utils.List<string>();
+        if (!this.has_compiled) { return out; }
+        // ④ the defines fingerprint (global invalidation)
+        let defines_changed: bool = cast<i64>(this.snapshots.size()) > 0
+            && this.snapshots.at(cast<u64>(0)).some.defines_fp != this.defines_fp;
+        // The changed surface of F: signature-level per-def names where the
+        // caller supplied parsed defs, else the whole export set (conservative).
+        let changed_names: mut _utils.List<string> = new _utils.List<string>();
+        let impl_changed: mut bool = false;
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(changed.size())) {
+            let idx: i64 = changed.at(cast<u64>(ci)).some;
+            let snap: FileSnapshot = this.snapshots.at(cast<u64>(idx)).some;
+            if (ci < cast<i64>(parsed_defs.size())) {
+                // per-def signature comparison: fold each OLD def's
+                // signature against the NEW list (name-keyed, conservative
+                // on adds/removes — the whole surface changed means the fp
+                // moved anyway and the slow lane owns correctness)
+                let old_fp: i64 = snap.ast_fp;
+                let new_fp: i64 = session_ast_fingerprint(parsed_defs.at(cast<u64>(ci)).some);
+                if (old_fp == new_fp) {
+                    // body-only: no export surface moved; instances owned
+                    // by this file stay valid (template bodies unchanged
+                    // shape) — nothing of ①/②/③ fires from THIS file
+                    ci = ci + 1;
+                    continue;
+                }
+            }
+            // conservative surface: this file's whole export set + impl edges
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(snap.exports.size())) {
+                changed_names.push(snap.exports.at(cast<u64>(ei)).some);
+                ei = ei + 1;
+            }
+            if (cast<i64>(snap.impl_edge_keys.size()) > 0) {
+                impl_changed = true;
+            }
+            // the NEW surface carries an impl edge the old one lacked (or
+            // vice versa — the old-edge case is covered above)
+            if (ci < cast<i64>(parsed_defs.size())) {
+                if (session_defs_have_impl(parsed_defs.at(cast<u64>(ci)).some)) {
+                    impl_changed = true;
+                }
+            }
+            ci = ci + 1;
+        }
+        // per-clean-file adjudication
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.input_files.size())) {
+            if (session_list_contains_i(changed, fi)) {
+                fi = fi + 1;
+                continue;
+            }
+            let snap: FileSnapshot = this.snapshots.at(cast<u64>(fi)).some;
+            let reasons: mut _utils.List<string> = new _utils.List<string>();
+            if (defines_changed) { reasons.push("defines"); }
+            // ① refs ∩ changed exports
+            let ri: mut i64 = 0;
+            while (ri < cast<i64>(snap.refs_targets.size())) {
+                if (session_list_contains(changed_names, snap.refs_targets.at(cast<u64>(ri)).some)) {
+                    reasons.push("refs");
+                    ri = cast<i64>(snap.refs_targets.size());
+                }
+                ri = ri + 1;
+            }
+            // ② impl reverse: F's impl surface changed and g references
+            // any of F's exported types (users reverse view)
+            if (impl_changed) {
+                let xi: mut i64 = 0;
+                while (xi < cast<i64>(snap.refs_targets.size())) {
+                    if (session_list_contains(changed_names, snap.refs_targets.at(cast<u64>(xi)).some)) {
+                        reasons.push("impl-reverse");
+                        xi = cast<i64>(snap.refs_targets.size());
+                    }
+                    xi = xi + 1;
+                }
+            }
+            // ③ template injection: a changed file OWNS specializations
+            // (it hosts templates) and g references any of its exported
+            // names — the users ledger records TEMPLATE names (the mangled
+            // specialization names never resolve through bind_identifier),
+            // so the owner-file test is the faithful reverse lookup.
+            {
+                let cj: mut i64 = 0;
+                while (cj < cast<i64>(changed.size())) {
+                    let osnap: FileSnapshot = this.snapshots.at(cast<u64>(changed.at(cast<u64>(cj)).some)).some;
+                    if (cast<i64>(osnap.instances_owned.size()) > 0) {
+                        let xi2: mut i64 = 0;
+                        while (xi2 < cast<i64>(snap.refs_targets.size())) {
+                            if (session_list_contains(changed_names, snap.refs_targets.at(cast<u64>(xi2)).some)) {
+                                reasons.push("template-inject");
+                                xi2 = cast<i64>(snap.refs_targets.size());
+                                cj = cast<i64>(changed.size());
+                            }
+                            xi2 = xi2 + 1;
+                        }
+                    }
+                    cj = cj + 1;
+                }
+            }
+            if (cast<i64>(reasons.size()) > 0) {
+                out.push(snap.file + "|" + this.join_reasons(reasons));
+            }
+            fi = fi + 1;
+        }
+        return out;
+    }
+
+    fun join_reasons(this, parts: _utils.List<string>) -> string {
+        let sb: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(parts.size())) {
+            if (i > 0) { sb.append(","); }
+            sb.append(parts.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    // Capture the per-file users replay ledgers from the GlobalIndex's
+    // last_pending_* copy (the exact pre-fold pending order of the last
+    // rebuild — full and fast lanes both end in a rebuild, so one capture
+    // point serves both). O3-lite: the per-pending file lookup is indexed
+    // (was a linear scan per line — O(pending x files); the output order
+    // is the pending order either way, so this is purely a speedup).
+    fun build_pending_ledgers(mut this, model: SemanticModel) {
+        let idx_of: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+        {
+            let fj0: mut i64 = 0;
+            while (fj0 < cast<i64>(this.input_files.size())) {
+                idx_of.set(this.input_files.at(cast<u64>(fj0)).some, cast<string>(fj0));
+                fj0 = fj0 + 1;
+            }
+        }
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.input_files.size())) {
+            let snap0: mut FileSnapshot = cast<mut FileSnapshot>(this.snapshots.at(cast<u64>(fi)).some);
+            snap0.users_targets = new _utils.List<string>();
+            fi = fi + 1;
+        }
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(model.global_index.last_pending_target.size())) {
+            let t: string = model.global_index.last_pending_target.at(cast<u64>(pi)).some;
+            let f: string = model.global_index.last_pending_file.at(cast<u64>(pi)).some;
+            let idx_s: string = idx_of.get(f, "-1");
+            if (string_length(f) > 0 && idx_s != "-1") {
+                let fj: i64 = __builtin.string_to_int(idx_s);
+                if (fj >= 0 && fj < cast<i64>(this.snapshots.size())) {
+                    let snap1: mut FileSnapshot = cast<mut FileSnapshot>(this.snapshots.at(cast<u64>(fj)).some);
+                    snap1.users_targets.push(t);
+                }
+            }
+            pi = pi + 1;
+        }
+    }
+}
+
+// ── Batch 4.2: the bound-tree reference walk (the reconciliation live set) ─
+
+// Record one BoundType's reference: the type_definition's full name (the
+// TEMPLATE's name for a generic use) and, when generic args are present,
+// the mangle fold of (template full name, args) — the specialized def's
+// full name. Recurses into the generic args (nested instantiations).
+fun session_note_type(bt: BoundType, live: mut _utils.List<string>) {
+    if (bt.type_definition.is_some()) {
+        let td_full: string = bound_def_full_name(bt.type_definition.some);
+        if (string_length(td_full) > 0) {
+            live.push(td_full);
+            if (cast<i64>(bt.generic_args.size()) > 0) {
+                live.push(MonomorphizePass.mangle_generic_name(td_full, bt.generic_args));
+            }
+        }
+    }
+    let i: mut i64 = 0;
+    while (i < cast<i64>(bt.generic_args.size())) {
+        if (!arg_is_value(bt.generic_args.at(cast<u64>(i)).some)) {
+            session_note_type(arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some), live);
+        }
+        i = i + 1;
+    }
+}
+
+// Record one resolved symbol's reference (function/type/variable/enum
+// member; variables matter through their TYPES — a List<i64> local keeps
+// the List<i64> specialization alive).
+fun session_note_symbol(sym: Option<BoundSymbol>, live: mut _utils.List<string>) {
+    if (sym.is_none()) { return; }
+    if (sym.some is BoundSymbol.function_sym) {
+        live.push(sym.some.function_sym.full_name);
+        session_note_type(sym.some.function_sym.return_type, live);
+    }
+    if (sym.some is BoundSymbol.type_sym) {
+        live.push(sym.some.type_sym.full_name);
+        session_note_type(sym.some.type_sym.bound_type, live);
+    }
+    if (sym.some is BoundSymbol.variable) {
+        live.push(sym.some.variable.full_name);
+        session_note_type(sym.some.variable.bound_type, live);
+    }
+    if (sym.some is BoundSymbol.enum_member) {
+        live.push(sym.some.enum_member.full_name);
+    }
+}
+
+fun session_walk_expr(e: Option<BoundExpression>, live: mut _utils.List<string>) {
+    if (e.is_none()) { return; }
+    let x: BoundExpression = e.some;
+    if (x is BoundExpression.literal) {
+        session_note_type(x.literal.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.identifier) {
+        session_note_type(x.identifier.bound_type, live);
+        session_note_symbol(x.identifier.symbol, live);
+        return;
+    }
+    if (x is BoundExpression.binary) {
+        let oi: mut i64 = 0;
+        while (oi < cast<i64>(x.binary.operands.size())) {
+            session_walk_expr(new Option<BoundExpression>.some(x.binary.operands.at(cast<u64>(oi)).some), live);
+            oi = oi + 1;
+        }
+        session_note_type(x.binary.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.unary) {
+        session_walk_expr(x.unary.operand, live);
+        session_note_type(x.unary.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.member_access) {
+        session_walk_expr(x.member_access.base_expr, live);
+        session_note_type(x.member_access.bound_type, live);
+        session_note_symbol(x.member_access.member_symbol, live);
+        return;
+    }
+    if (x is BoundExpression.function_call) {
+        session_walk_expr(x.function_call.callee, live);
+        session_note_symbol(x.function_call.callee_symbol, live);
+        session_note_type(x.function_call.bound_type, live);
+        // A GENERIC call's callee_symbol is the TEMPLATE symbol — the
+        // specialized callee's full name is the mangle fold of (template
+        // full name, the call-site generic args). Keep the specialization
+        // the emitted call will target alive.
+        if (x.function_call.is_generic_function_call && x.function_call.callee_symbol.is_some()) {
+            if (x.function_call.callee_symbol.some is BoundSymbol.function_sym) {
+                let tmpl_full: string = x.function_call.callee_symbol.some.function_sym.full_name;
+                if (cast<i64>(x.function_call.generic_args.size()) > 0) {
+                    let targs: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+                    let gi2: mut i64 = 0;
+                    while (gi2 < cast<i64>(x.function_call.generic_args.size())) {
+                        targs.push(make_type_arg(x.function_call.generic_args.at(cast<u64>(gi2)).some));
+                        gi2 = gi2 + 1;
+                    }
+                    live.push(MonomorphizePass.mangle_generic_name(tmpl_full, targs));
+                }
+            }
+        }
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(x.function_call.arguments.size())) {
+            session_walk_expr(new Option<BoundExpression>.some(x.function_call.arguments.at(cast<u64>(ai)).some), live);
+            ai = ai + 1;
+        }
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(x.function_call.generic_args.size())) {
+            session_note_type(x.function_call.generic_args.at(cast<u64>(gi)).some, live);
+            gi = gi + 1;
+        }
+        return;
+    }
+    if (x is BoundExpression.if_expr) {
+        session_walk_expr(x.if_expr.condition, live);
+        session_walk_expr(x.if_expr.then_block, live);
+        session_walk_expr(x.if_expr.else_block, live);
+        session_note_type(x.if_expr.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.while_expr) {
+        session_walk_expr(x.while_expr.condition, live);
+        session_walk_expr(x.while_expr.body, live);
+        session_note_type(x.while_expr.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.code_block) {
+        let si: mut i64 = 0;
+        while (si < cast<i64>(x.code_block.statements.size())) {
+            session_walk_stmt(x.code_block.statements.at(cast<u64>(si)).some, live);
+            si = si + 1;
+        }
+        session_walk_expr(x.code_block.trailing_expr, live);
+        session_note_type(x.code_block.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.cast_expr) {
+        session_walk_expr(x.cast_expr.inner, live);
+        session_note_type(x.cast_expr.target_type, live);
+        session_note_type(x.cast_expr.bound_type, live);
+        return;
+    }
+    if (x is BoundExpression.new_expr) {
+        if (x.new_expr.type_symbol.is_some()) {
+            live.push(x.new_expr.type_symbol.some.full_name);
+            session_note_type(x.new_expr.type_symbol.some.bound_type, live);
+        }
+        if (x.new_expr.constructor_symbol.is_some()) {
+            live.push(x.new_expr.constructor_symbol.some.full_name);
+        }
+        session_note_type(x.new_expr.bound_type, live);
+        let ni: mut i64 = 0;
+        while (ni < cast<i64>(x.new_expr.arguments.size())) {
+            session_walk_expr(new Option<BoundExpression>.some(x.new_expr.arguments.at(cast<u64>(ni)).some), live);
+            ni = ni + 1;
+        }
+        return;
+    }
+    if (x is BoundExpression.enum_variant) {
+        session_note_type(x.enum_variant.bound_type, live);
+        session_note_type(x.enum_variant.enum_type, live);
+        if (x.enum_variant.variant_symbol.is_some()) {
+            live.push(x.enum_variant.variant_symbol.some.full_name);
+        }
+        session_walk_expr(x.enum_variant.payload, live);
+        return;
+    }
+    if (x is BoundExpression.lambda_expr) {
+        session_note_type(x.lambda_expr.bound_type, live);
+        session_note_type(x.lambda_expr.return_type, live);
+        session_walk_expr(x.lambda_expr.body, live);
+        return;
+    }
+    if (x is BoundExpression.meta_call) {
+        session_note_type(x.meta_call.bound_type, live);
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(x.meta_call.arguments.size())) {
+            session_walk_expr(new Option<BoundExpression>.some(x.meta_call.arguments.at(cast<u64>(mi)).some), live);
+            mi = mi + 1;
+        }
+        return;
+    }
+    if (x is BoundExpression.try_bind) {
+        session_note_type(x.try_bind.bound_type, live);
+        if (x.try_bind.variable_symbol.is_some()) {
+            session_note_type(x.try_bind.variable_symbol.some.bound_type, live);
+        }
+        session_walk_expr(x.try_bind.check, live);
+        session_walk_expr(x.try_bind.extract, live);
+        return;
+    }
+}
+
+fun session_walk_stmt(st: BoundStatement, live: mut _utils.List<string>) {
+    if (st is BoundStatement.expression) {
+        session_walk_expr(st.expression.expression, live);
+        return;
+    }
+    if (st is BoundStatement.assignment) {
+        session_walk_expr(st.assignment.target, live);
+        session_note_symbol(st.assignment.target_symbol, live);
+        session_walk_expr(st.assignment.value, live);
+        session_note_type(st.assignment.value_type, live);
+        return;
+    }
+    if (st is BoundStatement.if_stmt) {
+        session_walk_expr(st.if_stmt.condition, live);
+        session_walk_stmt_opt(st.if_stmt.then_statement, live);
+        session_walk_stmt_opt(st.if_stmt.else_statement, live);
+        return;
+    }
+    if (st is BoundStatement.while_stmt) {
+        session_walk_expr(st.while_stmt.condition, live);
+        session_walk_stmt_opt(st.while_stmt.body, live);
+        return;
+    }
+    if (st is BoundStatement.for_stmt) {
+        session_walk_expr(st.for_stmt.iterable, live);
+        session_walk_stmt_opt(st.for_stmt.body, live);
+        return;
+    }
+    if (st is BoundStatement.return_stmt) {
+        session_walk_expr(st.return_stmt.value, live);
+        session_note_type(st.return_stmt.return_type, live);
+        return;
+    }
+    if (st is BoundStatement.break_stmt) {
+        session_walk_expr(st.break_stmt.value, live);
+        return;
+    }
+    if (st is BoundStatement.let_decl) {
+        session_note_symbol(new Option<BoundSymbol>.some(new BoundSymbol.variable(st.let_decl.variable_symbol.some)), live);
+        session_walk_expr(st.let_decl.initializer, live);
+        session_note_type(st.let_decl.bound_type, live);
+        return;
+    }
+    if (st is BoundStatement.block) {
+        let si: mut i64 = 0;
+        while (si < cast<i64>(st.block.statements.size())) {
+            session_walk_stmt(st.block.statements.at(cast<u64>(si)).some, live);
+            si = si + 1;
+        }
+        return;
+    }
+    if (st is BoundStatement.try_catch) {
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(st.try_catch.try_statements.size())) {
+            session_walk_stmt(st.try_catch.try_statements.at(cast<u64>(ti)).some, live);
+            ti = ti + 1;
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(st.try_catch.catch_statements.size())) {
+            session_walk_stmt(st.try_catch.catch_statements.at(cast<u64>(ci)).some, live);
+            ci = ci + 1;
+        }
+        return;
+    }
+    // meta statements carry only AST sources (already covered by the AST
+    // pairing); nothing bound to walk.
+}
+
+fun session_walk_stmt_opt(st: Option<BoundStatement>, live: mut _utils.List<string>) {
+    if (st.is_some()) {
+        session_walk_stmt(st.some, live);
+    }
+}
+
+fun session_walk_def(def: BoundDefinition, live: mut _utils.List<string>) {
+    if (def is BoundDefinition.function_def) {
+        session_note_type(def.function_def.return_type, live);
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(def.function_def.parameters.size())) {
+            session_note_type(def.function_def.parameters.at(cast<u64>(pi)).some.bound_type, live);
+            pi = pi + 1;
+        }
+        session_walk_expr(def.function_def.body, live);
+        return;
+    }
+    if (def is BoundDefinition.class_def) {
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(def.class_def.fields.size())) {
+            session_walk_def(def.class_def.fields.at(cast<u64>(fi)).some, live);
+            fi = fi + 1;
+        }
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(def.class_def.methods.size())) {
+            session_walk_def(def.class_def.methods.at(cast<u64>(mi)).some, live);
+            mi = mi + 1;
+        }
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(def.class_def.interface_impls.size())) {
+            session_walk_def(def.class_def.interface_impls.at(cast<u64>(ii)).some, live);
+            ii = ii + 1;
+        }
+        return;
+    }
+    if (def is BoundDefinition.enum_def) {
+        session_note_type(def.enum_def.bound_type, live);
+        let mi2: mut i64 = 0;
+        while (mi2 < cast<i64>(def.enum_def.methods.size())) {
+            session_walk_def(def.enum_def.methods.at(cast<u64>(mi2)).some, live);
+            mi2 = mi2 + 1;
+        }
+        let ii2: mut i64 = 0;
+        while (ii2 < cast<i64>(def.enum_def.interface_impls.size())) {
+            session_walk_def(def.enum_def.interface_impls.at(cast<u64>(ii2)).some, live);
+            ii2 = ii2 + 1;
+        }
+        return;
+    }
+    if (def is BoundDefinition.interface_def) {
+        session_note_type(def.interface_def.bound_type, live);
+        return;
+    }
+    if (def is BoundDefinition.impl_def) {
+        session_note_type(def.impl_def.interface_type, live);
+        session_note_type(def.impl_def.implementing_type, live);
+        let mi3: mut i64 = 0;
+        while (mi3 < cast<i64>(def.impl_def.methods.size())) {
+            session_walk_def(def.impl_def.methods.at(cast<u64>(mi3)).some, live);
+            mi3 = mi3 + 1;
+        }
+        return;
+    }
+    if (def is BoundDefinition.impl_for_def) {
+        session_note_type(def.impl_for_def.interface_type, live);
+        session_note_type(def.impl_for_def.for_type, live);
+        let mi4: mut i64 = 0;
+        while (mi4 < cast<i64>(def.impl_for_def.methods.size())) {
+            session_walk_def(def.impl_for_def.methods.at(cast<u64>(mi4)).some, live);
+            mi4 = mi4 + 1;
+        }
+        return;
+    }
+    if (def is BoundDefinition.initial_routine) {
+        session_walk_expr(def.initial_routine.body, live);
+        session_walk_bound_scope(def.initial_routine.scope, live);
+        return;
+    }
+    if (def is BoundDefinition.namespace_def) {
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(def.namespace_def.children.size())) {
+            session_walk_def(def.namespace_def.children.at(cast<u64>(ci)).some, live);
+            ci = ci + 1;
+        }
+        return;
+    }
+    if (def is BoundDefinition.global_var_def) {
+        session_note_type(def.global_var_def.bound_type, live);
+        session_walk_expr(def.global_var_def.initializer, live);
+        if (def.global_var_def.variable_symbol.is_some()) {
+            session_note_type(def.global_var_def.variable_symbol.some.bound_type, live);
+        }
+        return;
+    }
+    if (def is BoundDefinition.class_field) {
+        session_note_type(def.class_field.bound_type, live);
+        return;
+    }
+    if (def is BoundDefinition.type_ref_def) {
+        session_note_type(def.type_ref_def.alias_type, live);
+        return;
+    }
+    // vtables: an interface_type reference keeps interface specializations
+    // alive even when no body mentions them (the vtable IS a use)
+    if (def is BoundDefinition.function_def) { return; }
+}
+
+// Walk a scope's variable symbols (initial routines keep their locals'
+// types — e.g. a List<i64> local — alive through here).
+fun session_walk_bound_scope(scope: Option<BoundScope>, live: mut _utils.List<string>) {
+    if (scope.is_none()) { return; }
+    let si: mut i64 = 0;
+    while (si < cast<i64>(scope.some.symbols.size())) {
+        session_note_symbol(new Option<BoundSymbol>.some(scope.some.symbols.at(cast<u64>(si)).some), live);
+        si = si + 1;
+    }
+    let ci: mut i64 = 0;
+    while (ci < cast<i64>(scope.some.children.size())) {
+        session_walk_bound_scope(new Option<BoundScope>.some(scope.some.children.at(cast<u64>(ci)).some), live);
+        ci = ci + 1;
+    }
+}
+
+// Column i of a "a|b|c|d" GlobalIndex record value (empty when short).
+fun index_value_col(rec: string, col: i64) -> string {
+    let start: mut i64 = 0;
+    let c: mut i64 = 0;
+    let i: mut i64 = 0;
+    let n: i64 = string_length(rec);
+    while (i <= n) {
+        let at_end: bool = i == n;
+        if (at_end || string_char_at(rec, i) == "|") {
+            if (c == col) {
+                return string_substring(rec, start, i - start);
+            }
+            c = c + 1;
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// "\n"-joined users value: does it contain `file` as one whole segment?
+fun session_users_value_has(val: string, file: string) -> bool {
+    if (string_length(val) == 0) { return false; }
+    let probe: string = "\n" + val + "\n";
+    let want: string = "\n" + file + "\n";
+    return string_find(probe, want) >= 0;
+}
+
+// Does the def list carry an impl edge (impl block / impl-for at any
+// nesting the parser produces)?
+fun session_defs_have_impl(defs: _utils.List<Definition>) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(defs.size())) {
+        let def: Definition = defs.at(cast<u64>(i)).some;
+        if (def is Definition.impl_def) { return true; }
+        if (def is Definition.impl_for_def) { return true; }
+        if (def is Definition.namespace_def) {
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(def.namespace_def.children.size())) {
+                let child: Definition = def.namespace_def.children.at(cast<u64>(ci)).some;
+                if (child is Definition.impl_def) { return true; }
+                if (child is Definition.impl_for_def) { return true; }
+                // recurse into namespace-child classes (their member impls)
+                if (child is Definition.class_def) {
+                    let mi: mut i64 = 0;
+                    while (mi < cast<i64>(child.class_def.members.size())) {
+                        if (child.class_def.members.at(cast<u64>(mi)).some is Definition.impl_def) { return true; }
+                        if (child.class_def.members.at(cast<u64>(mi)).some is Definition.impl_for_def) { return true; }
+                        mi = mi + 1;
+                    }
+                }
+                ci = ci + 1;
+            }
+        }
+        if (def is Definition.class_def) {
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(def.class_def.members.size())) {
+                if (def.class_def.members.at(cast<u64>(mi)).some is Definition.impl_def) { return true; }
+                if (def.class_def.members.at(cast<u64>(mi)).some is Definition.impl_for_def) { return true; }
+                mi = mi + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fun session_list_contains(list: _utils.List<string>, v: string) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(list.size())) {
+        if (list.at(cast<u64>(i)).some == v) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// O1: split a "\n"-joined bucket value into its keys (empty segments
+// dropped — request keys never contain '\n').
+fun session_split_lines(v: string) -> _utils.List<string> {
+    let out: mut _utils.List<string> = new _utils.List<string>();
+    let n: i64 = string_length(v);
+    let start: mut i64 = 0;
+    let i: mut i64 = 0;
+    while (i <= n) {
+        if (i == n || string_char_at(v, i) == "\n") {
+            if (i > start) {
+                out.push(string_substring(v, start, i - start));
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// P0 (stage timing): render an i64 list as "a,b,c" (timing lines only).
+fun session_append_i64_list(sb: mut StringBuilder, list: _utils.List<i64>) {
+    sb.append("[");
+    let i: mut i64 = 0;
+    while (i < cast<i64>(list.size())) {
+        if (i > 0) { sb.append(","); }
+        sb.append(cast<string>(list.at(cast<u64>(i)).some));
+        i = i + 1;
+    }
+    sb.append("]");
+}
+
+fun session_list_contains_i(list: _utils.List<i64>, v: i64) -> bool {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(list.size())) {
+        if (list.at(cast<u64>(i)).some == v) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Canonical diagnostic text (code + message + site) — the snapshot's error
+// face and the 4.2 incremental-vs-full diagnostic comparison basis.
+fun session_error_text(err: SemanticError) -> string {
+    let sev: mut string = "error";
+    if (err.severity is ErrorSeverity.Warning) { sev = "warning"; }
+    if (err.severity is ErrorSeverity.Info) { sev = "info"; }
+    let loc: mut string = "";
+    if (string_length(err.location.filename) > 0 || err.location.line > 0) {
+        loc = " (at " + err.location.filename + ":" + cast<string>(err.location.line) + "," + cast<string>(err.location.col) + ")";
+    }
+    return sev + "[" + error_code_name(err.code) + "]: " + err.message + loc;
+}
+
+}

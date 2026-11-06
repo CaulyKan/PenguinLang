@@ -529,12 +529,25 @@ namespace __builtin {
     }
 
     // Move fd-woken coroutines (already adopted — they were only parked on
-    // their fd, never removed from the registry) onto the next-round queue.
+    // their fd, never removed from the registry) DIRECTLY onto the ready
+    // queue. Bug #5 root cause (bugfix round 2): routing them through
+    // _sched_next left them rotated into _sched_ready by the (B) rotation
+    // while the idle path's blocking _fd_poll sits BETWEEN that rotation
+    // and the next round's execution pass — with a second still-parked
+    // waiter (the LSP's stdin reader) the scheduler blocked in poll() over
+    // the OTHER descriptors while the woken writer sat READY: its remaining
+    // frame bytes never went out (the client saw a Content-Length it could
+    // never receive and stopped reading/sending) and the session
+    // deadlocked. An fd wake is an external event: the coroutine must run
+    // at the very next scheduler pass — direct-to-ready, mirroring the
+    // spawn drain's "join the current round's tail" (the quiescence path
+    // never blocks, so delta-parked rounds were never affected — only the
+    // fd-blocking branch could strand rotated work).
     fun __sched_drain_woken(n: i64) {
         let i: mut i64 = 0;
         while (i < n) {
             let h: mut __Coroutine = _fd_take_woken();
-            _sched_next.enqueue(new __SchedCo(_co_seq(h), h));
+            _sched_ready.enqueue(new __SchedCo(_co_seq(h), h));
             i = i + 1;
         }
     }
@@ -681,7 +694,19 @@ namespace __builtin {
                 if (_sim_activity_count != _round_start_activity) {
                     continue;
                 }
-                let woken2: i64 = _fd_poll(-1);
+                // Bounded idle block (bug #5 family safety net): a truly
+                // idle server parks here, but delta-parked pollers (the
+                // do_wait loops) may still have PENDING data at their hop —
+                // a same-round push whose consumer parked empty-handed just
+                // before it (the activity bump only guarantees the NEXT
+                // round, which the frozen block then never ran: the LSP's
+                // back-to-back query response stranded this way once the
+                // mid-frame POLLOUT stranding was fixed). A 50ms cap turns
+                // any residual stranding into a <=50ms delay: rounds keep
+                // ticking at >=20Hz while an fd waiter exists, every poller
+                // re-polls, and fd readiness still wakes IMMEDIATELY (the
+                // timeout only bounds the idle cadence, never the wake).
+                let woken2: i64 = _fd_poll(50);
                 __sched_drain_woken(woken2);
                 continue;
             }

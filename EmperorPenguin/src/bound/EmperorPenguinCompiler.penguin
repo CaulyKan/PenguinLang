@@ -13,6 +13,14 @@ export class SourceInput {
     // the prebuilt defs there (keeping the def order — and the emitted .ll —
     // identical to the text path).
     is_lib_decl_slot: bool = false;
+    // Batch 4.1 (incremental session, SLOW lane): pre-parsed AST defs from a
+    // previous compilation in the same session. When present, compile_sources
+    // SKIPS lexing+parsing this input and splices the cached defs verbatim.
+    // The cached defs are the post-prepass/post-desugar shapes of the last
+    // bind (both passes are source-form-eliminating, so re-running them is a
+    // no-op) — the semantics are byte-identical to re-parsing the same text.
+    // Null (none) = ordinary parse-me input.
+    preparsed_defs: mut Option<_utils.List<Definition>> = new Option<_utils.List<Definition>>.none();
 
     fun new(mut this, filename: string, source: string) {
 
@@ -25,8 +33,9 @@ export class EmperorPenguinCompiler {
     errors: mut _utils.List<SemanticError> = new _utils.List<SemanticError>();
     verbose: mut i64 = 0;
     // Command-line --define A=B seed (Phase 5a): pre-seeds the SemanticModel's
-    // compile-time option store before binding. Code-level #define has higher
-    // priority (it runs during bind and overwrites these via meta_set_option).
+    // file-scoped define store before binding (materialized into EVERY input
+    // file's view). Code-level #define has higher priority (it runs during
+    // bind and overwrites the file's seed via meta_define_code_write).
     cli_define_keys: mut _utils.List<string> = new _utils.List<string>();
     cli_define_values: mut _utils.List<string> = new _utils.List<string>();
     // Dyn-lib routing data: the index RANGE [lib_def_start, lib_def_start +
@@ -64,6 +73,40 @@ export class EmperorPenguinCompiler {
     meta_user_inputs: mut _utils.List<SourceInput> = new _utils.List<SourceInput>();
     // Set on the MetaEngine's unit B compilation (see SemanticModel.is_unit_b).
     is_unit_b: bool = false;
+    // Batch 3.1: --dump-index — after compile_sources, index_summary holds
+    // the rendered GlobalIndex dump (five tables + fingerprints) for main
+    // to print on stderr. Rendering only happens when the flag is set (the
+    // full table dump of an EP-scale compile is megabytes).
+    dump_index: bool = false;
+    index_summary: mut string = "";
+    // Batch 4.1 (incremental session): the SemanticModel of the LAST
+    // compile_sources call, kept for the session's snapshot extraction
+    // (GlobalIndex five tables + the per-file def segments live on the
+    // model). Pure reference handoff at the end of compile_sources — the
+    // full-compile path never reads it.
+    last_model: mut Option<SemanticModel> = new Option<SemanticModel>.none();
+    // Batch 4.2 (incremental session, fast lane): the combined CompilationUnit
+    // of the LAST compile_sources call — the live AST list the fast lane
+    // mutates in place (per-file def swaps). Same handoff discipline.
+    last_unit: mut Option<CompilationUnit> = new Option<CompilationUnit>.none();
+    // Batch 4.1 (incremental session, SLOW lane): per-input post-parse AST
+    // defs, parallel to the inputs list of the LAST compile_sources call
+    // (lib decl-slot inputs record an empty list). The session copies these
+    // into SourceInput.preparsed_defs on re-compiles so unchanged files skip
+    // lexing+parsing. The defs are post-prepass/post-desugar (both are
+    // in-place on the shared combined list — see SourceInput.preparsed_defs).
+    parse_cache_files: mut _utils.List<string> = new _utils.List<string>();
+    parse_cache_defs: mut _utils.List<_utils.List<Definition>> = new _utils.List<_utils.List<Definition>>();
+    // P0 (incremental stage timing): forwarded into the SemanticModel so the
+    // monomorphize fixpoint records round statistics. The IncrementalSession
+    // sets it from EMPEROR_INCREMENTAL_TIMING; plain full-compile callers
+    // never do (default false — zero overhead).
+    timing_enabled: mut bool = false;
+    // O1 (per-file request cache): forwarded into the monomorphize pass so
+    // the A4 sweeps record per-file request-attribution pairs. Only the
+    // IncrementalSession sets it (every session compile — the cache fill);
+    // plain full-compile callers keep the default false (zero overhead).
+    attrib_requests: mut bool = false;
 
     fun compile(mut this, source: string) -> BoundCompilationUnit {
         _utils.trace_enter("Enter compile");
@@ -79,25 +122,52 @@ export class EmperorPenguinCompiler {
         let parser_errors: mut _utils.List<string> = new _utils.List<string>();
         this.lib_def_start = 0;
         this.lib_def_count = 0;
+        // Batch 4.1: fresh parse-cache surface for this call (the session
+        // harvests it after compile; never read on the plain full path).
+        this.parse_cache_files = new _utils.List<string>();
+        this.parse_cache_defs = new _utils.List<_utils.List<Definition>>();
         let found_first_lib: mut bool = false;
         for (let source_input in inputs) {
-            if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + source_input.filename); }
-            let mut lexer = new Lexer(source_input.source, source_input.filename);
-            let tokens = lexer.tokenize();
-            let mut p = new Parser(tokens);
-            let unit: CompilationUnit = p.parse_compilationUnit();
-            // Collect parser errors
-            if (p.has_errors()) {
-                let ei: mut i64 = 0;
-                while (ei < cast<i64>(p.errors.size())) {
-                    parser_errors.push(p.errors.at(cast<u64>(ei)).some);
-                    ei = ei + 1;
+            // Batch 4.1 (slow lane): a session-replayed input carries its
+            // cached AST defs — skip lexing/parsing entirely. The cached
+            // defs splice in at the SAME position the parsed ones would,
+            // so every index-based consumer below (lib ranges, decl slots,
+            // the index-aligned passes) sees an identical arrangement.
+            let unit_defs: mut _utils.List<Definition> = new _utils.List<Definition>();
+            let from_cache: bool = source_input.preparsed_defs.is_some();
+            if (from_cache) {
+                let cached: _utils.List<Definition> = source_input.preparsed_defs.some;
+                let ci: mut i64 = 0;
+                while (ci < cast<i64>(cached.size())) {
+                    unit_defs.push(cached.at(cast<u64>(ci)).some);
+                    ci = ci + 1;
+                }
+            } else {
+                if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Lexing & parsing: " + source_input.filename); }
+                let mut lexer = new Lexer(source_input.source, source_input.filename);
+                let tokens = lexer.tokenize();
+                let mut p = new Parser(tokens);
+                let unit: CompilationUnit = p.parse_compilationUnit();
+                // Collect parser errors
+                if (p.has_errors()) {
+                    let ei: mut i64 = 0;
+                    while (ei < cast<i64>(p.errors.size())) {
+                        parser_errors.push(p.errors.at(cast<u64>(ei)).some);
+                        ei = ei + 1;
+                    }
+                }
+                let j: mut i64 = 0;
+                while (j < cast<i64>(unit.definitions.size())) {
+                    unit_defs.push(unit.definitions.at(cast<u64>(j)).some);
+                    j = j + 1;
                 }
             }
-            let j: mut i64 = 0;
-            while (j < cast<i64>(unit.definitions.size())) {
-                combined_defs.push(unit.definitions.at(cast<u64>(j)).some);
-                j = j + 1;
+            this.parse_cache_files.push(source_input.filename);
+            this.parse_cache_defs.push(unit_defs);
+            let jd: mut i64 = 0;
+            while (jd < cast<i64>(unit_defs.size())) {
+                combined_defs.push(unit_defs.at(cast<u64>(jd)).some);
+                jd = jd + 1;
             }
             // Lib sources are pushed after core_builtin (driver order); record the
             // index range of their defs so the SemanticModel can mark them
@@ -107,14 +177,14 @@ export class EmperorPenguinCompiler {
                     this.lib_def_start = total_defs;
                     found_first_lib = true;
                 }
-                this.lib_def_count = this.lib_def_count + cast<i64>(unit.definitions.size());
+                this.lib_def_count = this.lib_def_count + cast<i64>(unit_defs.size());
             }
             // Libmeta direct injection: a decl-slot input contributes no defs;
             // record where this lib's prebuilt defs must be spliced.
             if (source_input.is_lib_decl_slot) {
                 this.lib_decl_slots.push(total_defs);
             }
-            total_defs = total_defs + cast<i64>(unit.definitions.size());
+            total_defs = total_defs + cast<i64>(unit_defs.size());
         }
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Parse] Total: " + cast<string>(total_defs) + " definitions from " + cast<string>(inputs.size()) + " files"); }
         let combined_unit: CompilationUnit = new CompilationUnit();
@@ -122,6 +192,10 @@ export class EmperorPenguinCompiler {
         let main_filename: string = inputs.at(cast<u64>(inputs.size() - 1)).some.filename;
         let mut model = new SemanticModel();
         model.verbose = this.verbose;
+        model.timing_enabled = this.timing_enabled;
+        // O1: request-attribution recording for the per-file cache (the
+        // pass reads this at run() entry; the fixpoint runs later in bind()).
+        model.monomorphize_pass.attrib_on = this.attrib_requests;
         model.enable_coroutine = this.enable_coroutine;
         model.enable_mt_scheduler = this.enable_mt_scheduler;
         model.warn_concurrency = this.warn_concurrency;
@@ -129,6 +203,24 @@ export class EmperorPenguinCompiler {
         model.meta_user_inputs = this.meta_user_inputs;
         model.is_unit_b = this.is_unit_b;
         model.top_level_in_global = this.top_level_in_global;
+        // Batch 3.1: the input file order for the GlobalIndex (deduped,
+        // input order — the file-order axis of the fingerprints).
+        {
+            let ifi: mut i64 = 0;
+            while (ifi < cast<i64>(inputs.size())) {
+                let inf: string = inputs.at(cast<u64>(ifi)).some.filename;
+                if (string_length(inf) > 0) {
+                    let have: mut bool = false;
+                    let hi2: mut i64 = 0;
+                    while (hi2 < cast<i64>(model.index_input_files.size())) {
+                        if (model.index_input_files.at(cast<u64>(hi2)).some == inf) { have = true; }
+                        hi2 = hi2 + 1;
+                    }
+                    if (!have) { model.index_input_files.push(inf); }
+                }
+                ifi = ifi + 1;
+            }
+        }
         // Dyn-lib routing data (index-based lib-source boundary + shipped names).
         model.lib_def_start = this.lib_def_start;
         model.lib_def_count = this.lib_def_count;
@@ -148,13 +240,21 @@ export class EmperorPenguinCompiler {
             model.lib_meta_slots.push(this.lib_decl_slots.at(cast<u64>(sli)).some);
             sli = sli + 1;
         }
-        // Seed command-line --define options before binding. Code-level #define
-        // (processed during bind) overwrites these, so code has higher priority.
-        let cdi: mut i64 = 0;
-        while (cdi < cast<i64>(this.cli_define_keys.size())) {
-            model.meta_option_keys.push(this.cli_define_keys.at(cast<u64>(cdi)).some);
-            model.meta_option_values.push(this.cli_define_values.at(cast<u64>(cdi)).some);
-            cdi = cdi + 1;
+        // Seed command-line --define options before binding (batch 2.1: the
+        // define store is FILE-SCOPED — materialize the CLI layer into EVERY
+        // input file's view so `#defined`/bare-name reads see it everywhere).
+        // A code-level #define in a file overwrites that file's seed (code has
+        // higher priority); other files keep the CLI value.
+        let fii: mut i64 = 0;
+        while (fii < cast<i64>(inputs.size())) {
+            if (!inputs.at(cast<u64>(fii)).some.is_lib_decl_slot) {
+                let cdi: mut i64 = 0;
+                while (cdi < cast<i64>(this.cli_define_keys.size())) {
+                    model.meta_define_seed(inputs.at(cast<u64>(fii)).some.filename, this.cli_define_keys.at(cast<u64>(cdi)).some, this.cli_define_values.at(cast<u64>(cdi)).some);
+                    cdi = cdi + 1;
+                }
+            }
+            fii = fii + 1;
         }
         // Propagate parser errors into model errors. The parser's error strings
         // carry their real site as a "file:line:col: message" prefix — lift it
@@ -169,6 +269,22 @@ export class EmperorPenguinCompiler {
         }
         let result = model.bind(combined_unit, new SourceLocation(main_filename, 0, 0));
         this.errors = model.errors;
+        // Batch 3.1: render the GlobalIndex dump only when --dump-index was
+        // given (the index itself is always rebuilt inside bind — no-op for
+        // the compilation's behavior).
+        if (this.dump_index) {
+            this.index_summary = model.global_index.render_summary();
+        }
+        // Batch 4.1: hand the model to the session layer (snapshot
+        // extraction reads model.global_index + model.def_seg_*). Plain
+        // full-compile callers never read this.
+        this.last_model = new Option<SemanticModel>.some(model);
+        // Batch 4.2: the combined unit is kept too — the fast lane replays
+        // passes 3-9 against THIS unit object (its .definitions list is the
+        // live AST list the session swaps changed files' defs inside; the
+        // monomorphizer's AST collectors and the pass-8 AST pairing both
+        // read it). Plain full-compile callers never read this.
+        this.last_unit = new Option<CompilationUnit>.some(combined_unit);
         return result;
     }
 }

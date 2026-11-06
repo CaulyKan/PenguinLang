@@ -1,0 +1,756 @@
+// lambda binding: capture classification and the lam_visit*
+// body rewrite, plus the LamCaptureKind/LamAnalysis analysis types.
+// Batch 0.2 mechanical split of SemanticBindExpressions.penguin —
+// method bodies moved verbatim (see the driver class there).
+namespace emperor {
+
+class BindExprLambda {
+    // Back-reference to the owning pass (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern, mirroring the batch 0.1
+    // LLVMEmitter split): all shared binding state stays on
+    // BindExpressionsPass (whose own model field is reached via owner).
+    owner: mut Option<BindExpressionsPass> = new Option<BindExpressionsPass>.none();
+
+    fun new(mut this, owner: mut BindExpressionsPass) {
+        this.owner = new Option<BindExpressionsPass>.some(owner);
+    }
+
+    fun lam_shadow_has(this, a: mut LamAnalysis, name: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(a.shadow.size())) {
+            if (a.shadow.at(cast<u64>(i)).some == name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    fun lam_shadow_mark(this, a: mut LamAnalysis) -> i64 {
+        return cast<i64>(a.shadow.size());
+    }
+    fun lam_shadow_restore(mut this, a: mut LamAnalysis, mark: i64) {
+        while (cast<i64>(a.shadow.size()) > mark) {
+            if (a.shadow.pop().is_none()) { return; }
+        }
+    }
+    fun lam_capture_index(this, a: mut LamAnalysis, name: string) -> i64 {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(a.names.size())) {
+            if (a.names.at(cast<u64>(i)).some == name) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    // Walk the scope chain from the lambda's lexical position upward and
+    // classify where the first VARIABLE symbol with this name lives:
+    //   Function/Block/InitialRoutine scope -> a local/param: capturable
+    //   Class/Enum/Interface/Impl scope      -> a type member: unsupported (v1)
+    //   Namespace/Global scope               -> global: resolves inside __call
+    fun lam_classify(this, name: string, scope: mut BoundScope, a: mut LamAnalysis) -> LamCaptureKind {
+        a.last_found_type = new Option<BoundType>.none();
+        let cur: mut Option<BoundScope> = new Option<BoundScope>.some(scope);
+        let guard: mut i64 = 0;
+        while (guard < 128) {
+            if (cur.is_none()) { return new LamCaptureKind.NotVariable(); }
+            let s: BoundScope = cur.some;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(s.symbols.size())) {
+                let sym: BoundSymbol = s.symbols.at(cast<u64>(i)).some;
+                if (sym is BoundSymbol.variable && sym.variable.name == name) {
+                    if (name == "this") { return new LamCaptureKind.ThisParam(); }
+                    if (s.kind is ScopeKind.FunctionScope || s.kind is ScopeKind.BlockScope || s.kind is ScopeKind.InitialRoutineScope) {
+                        a.last_found_type = new Option<BoundType>.some(sym.variable.bound_type);
+                        return new LamCaptureKind.Capturable();
+                    }
+                    if (s.kind is ScopeKind.ClassScope || s.kind is ScopeKind.EnumScope || s.kind is ScopeKind.InterfaceScope || s.kind is ScopeKind.ImplScope) {
+                        return new LamCaptureKind.ClassMember();
+                    }
+                    return new LamCaptureKind.NotVariable();
+                }
+                i = i + 1;
+            }
+            if (s.parent.is_some()) {
+                cur = new Option<BoundScope>.some(s.parent.some);
+            } else {
+                return new LamCaptureKind.NotVariable();
+            }
+            guard = guard + 1;
+        }
+        return new LamCaptureKind.NotVariable();
+    }
+
+    // Visit an expression: rewrite captured identifiers into `this.<name>`
+    // (returning the replacement so the PARENT slot can be updated — EP has
+    // no by-reference parameters), collecting captures in first-appearance
+    // order. `shadow` carries names declared inside the lambda body that hide
+    // outer locals (params, lets, loop vars, catch vars).
+    fun lam_visit_expr(mut this, e: Expression, a: mut LamAnalysis, scope: mut BoundScope) -> Expression {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        if (e is Expression.identifier) {
+            let id: IdentifierExpression = e.identifier;
+            if (!this.lam_shadow_has(a, id.name)
+                && cast<i64>(id.generic_args.size()) == 0
+                && cast<i64>(id.value_generic_args.size()) == 0) {
+                let kind: LamCaptureKind = this.lam_classify(id.name, scope, a);
+                if (kind is LamCaptureKind.ThisParam) {
+                    owner.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                        "lambda cannot capture 'this' (v1); copy the needed members into locals first",
+                        new SourceLocation("", 0, 0));
+                    a.error_count = a.error_count + 1;
+                    return e;
+                }
+                if (kind is LamCaptureKind.ClassMember) {
+                    owner.model.some.report_error(new ErrorCode.E_UNSUPPORTED(),
+                        "lambda cannot capture class members (v1); copy the member into a local first",
+                        new SourceLocation("", 0, 0));
+                    a.error_count = a.error_count + 1;
+                    return e;
+                }
+                if (kind is LamCaptureKind.Capturable) {
+                    if (this.lam_capture_index(a, id.name) < 0) {
+                        a.names.push(id.name);
+                        a.types.push(a.last_found_type.some);
+                    }
+                    return owner.mk_this_member(id.name);
+                }
+            }
+            return e;
+        }
+        if (e is Expression.parenthesized) {
+            let p: mut ParenthesizedExpression = e.parenthesized;
+            if (p.inner.is_some()) {
+                p.inner = new Option<Expression>.some(this.lam_visit_expr(p.inner.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.binary) {
+            let b: mut BinaryExpression = e.binary;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(b.operands.size())) {
+                b.operands.set(cast<u64>(i), this.lam_visit_expr(b.operands.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.unary) {
+            let u: mut UnaryExpression = e.unary;
+            if (u.operand.is_some()) {
+                u.operand = new Option<Expression>.some(this.lam_visit_expr(u.operand.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.member_access) {
+            let ma: mut MemberAccessExpression = e.member_access;
+            if (ma.base_expr.is_some()) {
+                ma.base_expr = new Option<Expression>.some(this.lam_visit_expr(ma.base_expr.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.function_call) {
+            let fc: mut FunctionCallExpression = e.function_call;
+            if (fc.callee.is_some()) {
+                fc.callee = new Option<Expression>.some(this.lam_visit_expr(fc.callee.some, a, scope));
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fc.arguments.items.size())) {
+                fc.arguments.items.set(cast<u64>(i), this.lam_visit_expr(fc.arguments.items.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.function_call_arguments) {
+            let fca: mut FunctionCallArguments = e.function_call_arguments;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(fca.items.size())) {
+                fca.items.set(cast<u64>(i), this.lam_visit_expr(fca.items.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.if_expr) {
+            let ie: mut IfExpression = e.if_expr;
+            if (ie.condition.is_some()) {
+                ie.condition = new Option<Expression>.some(this.lam_visit_expr(ie.condition.some, a, scope));
+            }
+            if (ie.then_block.is_some()) {
+                ie.then_block = new Option<Expression>.some(this.lam_visit_expr(ie.then_block.some, a, scope));
+            }
+            if (ie.else_block.is_some()) {
+                ie.else_block = new Option<Expression>.some(this.lam_visit_expr(ie.else_block.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.while_expr) {
+            let we: mut WhileExpression = e.while_expr;
+            if (we.condition.is_some()) {
+                we.condition = new Option<Expression>.some(this.lam_visit_expr(we.condition.some, a, scope));
+            }
+            if (we.body.is_some()) {
+                we.body = new Option<Expression>.some(this.lam_visit_expr(we.body.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.code_block) {
+            // Block-lexical scoping: declarations inside the block die at its
+            // end (also covers if/while block children, which arrive here as
+            // code-block expressions).
+            let cb: mut CodeBlockExpression = e.code_block;
+            let mark: i64 = this.lam_shadow_mark(a);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(cb.statements.size())) {
+                this.lam_visit_stmt(cb.statements.at(cast<u64>(i)).some, a, scope);
+                i = i + 1;
+            }
+            if (cb.trailing_expr.is_some()) {
+                cb.trailing_expr = new Option<Expression>.some(this.lam_visit_expr(cb.trailing_expr.some, a, scope));
+            }
+            this.lam_shadow_restore(a, mark);
+            return e;
+        }
+        if (e is Expression.cast_expr) {
+            let ce: mut CastExpression = e.cast_expr;
+            if (ce.inner.is_some()) {
+                ce.inner = new Option<Expression>.some(this.lam_visit_expr(ce.inner.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.new_expr) {
+            let ne: mut NewExpression = e.new_expr;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ne.arguments.size())) {
+                ne.arguments.set(cast<u64>(i), this.lam_visit_expr(ne.arguments.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.lambda_expr) {
+            // Nested lambda: its params shadow within its body only; capture
+            // analysis still runs against the OUTER site's scope chain, so
+            // outer-function locals it references become captures of THIS
+            // closure (a nested lambda referencing them again later fails
+            // loudly at its own __call binding — documented v1 limit).
+            let inner: mut LambdaFunctionExpression = e.lambda_expr;
+            let mark: i64 = this.lam_shadow_mark(a);
+            let i: mut i64 = 0;
+            while (i < cast<i64>(inner.parameters.size())) {
+                a.shadow.push(inner.parameters.at(cast<u64>(i)).some.name);
+                i = i + 1;
+            }
+            if (inner.body.is_some()) {
+                inner.body = new Option<Expression>.some(this.lam_visit_expr(inner.body.some, a, scope));
+            }
+            this.lam_shadow_restore(a, mark);
+            return e;
+        }
+        if (e is Expression.spawn_async) {
+            let se: mut SpawnAsyncExpression = e.spawn_async;
+            if (se.expression.is_some()) {
+                se.expression = new Option<Expression>.some(this.lam_visit_expr(se.expression.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.wait_expr) {
+            let we2: mut WaitExpression = e.wait_expr;
+            if (we2.expression.is_some()) {
+                we2.expression = new Option<Expression>.some(this.lam_visit_expr(we2.expression.some, a, scope));
+            }
+            return e;
+        }
+        if (e is Expression.meta_call) {
+            let mc: mut MetaCallExpression = e.meta_call;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(mc.arguments.size())) {
+                mc.arguments.set(cast<u64>(i), this.lam_visit_expr(mc.arguments.at(cast<u64>(i)).some, a, scope));
+                i = i + 1;
+            }
+            return e;
+        }
+        if (e is Expression.try_bind) {
+            let tb: mut TryBindExpression = e.try_bind;
+            if (tb.rhs.is_some()) {
+                tb.rhs = new Option<Expression>.some(this.lam_visit_expr(tb.rhs.some, a, scope));
+            }
+            // The pattern variable is bound for the rest of the region.
+            if (string_length(tb.variable_name) > 0) { a.shadow.push(tb.variable_name); }
+            return e;
+        }
+        // constant / string / bool / void literals and specializing_impl
+        // carry no capturable identifiers.
+        return e;
+    }
+    fun lam_visit_stmt(mut this, s: Statement, a: mut LamAnalysis, scope: mut BoundScope) {
+        if (s is Statement.expression) {
+            let es: mut ExpressionStatement = s.expression;
+            if (es.expression.is_some()) {
+                es.expression = new Option<Expression>.some(this.lam_visit_expr(es.expression.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.block_expr) {
+            let bs: mut BlockExpressionStatement = s.block_expr;
+            if (bs.expression.is_some()) {
+                bs.expression = new Option<Expression>.some(this.lam_visit_expr(bs.expression.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.assignment) {
+            let as2: mut AssignmentStatement = s.assignment;
+            if (as2.target.is_some()) {
+                as2.target = new Option<Expression>.some(this.lam_visit_expr(as2.target.some, a, scope));
+            }
+            if (as2.value.is_some()) {
+                as2.value = new Option<Expression>.some(this.lam_visit_expr(as2.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.if_stmt) {
+            let is2: mut IfStatement = s.if_stmt;
+            if (is2.condition.is_some()) {
+                is2.condition = new Option<Expression>.some(this.lam_visit_expr(is2.condition.some, a, scope));
+            }
+            if (is2.then_statement.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(is2.then_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            if (is2.else_statement.is_some()) {
+                let mark2: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(is2.else_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark2);
+            }
+            return;
+        }
+        if (s is Statement.while_stmt) {
+            let ws: mut WhileStatement = s.while_stmt;
+            if (ws.condition.is_some()) {
+                ws.condition = new Option<Expression>.some(this.lam_visit_expr(ws.condition.some, a, scope));
+            }
+            if (ws.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ws.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.for_stmt) {
+            let fs: mut ForStatement = s.for_stmt;
+            if (fs.iterable.is_some()) {
+                fs.iterable = new Option<Expression>.some(this.lam_visit_expr(fs.iterable.some, a, scope));
+            }
+            if (fs.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                if (string_length(fs.variable_name) > 0) { a.shadow.push(fs.variable_name); }
+                this.lam_visit_stmt(fs.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.return_stmt) {
+            let rs: mut ReturnStatement = s.return_stmt;
+            if (rs.value.is_some()) {
+                rs.value = new Option<Expression>.some(this.lam_visit_expr(rs.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.let_decl) {
+            let ls: mut LetDeclarationStatement = s.let_decl;
+            if (ls.initializer.is_some()) {
+                ls.initializer = new Option<Expression>.some(this.lam_visit_expr(ls.initializer.some, a, scope));
+            }
+            // Sequential scoping: the declared name is visible only AFTER
+            // its own initializer (mirrors progressive symbol binding).
+            if (string_length(ls.variable_name) > 0) { a.shadow.push(ls.variable_name); }
+            return;
+        }
+        if (s is Statement.connect_stmt) {
+            let cs: mut ConnectStatement = s.connect_stmt;
+            if (cs.source.is_some()) {
+                cs.source = new Option<Expression>.some(this.lam_visit_expr(cs.source.some, a, scope));
+            }
+            if (cs.sink.is_some()) {
+                cs.sink = new Option<Expression>.some(this.lam_visit_expr(cs.sink.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.try_stmt) {
+            let ts: mut TryStatement = s.try_stmt;
+            if (ts.try_block.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ts.try_block.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            if (ts.catch_block.is_some()) {
+                let mark2: i64 = this.lam_shadow_mark(a);
+                if (string_length(ts.catch_var_name) > 0) { a.shadow.push(ts.catch_var_name); }
+                this.lam_visit_stmt(ts.catch_block.some, a, scope);
+                this.lam_shadow_restore(a, mark2);
+            }
+            return;
+        }
+        if (s is Statement.yield_stmt) {
+            let ys: mut YieldStatement = s.yield_stmt;
+            if (ys.value.is_some()) {
+                ys.value = new Option<Expression>.some(this.lam_visit_expr(ys.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.signal_stmt) {
+            let ss: mut SignalStatement = s.signal_stmt;
+            if (ss.expression.is_some()) {
+                ss.expression = new Option<Expression>.some(this.lam_visit_expr(ss.expression.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.break_stmt) {
+            let bs2: mut BreakStatement = s.break_stmt;
+            if (bs2.value.is_some()) {
+                bs2.value = new Option<Expression>.some(this.lam_visit_expr(bs2.value.some, a, scope));
+            }
+            return;
+        }
+        if (s is Statement.meta_if_stmt) {
+            let ms: mut MetaIfStatement = s.meta_if_stmt;
+            if (ms.condition.is_some()) {
+                ms.condition = new Option<Expression>.some(this.lam_visit_expr(ms.condition.some, a, scope));
+            }
+            if (ms.then_statement.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ms.then_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ms.elif_branches.size())) {
+                let eb: mut MetaElifBranch = ms.elif_branches.at(cast<u64>(i)).some;
+                if (eb.condition.is_some()) {
+                    eb.condition = new Option<Expression>.some(this.lam_visit_expr(eb.condition.some, a, scope));
+                }
+                if (eb.body_statement.is_some()) {
+                    let mark2: i64 = this.lam_shadow_mark(a);
+                    this.lam_visit_stmt(eb.body_statement.some, a, scope);
+                    this.lam_shadow_restore(a, mark2);
+                }
+                i = i + 1;
+            }
+            if (ms.else_statement.is_some()) {
+                let mark3: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(ms.else_statement.some, a, scope);
+                this.lam_shadow_restore(a, mark3);
+            }
+            return;
+        }
+        if (s is Statement.meta_while_stmt) {
+            let mws: mut MetaWhileStatement = s.meta_while_stmt;
+            if (mws.condition.is_some()) {
+                mws.condition = new Option<Expression>.some(this.lam_visit_expr(mws.condition.some, a, scope));
+            }
+            if (mws.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                this.lam_visit_stmt(mws.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.meta_for_stmt) {
+            let mfs: mut MetaForStatement = s.meta_for_stmt;
+            if (mfs.iterable.is_some()) {
+                mfs.iterable = new Option<Expression>.some(this.lam_visit_expr(mfs.iterable.some, a, scope));
+            }
+            if (mfs.body.is_some()) {
+                let mark: i64 = this.lam_shadow_mark(a);
+                if (string_length(mfs.variable_name) > 0) { a.shadow.push(mfs.variable_name); }
+                this.lam_visit_stmt(mfs.body.some, a, scope);
+                this.lam_shadow_restore(a, mark);
+            }
+            return;
+        }
+        if (s is Statement.meta_break_stmt) {
+            let mbs: mut MetaBreakStatement = s.meta_break_stmt;
+            if (mbs.value.is_some()) {
+                mbs.value = new Option<Expression>.some(this.lam_visit_expr(mbs.value.some, a, scope));
+            }
+            return;
+        }
+        // continue / meta_continue carry no expressions.
+    }
+    fun bind_lambda(mut this, lam: mut LambdaFunctionExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        let m: mut SemanticModel = owner.model.some;
+        let loc: SourceLocation = new SourceLocation("", 0, 0);
+        if (m.current_unit.is_none()) {
+            m.report_error(new ErrorCode.E_INTERNAL(), "lambda outside a compilation unit", loc);
+            return new Option<BoundExpression>.none();
+        }
+        if (lam.body.is_none()) {
+            m.report_error(new ErrorCode.E_INTERNAL(), "lambda without a body", loc);
+            return new Option<BoundExpression>.none();
+        }
+        // Resolve param/return types in the ENCLOSING scope (the closure class
+        // lives under the enclosing namespace; lambda-local type names would
+        // not survive there).
+        let param_bts: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(lam.parameters.size())) {
+            let p: Parameter = lam.parameters.at(cast<u64>(pi)).some;
+            if (p.type_spec.is_none()) {
+                m.report_error(new ErrorCode.E_RESOLVE_TYPE(),
+                    "lambda parameter '" + p.name + "' needs an explicit type", loc);
+                return new Option<BoundExpression>.none();
+            }
+            param_bts.push(m.resolve_type_specifier(p.type_spec.some, scope));
+            pi = pi + 1;
+        }
+        let ret_bt: mut BoundType = m.type_registry.void_type;
+        if (lam.return_type.is_some()) {
+            ret_bt = m.resolve_type_specifier(lam.return_type.some, scope);
+        }
+        // Idempotence: this AST node may be bound more than once (the port
+        // probes in bind_member_access rebind their base expression). The
+        // first bind below rewrites the body in place and registers the
+        // closure class — replay the cached result instead of synthesizing
+        // a second, capture-less closure from the already-rewritten AST.
+        if (lam.bound_class_name.is_some()) {
+            let cached_cls: string = lam.bound_class_name.some;
+            let fun_bt_cached: BoundType = m.type_registry.make_function_type(ret_bt, param_bts, lam.is_async);
+            let cached_new: mut NewExpression = new NewExpression();
+            cached_new.type_name = cached_cls;
+            let ci0: mut i64 = 0;
+            while (ci0 < cast<i64>(lam.bound_capture_names.size())) {
+                cached_new.arguments.push(owner.mk_ident_expr(lam.bound_capture_names.at(cast<u64>(ci0)).some));
+                ci0 = ci0 + 1;
+            }
+            let bound_cached: Option<BoundExpression> = owner.castnew.bind_new_expr(cached_new, scope);
+            if (bound_cached.is_none()) { return new Option<BoundExpression>.none(); }
+            if (bound_cached.some is BoundExpression.new_expr) {
+                let orig_cached: BoundNewExpression = bound_cached.some.new_expr;
+                let re_typed_cached: mut BoundNewExpression = new BoundNewExpression(fun_bt_cached, orig_cached.type_symbol, orig_cached.constructor_symbol, orig_cached.arguments);
+                return new Option<BoundExpression>.some(new BoundExpression.new_expr(re_typed_cached));
+            }
+            return bound_cached;
+        }
+        // Capture analysis + in-place body rewrite.
+        let a: mut LamAnalysis = new LamAnalysis();
+        let si: mut i64 = 0;
+        while (si < cast<i64>(lam.parameters.size())) {
+            a.shadow.push(lam.parameters.at(cast<u64>(si)).some.name);
+            si = si + 1;
+        }
+        lam.body = new Option<Expression>.some(this.lam_visit_expr(lam.body.some, a, scope));
+        if (a.error_count > 0) { return new Option<BoundExpression>.none(); }
+
+        // ---- synthesize the closure class ----
+        // Batch 3.4 (class ⑤): file-qualified per-file numbering — the tag
+        // (the body-binding file's namespace) is embedded in the name, so
+        // closures synthesized in a shared namespace scope from different
+        // files can never collide, and one file's edit never renumbers
+        // another file's closures.
+        let lam_n: i64 = next_synth_counter(m.lambda_site_counter, m.index_current_file);
+        let cls_name: string = "__lambda_" + synth_name_file_tag(m.index_current_file) + "_" + cast<string>(lam_n);
+        // Record the synthesis on the AST node so a re-bind of the same
+        // lambda replays this class instead of synthesizing another one
+        // (see the idempotence note above).
+        lam.bound_class_name = new Option<string>.some(cls_name);
+        let cn: mut i64 = 0;
+        while (cn < cast<i64>(a.names.size())) {
+            lam.bound_capture_names.push(a.names.at(cast<u64>(cn)).some);
+            cn = cn + 1;
+        }
+        let cls: mut ClassDefinition = new ClassDefinition(cls_name);
+        cls.location = loc;
+        cls.source_file = "<lambda>";
+        cls.is_funval = true;
+
+        // Capture fields: by-value snapshot, mutability preserved from the
+        // source variable (a mut local's snapshot stays assignable inside
+        // the lambda body; an immutable local's does not).
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(a.names.size())) {
+            let cap_name: string = a.names.at(cast<u64>(ci)).some;
+            let cap_bt: BoundType = a.types.at(cast<u64>(ci)).some;
+            let fd: mut ClassFieldDefinition = new ClassFieldDefinition(cap_name);
+            let fts: mut TypeSpecifier = owner.coroutine.spawn_type_spec(cap_bt);
+            fts.is_mutable = cap_bt.mutability is Mutability.Mutable;
+            fd.type_spec = new Option<TypeSpecifier>.some(fts);
+            fd.location = loc;
+            cls.members.push(new Definition.class_field(fd));
+            ci = ci + 1;
+        }
+        // Constructor: fun new(mut this, caps...) { this.<cap> = <cap>; ... }
+        let ctor: mut FunctionDefinition = new FunctionDefinition("new");
+        ctor.is_new = true;
+        let this_p: Parameter = new Parameter("this");
+        this_p.is_this = true;
+        this_p.is_mutable = true;
+        ctor.parameters.push(this_p);
+        let ctor_stmts: mut _utils.List<Statement> = new _utils.List<Statement>();
+        ci = 0;
+        while (ci < cast<i64>(a.names.size())) {
+            let cap_name2: string = a.names.at(cast<u64>(ci)).some;
+            let cap_bt2: BoundType = a.types.at(cast<u64>(ci)).some;
+            let cp: Parameter = new Parameter(cap_name2);
+            let cts: mut TypeSpecifier = owner.coroutine.spawn_type_spec(cap_bt2);
+            cts.is_mutable = cap_bt2.mutability is Mutability.Mutable;
+            cp.type_spec = new Option<TypeSpecifier>.some(cts);
+            ctor.parameters.push(cp);
+            ctor_stmts.push(owner.mk_assign_stmt(owner.mk_this_member(cap_name2), owner.mk_ident_expr(cap_name2)));
+            ci = ci + 1;
+        }
+        ctor.body = new Option<Expression>.some(owner.mk_block_expr(ctor_stmts, new Option<Expression>.none()));
+        cls.members.push(new Definition.function_def(ctor));
+        // __call: the callable body (captures already rewritten to this.<name>).
+        let call_fn: mut FunctionDefinition = new FunctionDefinition("__call");
+        let call_this: Parameter = new Parameter("this");
+        call_this.is_this = true;
+        call_this.is_mutable = true;
+        call_fn.parameters.push(call_this);
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(lam.parameters.size())) {
+            call_fn.parameters.push(lam.parameters.at(cast<u64>(mi)).some);
+            mi = mi + 1;
+        }
+        call_fn.return_type = lam.return_type;
+        call_fn.is_async = lam.is_async;
+        call_fn.body = lam.body;
+        cls.members.push(new Definition.function_def(call_fn));
+
+        // ---- bind into the enclosing namespace, resolve, catch up (spawn
+        // pattern: the pushed def's bodies are bound by the pass-8 loop) ----
+        let def_scope: mut BoundScope = owner.coroutine.enclosing_def_scope(scope);
+        let cls_ast: Definition = new Definition.class_def(cls);
+        let bound_cls: Option<BoundDefinition> = m.build_scopes_pass.bind_definition(cls_ast, def_scope);
+        if (bound_cls.is_none()) { return new Option<BoundExpression>.none(); }
+        // Batch 3.3a: resolve_pair stamps the protocol index itself — no
+        // pass-pointer lowering needed here anymore.
+        let resolved: BoundDefinition = m.resolve_types_pass.resolve_pair(cls_ast, bound_cls.some, def_scope);
+        let unit_ref: mut BoundCompilationUnit = m.current_unit.some;
+        unit_ref.definitions.push(resolved);
+        m.a5_pass.bind_def_signature_before_bodies(resolved, unit_ref);
+
+        // ---- the lambda expression binds as `new __lambda_N(<captures>)`,
+        // re-typed to its fun type: the closure object IS the fun value ----
+        let fun_bt: BoundType = m.type_registry.make_function_type(ret_bt, param_bts, lam.is_async);
+        let new_ast: mut NewExpression = new NewExpression();
+        new_ast.type_name = cls_name;
+        let ni: mut i64 = 0;
+        while (ni < cast<i64>(a.names.size())) {
+            new_ast.arguments.push(owner.mk_ident_expr(a.names.at(cast<u64>(ni)).some));
+            ni = ni + 1;
+        }
+        let bound_new: Option<BoundExpression> = owner.castnew.bind_new_expr(new_ast, scope);
+        if (bound_new.is_none()) { return new Option<BoundExpression>.none(); }
+        if (bound_new.some is BoundExpression.new_expr) {
+            // Re-type as the fun type (fresh node — the closure object IS the
+            // fun value; lower_new keys on type_symbol, not bound_type).
+            let orig: BoundNewExpression = bound_new.some.new_expr;
+            let re_typed: mut BoundNewExpression = new BoundNewExpression(fun_bt, orig.type_symbol, orig.constructor_symbol, orig.arguments);
+            return new Option<BoundExpression>.some(new BoundExpression.new_expr(re_typed));
+        }
+        return bound_new;
+    }
+
+
+    // ===================== Generic call type-arg inference =====================
+    // A call to a template function/method WITHOUT explicit <...> args infers
+    // the type parameters from the bound argument types: a direct match
+    // (param `x: U` vs an i64 argument), a fun-type match (param
+    // `f: fun<U, P>` vs a lambda/fun value — arg 0 is the RETURN type), and a
+    // same-base container match (param `List<U>` vs `List<i64>`). Partial
+    // solutions abandon inference (the call falls back to the historical
+    // unspecialized form — a loud link error today).
+
+    // Structural unification of one (declared param type, actual arg type)
+    // pair into the solved-params lists. Conflicts keep the first solution.
+    fun infer_unify_type(mut this, ts: TypeSpecifier, bt: BoundType, generic_params: _utils.List<string>, names: mut _utils.List<string>, types: mut _utils.List<BoundType>) {
+        // `array<U>` unifies with an ArrayKind argument ELEMENT-wise (U solves
+        // to the element type, not the whole array).
+        if (cast<i64>(ts.qualified_parts.size()) == 0 && ts.name == "array") {
+            if (cast<i64>(ts.generic_args.size()) == 1 && bt.kind is TypeKind.ArrayKind && cast<i64>(bt.generic_args.size()) > 0) {
+                let elem_ts: TypeSpecifier = ts.generic_args.at(cast<u64>(0)).some;
+                let elem_bt: BoundType = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+                this.infer_unify_type(elem_ts, elem_bt, generic_params, names, types);
+            }
+            return;
+        }
+        if (ts.is_function_type) {
+            if (bt.kind is TypeKind.FunctionKind) {
+                if (cast<i64>(ts.function_params.size()) == cast<i64>(bt.generic_args.size())) {
+                    let i: mut i64 = 0;
+                    while (i < cast<i64>(ts.function_params.size())) {
+                        this.infer_unify_type(ts.function_params.at(cast<u64>(i)).some, arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some), generic_params, names, types);
+                        i = i + 1;
+                    }
+                }
+            }
+            return;
+        }
+        if (cast<i64>(ts.qualified_parts.size()) == 0 && cast<i64>(ts.generic_args.size()) == 0) {
+            let gp: mut i64 = 0;
+            while (gp < cast<i64>(generic_params.size())) {
+                if (generic_params.at(cast<u64>(gp)).some == ts.name) {
+                    let ni: mut i64 = 0;
+                    while (ni < cast<i64>(names.size())) {
+                        if (names.at(cast<u64>(ni)).some == ts.name) { return; }
+                        ni = ni + 1;
+                    }
+                    names.push(ts.name);
+                    types.push(bt);
+                    return;
+                }
+                gp = gp + 1;
+            }
+            return;
+        }
+        // Same-base container (List<U> vs List<i64>): unify the args pairwise.
+        if (cast<i64>(ts.generic_args.size()) > 0 && cast<i64>(bt.generic_args.size()) == cast<i64>(ts.generic_args.size())) {
+            let base_match: mut bool = false;
+            if (bt.type_definition.is_some()) {
+                if (string_find(bt.type_definition.some.get_name(), ts.name) >= 0) { base_match = true; }
+            }
+            if (base_match) {
+                let i2: mut i64 = 0;
+                while (i2 < cast<i64>(ts.generic_args.size())) {
+                    this.infer_unify_type(ts.generic_args.at(cast<u64>(i2)).some, arg_as_bound_type(bt.generic_args.at(cast<u64>(i2)).some), generic_params, names, types);
+                    i2 = i2 + 1;
+                }
+            }
+        }
+    }
+
+    // Find the BoundFunctionDefinition for a symbol's full name (top-level,
+    // namespace, class methods, impl methods — the search_return_type walker's
+    // shape, returning the def instead of its return type).
+    // Indexed full_name -> function def lookup (was a recursive linear walk
+    // over the whole definition tree per call — O(all defs) per generic-call
+    // inference, 13% of the bootstrap profile). The unit-level index is
+    // built lazily in the same preorder the walk used (first-wins) and
+    // extended incrementally as monomorphize/catch_up append new TOP-LEVEL
+    // defs (each new def's whole subtree is collected — specialized classes
+    // carry their methods nested). Defs injected INSIDE an already-indexed
+    // def (rare bind-time impl injections) stay invisible to the index on
+    // purpose: the linear fallback below still sees them, so a miss is
+    // answered exactly like the old walk. This lookup covers
+    // namespace/class (methods, constructors, interface_impls)/impl_for/impl
+    // — it does NOT descend into enum interface_impls; keep that difference
+    // from the return-type index.
+}
+
+
+// Capture classification for one identifier encountered in a lambda body.
+enum LamCaptureKind {
+    NotVariable;   // resolves inside __call anyway (global / function / type)
+    Capturable;    // a local/param of the enclosing function scope chain
+    ClassMember;   // lives in a class/enum/interface/impl scope (v1: error)
+    ThisParam;     // the enclosing method's `this` (v1: error)
+}
+
+// Mutable analysis state threaded through the lambda-body traversal: shadow =
+// names declared inside the lambda body that hide outer locals; names/types =
+// captures in first-appearance order; last_found_type = the classified
+// variable's type (valid only right after a Capturable result).
+class LamAnalysis {
+    shadow: mut _utils.List<string> = new _utils.List<string>();
+    names: mut _utils.List<string> = new _utils.List<string>();
+    types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+    last_found_type: mut Option<BoundType> = new Option<BoundType>.none();
+    error_count: mut i64 = 0;
+}
+
+}

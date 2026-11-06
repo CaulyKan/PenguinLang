@@ -1,0 +1,20 @@
+// spawnx_a.penguin — cross-file spawn-site synthetic-name fixture A (batch
+// 1.3 regression guard, Tests/AsyncTest/SpawnCtxCrossFileCounter.md).
+// Same explicit namespace `spawnx` as spawnx_b.penguin: namespaces MERGE
+// across files, and the synthesized `__SpawnCtx_<n>`/`__SpawnFut_<n>`
+// classes are bound into the spawn site's ENCLOSING namespace scope (the
+// shared `spawnx` scope), NOT a per-file `_ns_<file>` scope — so per-file
+// counters give both files' sites the number 1 and the two identically
+// named ctx classes collide in one scope. This file's spawn captures 3
+// args (ctx fields a0/a1/a2 + fut).
+namespace spawnx {
+    fun g3(a: i64, b: i64, c: i64) -> i64 {
+        return a * 100 + b * 10 + c;
+    }
+
+    fun fa() {
+        let f : mut __builtin.IFuture<i64> = async g3(1, 2, 3);
+        let r : i64 = wait f;
+        println("r1=" + cast<string>(r));
+    }
+}

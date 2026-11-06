@@ -717,8 +717,11 @@ class BuildScopesPass {
         while (i < cast<i64>(unit.definitions.size())) {
             let def: Definition = unit.definitions.at(cast<u64>(i)).some;
             if (def is Definition.construct_def) {
-                let idx: i64 = this.model.some.construct_counter;
-                this.model.some.construct_counter = idx + 1;
+                // Batch 3.4 (class ⑤): per-file construct numbering keyed by
+                // the construct def's OWN source file (a user-written def — it
+                // carries source_file; the batch-1.3 defect was keying on the
+                // DESUGARED defs, which have none).
+                let idx: i64 = next_synth_counter(this.model.some.construct_counter, def.construct_def.source_file);
                 let parts: _utils.List<Definition> = this.split_top_construct(def.construct_def, idx);
                 let pi: mut i64 = 0;
                 while (pi < cast<i64>(parts.size())) {
@@ -745,8 +748,9 @@ class BuildScopesPass {
         while (i < cast<i64>(ns.children.size())) {
             let child: Definition = ns.children.at(cast<u64>(i)).some;
             if (child is Definition.construct_def) {
-                let idx: i64 = this.model.some.construct_counter;
-                this.model.some.construct_counter = idx + 1;
+                // Batch 3.4 (class ⑤): same per-file construct numbering as
+                // desugar_rtl_defs (the namespace child's own source file).
+                let idx: i64 = next_synth_counter(this.model.some.construct_counter, child.construct_def.source_file);
                 let parts: _utils.List<Definition> = this.split_top_construct(child.construct_def, idx);
                 let pi: mut i64 = 0;
                 while (pi < cast<i64>(parts.size())) {
@@ -870,8 +874,11 @@ class BuildScopesPass {
                                     "connect source '" + vname + "' must be a mut variable (implicit wire nets need mutable storage)",
                                     conn.location);
                             } else {
-                                let hub_name: string = "__net_" + cast<string>(this.model.some.variable_net_counter) + "_" + vname;
-                                this.model.some.variable_net_counter = this.model.some.variable_net_counter + 1;
+                                // Batch 3.4 (class ⑤): per-file net-hub
+                                // numbering (tag embedded; keyed by the
+                                // construct's own source file).
+                                let net_n: i64 = next_synth_counter(this.model.some.variable_net_counter, cd.source_file);
+                                let hub_name: string = "__net_" + synth_name_file_tag(cd.source_file) + "_" + cast<string>(net_n) + "_" + vname;
                                 let hub: mut GlobalVariableDefinition = new GlobalVariableDefinition(hub_name);
                                 hub.type_spec = new Option<TypeSpecifier>.some(this.mk_fanout_spec(hoisted_specs.at(cast<u64>(found)).some));
                                 hub.initializer = new Option<Expression>.some(this.mk_fanout_new(hoisted_specs.at(cast<u64>(found)).some));
@@ -889,7 +896,11 @@ class BuildScopesPass {
             }
             ci = ci + 1;
         }
-        let fn: mut FunctionDefinition = new FunctionDefinition("__construct_" + cast<string>(idx));
+        // Batch 3.4 (class ⑤): the hidden construct function's name embeds
+        // the construct's file tag (per-file idx from the caller). The
+        // `.__construct_` substring consumers (IRGenerator / the coroutine
+        // ownership walk) match on the substring, which the tag preserves.
+        let fn: mut FunctionDefinition = new FunctionDefinition("__construct_" + synth_name_file_tag(cd.source_file) + "_" + cast<string>(idx));
         let body_block: mut CodeBlockExpression = new CodeBlockExpression();
         body_block.statements = stmts;
         fn.body = new Option<Expression>.some(new Expression.code_block(body_block));
@@ -1003,6 +1014,14 @@ class BuildScopesPass {
                 fn.parameters.push(this_p);
                 fn.body = m.initial_routine.body;
                 fn.location = m.initial_routine.location;
+                // Batch 3.4 (class ⑤, the batch-1.3 defect A root): the
+                // DESUGARED def inherits the owning class's source file, so
+                // the body-binding file attribution (index_current_file) —
+                // and with it every synthetic name minted inside the
+                // initial's body (spawn ctx classes for `async this.__initial_i()`)
+                // — attributes to the CLASS's file instead of the anonymous
+                // fallback bucket (_ns__anon).
+                fn.source_file = cls.source_file;
                 new_members.push(new Definition.function_def(fn));
             } else if (m is Definition.construct_def) {
                 let fn: mut FunctionDefinition = new FunctionDefinition("__class_construct_" + cast<string>(construct_count));
@@ -1013,6 +1032,8 @@ class BuildScopesPass {
                 fn.parameters.push(this_p2);
                 fn.body = m.construct_def.body;
                 fn.location = m.construct_def.location;
+                // Same attribution fix as __initial_<i> above.
+                fn.source_file = cls.source_file;
                 new_members.push(new Definition.function_def(fn));
             } else {
                 new_members.push(m);
@@ -1064,8 +1085,11 @@ class BuildScopesPass {
                                                                     "connect source '" + fma.member_name + "' must be a mut field (implicit wire nets need mutable storage)",
                                                                     fconn.location);
                                                             } else {
-                                                                let hub_name2: string = "__net_" + cast<string>(this.model.some.variable_net_counter) + "_" + fma.member_name;
-                                                                this.model.some.variable_net_counter = this.model.some.variable_net_counter + 1;
+                                                                // Batch 3.4 (class ⑤): per-file net-hub
+                                                                // numbering (tag embedded; keyed by the
+                                                                // owning class's source file).
+                                                                let net_n2: i64 = next_synth_counter(this.model.some.variable_net_counter, cls.source_file);
+                                                                let hub_name2: string = "__net_" + synth_name_file_tag(cls.source_file) + "_" + cast<string>(net_n2) + "_" + fma.member_name;
                                                                 let hub_field: mut ClassFieldDefinition = new ClassFieldDefinition(hub_name2);
                                                                 hub_field.type_spec = new Option<TypeSpecifier>.some(this.mk_fanout_spec(field_spec.some));
                                                                 hub_field.initializer = new Option<Expression>.some(this.mk_fanout_new(field_spec.some));
@@ -1162,6 +1186,10 @@ class BuildScopesPass {
                 let blk2: mut CodeBlockExpression = new CodeBlockExpression();
                 blk2.statements = ctor_stmts;
                 ctor.body = new Option<Expression>.some(new Expression.code_block(blk2));
+                // Batch 3.4 (class ⑤): same attribution fix as __initial_<i> —
+                // the synthesized constructor's body mints the initial-spawn
+                // ctx classes, which must attribute to the class's file.
+                ctor.source_file = cls.source_file;
                 new_members.push(new Definition.function_def(ctor));
             }
         }

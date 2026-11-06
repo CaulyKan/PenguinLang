@@ -1,0 +1,8 @@
+#fun probe() -> i64 {
+    let c: mut Cfg = new Cfg();
+    return c.get();
+}
+initial {
+    println("v3");
+    println("value=" + cast<string>(#probe()));
+}

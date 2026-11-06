@@ -58,8 +58,19 @@ class IRFunction {
         // displays as %tN) is unconditionally reshaped first: a user variable
         // named t5 lowering to plain SSA `%t5` collides with temp registers
         // in the same function (multiple definition at link).
+        // Batch 5 (C1, 4.4 handoff): likewise for LABEL-shaped names —
+        // `entry` (the emitter names every function's first block `entry:`)
+        // and `<label-prefix><digits>` (then1/else2/merge0/while3/... — the
+        // IR generator's alloc_label names) plus `cond_<digits>` (the
+        // emitter's per-branch i1 value). A user register/parameter with
+        // such a name collides with the label/value namespace (LLVM text IR
+        // shares one identifier namespace for blocks and values per
+        // function): `fun f(entry: i64)` produced `%entry` + `entry:` ->
+        // clang "unable to create block named 'entry'".
         let base: mut string = name;
         if (this.is_temp_shaped_name(name)) {
+            base = name + "_v";
+        } else if (this.is_label_shaped_name(name)) {
             base = name + "_v";
         }
         let candidate: mut string = base;
@@ -78,6 +89,65 @@ class IRFunction {
         if (string_char_at(name, 0) != "t") { return false; }
         let i: mut i64 = 1;
         while (i < len) {
+            let c: string = string_char_at(name, i);
+            let is_digit: bool = c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+                || c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
+            if (!is_digit) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // Batch 5 (C1): does `name` collide with the emitter/IR-generator LABEL
+    // namespace? Cover:
+    //   - exactly "entry"            (LLVMEmitter names the first block `entry:`)
+    //   - <prefix><digits> where prefix is any alloc_label prefix: catch,
+    //     else, merge, then, while, while_body, while_exit, sc_merge,
+    //     sc_next, try_bind_done, try_bind_then, try_body, try_end
+    //   - cond_<digits>              (LLVMInstructions' per-branch i1 value)
+    // Longer prefixes are checked first so `while_body3` matches
+    // "while_body"+digits rather than "while"+"body3".
+    fun is_label_shaped_name(this, name: string) -> bool {
+        if (name == "entry") { return true; }
+        // cond_<digits> (underscore separator — a VALUE, same namespace)
+        if (this.name_is_prefix_digits(name, "cond_")) { return true; }
+        let prefixes: mut _utils.List<string> = new _utils.List<string>();
+        prefixes.push("try_bind_done");
+        prefixes.push("try_bind_then");
+        prefixes.push("while_body");
+        prefixes.push("while_exit");
+        prefixes.push("sc_merge");
+        prefixes.push("sc_next");
+        prefixes.push("try_body");
+        prefixes.push("try_end");
+        prefixes.push("catch");
+        prefixes.push("else");
+        prefixes.push("merge");
+        prefixes.push("then");
+        prefixes.push("while");
+        let i: mut i64 = 0;
+        while (i < cast<i64>(prefixes.size())) {
+            if (this.name_is_prefix_digits(name, prefixes.at(cast<u64>(i)).some)) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // `name` == prefix followed by one or more digits (prefix itself must be
+    // a strict prefix — name longer than prefix).
+    fun name_is_prefix_digits(this, name: string, prefix: string) -> bool {
+        let nlen: i64 = string_length(name);
+        let plen: i64 = string_length(prefix);
+        if (nlen <= plen) { return false; }
+        let i: mut i64 = 0;
+        while (i < plen) {
+            if (string_char_at(name, i) != string_char_at(prefix, i)) { return false; }
+            i = i + 1;
+        }
+        i = plen;
+        while (i < nlen) {
             let c: string = string_char_at(name, i);
             let is_digit: bool = c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
                 || c == "5" || c == "6" || c == "7" || c == "8" || c == "9";
@@ -115,9 +185,23 @@ class IRFunction {
     fun alloc_param(mut this, name: string, ir_type: string, line: i64, col: i64) -> IRValue {
         let idx: i64 = cast<i64>(this.parameters.size());
         let param_loc: SourceLocation = new SourceLocation(this.location.filename, line, col);
-        let mut param = new IRParameter(name, ir_type, idx, param_loc);
+        // Batch 5 (C1, 4.4 handoff): route the parameter through
+        // make_unique_reg_name so a label-shaped name (`entry`, `else2`, ...)
+        // is reshaped BEFORE it lands in the LLVM signature — a parameter
+        // `%entry` collides with the emitter's `entry:` block label (clang:
+        // "unable to create block named 'entry'"). IRParameter and the
+        // entry-block register share the SAME final name (callers read it
+        // back via param_ir_name so the ARG instructions match).
+        let unique_name: string = this.make_unique_reg_name(name);
+        let mut param = new IRParameter(unique_name, ir_type, idx, param_loc);
         this.parameters.push(param);
-        return this.alloc_named_reg(name, ir_type, line, col);
+        return new IRValue.named_reg(new IRNamedRegister(unique_name, ir_type, line, col));
+    }
+
+    // The final LLVM name of parameter `idx` (post label-shape reshape) — the
+    // string the function signature AND the ARG instructions must agree on.
+    fun param_ir_name(this, idx: i64) -> string {
+        return this.parameters.at(cast<u64>(idx)).some.name;
     }
 
     fun has_terminator(this) -> bool {

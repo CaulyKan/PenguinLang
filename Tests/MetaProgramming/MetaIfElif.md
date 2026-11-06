@@ -3,6 +3,7 @@
 Phase 5a: `#if` / `#elif` / `#else` chain. `A` is undefined, `B` is defined (by a preceding `#define`), so the `#elif` branch is taken.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

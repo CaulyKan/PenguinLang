@@ -1,0 +1,6 @@
+namespace cfg {
+    #class Cfg {
+        value: i64 = 7;
+        fun get(this) -> i64 { return this.value; }
+    }
+}

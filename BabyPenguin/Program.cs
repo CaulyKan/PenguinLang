@@ -31,6 +31,9 @@ namespace BabyPenguin
 
         [Option("cs-out", Default = "", HelpText = "C# backend (--backend cs): build a STANDALONE exe at this path (no extension) and exit, instead of running in-process. Runnable directly: ./<path> <args>")]
         public string CsOut { get; set; } = "";
+
+        [Option('D', "define", Default = new string[0], HelpText = "Predefine a compile-time define for #if/#defined conditional compilation: K=V (or bare K, value defaults to \"1\"). Visible to every file; a code-level #define in a file takes priority. Repeatable.")]
+        public IEnumerable<string> Defines { get; set; } = [];
     }
 
     public class Program
@@ -57,13 +60,37 @@ namespace BabyPenguin
             {
                 var compiler = new SemanticCompiler(new ErrorReporter(Console.Out, (DiagnosticLevel)options.Verbose, Console.Error));
 
+                // CLI defines (batch 2.2): pre-seed the file-scoped conditional
+                // compilation store; K=V or bare K (default value "1") — the
+                // same spelling/semantics as EmperorPenguin's CompilerConfig.
+                foreach (var spec in options.Defines)
+                {
+                    var eq = spec.IndexOf('=');
+                    if (eq >= 0)
+                        compiler.CliDefines[spec[..eq]] = spec[(eq + 1)..];
+                    else
+                        compiler.CliDefines[spec] = "1";
+                }
+
                 // Find "--" separator: args before are files for BabyPenguin, args after are program args
                 int separatorIndex = Array.IndexOf(args, "--");
                 int fileCount = separatorIndex >= 0 ? separatorIndex : args.Length;
-                // Filter out option flags from the file count
-                var filesBeforeSeparator = args.Take(fileCount)
-                    .Where(a => !a.StartsWith("-"))
-                    .ToList();
+                // Filter out option flags — and the VALUE tokens of options
+                // that take one (--define K=V, -r report) — from the file list;
+                // a bare "K=V" would otherwise be picked up as an input file.
+                var filesBeforeSeparator = new List<string>();
+                for (int i = 0; i < fileCount; i++)
+                {
+                    var a = args[i];
+                    if (a is "--define" or "-define" or "-D" or "-r" or "--report")
+                    {
+                        i++; // skip the option's value token
+                        continue;
+                    }
+                    if (a.StartsWith("--define=") || a.StartsWith("-define=") || a.StartsWith("-D=") || a.StartsWith("-"))
+                        continue;
+                    filesBeforeSeparator.Add(a);
+                }
 
                 // Check if any input is a .penguins file
                 var projectFiles = filesBeforeSeparator.Where(f => f.EndsWith(".penguins", StringComparison.OrdinalIgnoreCase)).ToList();

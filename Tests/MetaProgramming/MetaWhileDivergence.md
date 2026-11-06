@@ -3,6 +3,7 @@
 Phase 5a: `#while (true)` without any termination mechanism hits the iteration safety cap and emits a compile error. The test must fail compilation.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

@@ -203,11 +203,33 @@ class MemberAccessExpression {
     base_expr: mut Option<Expression> = new Option<Expression>.none();
     member_name: mut string = "";
     generic_args: mut _utils.List<TypeSpecifier> = new _utils.List<TypeSpecifier>();
+    // D6 qualified value-template call (ns.f<4>()): value-expression generic
+    // args attached to the member name, populated by the parser's value-generic
+    // backtracking (the member-access arm of try_parse_value_generic_args_into).
+    // Bind-time rewrites the callee to the mangled specialization, same as the
+    // identifier arm does for the unqualified spelling (filled<3>()).
+    value_generic_args: mut _utils.List<Expression> = new _utils.List<Expression>();
     impl IExpression {
         fun build_text(this: IExpression) -> string {
             _utils.trace_enter("Enter build_text");
             let self = cast<MemberAccessExpression>(this);
-            return self.base_expr.some.build_text() + "." + self.member_name;
+            let mut sb = new StringBuilder();
+            sb.append(self.base_expr.some.build_text());
+            sb.append(".");
+            sb.append(self.member_name);
+            if (self.value_generic_args.size() > 0) {
+                sb.append("<");
+                let vi: mut u64 = 0;
+                while (vi < self.value_generic_args.size()) {
+                    sb.append(self.value_generic_args.at(vi).some.build_text());
+                    vi = vi + 1;
+                    if (vi != self.value_generic_args.size()) {
+                        sb.append(", ");
+                    }
+                }
+                sb.append(">");
+            }
+            return sb.to_string();
         }
     }
 }

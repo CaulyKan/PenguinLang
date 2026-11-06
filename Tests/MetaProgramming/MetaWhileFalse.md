@@ -3,6 +3,7 @@
 Phase 5a: definition-level `#while (false)` drops the body entirely. The `dropped` function should not exist — attempting to call it is a compile error.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

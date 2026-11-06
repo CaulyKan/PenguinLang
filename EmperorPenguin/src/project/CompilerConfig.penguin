@@ -23,7 +23,7 @@ fun _get_stem(path: string) -> string {
 // in main.penguin) plus the dyn-lib flags (--enable-dl/--disable-dl, --lib),
 // the semantic feature toggles (--enable/--disable-coroutine, --enable/--
 // disable-std) and --help. dl_enabled/std_enabled are plain bools (defaults
-// on) checked with ordinary `if` in the driver — no meta/#option anywhere in
+// on) checked with ordinary `if` in the driver — no meta directives anywhere in
 // the compiler's own code. Whether the compiler BINARY actually has the
 // json-backed Dynlib code is a build-time property (DynlibStub in the default
 // project vs the json-backed Dynlib in EmperorPenguinPass2.penguins, see
@@ -133,6 +133,23 @@ export class CompilerConfig {
     // coroutine/topology constructs: initial/construct/connect/async fun/
     // wait/yield/ports would trip unit B's coroutine gate).
     meta_source_files: mut _utils.List<string> = new _utils.List<string>();
+    // --dump-index (batch 3.1 reconciliation tool): after the semantic
+    // passes, dump the GlobalIndex (five tables + per-file/global
+    // fingerprints) to stderr. Pure diagnostics — never affects the emitted
+    // IR (stdout stays clean).
+    dump_index: bool = false;
+    // --incremental (batch 4.1): compile through an IncrementalSession.
+    // --edit=<file>=<replacement-file> (batch 4.2, repeatable, requires
+    // --incremental): after the first compile, replace the file's text and
+    // re-compile the session incrementally (the didChange transaction
+    // driver for the incremental-vs-full acceptance).
+    incremental: bool = false;
+    // --dump-invalidation (batch 4.3): with --incremental/--edit, print the
+    // four-class invalidation report (affected clean files | reasons) to
+    // stderr after every didChange transaction.
+    dump_invalidation: bool = false;
+    edit_files: mut _utils.List<string> = new _utils.List<string>();
+    edit_replacements: mut _utils.List<string> = new _utils.List<string>();
 
     fun new(mut this) {}
 
@@ -246,6 +263,30 @@ export class CompilerConfig {
                 i = i + 1;
                 if (i < cast<i64>(args.size())) {
                     this.lib_paths.push(args.at(cast<u64>(i)).some);
+                }
+            } else if (arg == "--dump-index") {
+                this.dump_index = true;
+            } else if (arg == "--dump-invalidation") {
+                this.dump_invalidation = true;
+            } else if (arg == "--incremental" || arg == "-incremental") {
+                // Batch 4.1: run the compilation through an IncrementalSession
+                // (the envelope around compile_sources that keeps per-file
+                // snapshots + the parse cache). Without --edit this is
+                // behaviorally identical to the plain full compile.
+                this.incremental = true;
+            } else if (string_length(arg) >= 7 && string_substring(arg, 0, 7) == "--edit=") {
+                // Batch 4.2: one didChange transaction for --incremental
+                // runs: "--edit=<file>=<replacement-file>" — after the first
+                // compile, the file's text is replaced by the replacement
+                // file's content and the session re-compiles incrementally.
+                // Repeatable (applied in order).
+                let spec: string = string_substring(arg, 7, string_length(arg) - 7);
+                let eq: i64 = string_find(spec, "=");
+                if (eq > 0) {
+                    this.edit_files.push(string_substring(spec, 0, eq));
+                    this.edit_replacements.push(string_substring(spec, eq + 1, string_length(spec) - eq - 1));
+                } else {
+                    __builtin.eprintln("[EmperorPenguin] Warning: malformed --edit (expected --edit=<file>=<replacement-file>): " + spec);
                 }
             } else {
                 this.source_files.push(args.at(cast<u64>(i)).some);

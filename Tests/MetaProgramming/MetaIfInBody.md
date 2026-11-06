@@ -3,6 +3,7 @@
 Phase 5a.3: a `#if` inside a function body resolves at compile time — the taken branch's statements are spliced into the body. Here `#if (true)` keeps `return mode + 1;` ahead of the fallback `return mode;`, so compute(10) returns 11.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

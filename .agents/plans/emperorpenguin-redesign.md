@@ -1,5 +1,8 @@
 # EmperorPenguin 重构架构设计（v2 · 终态规格）
 
+> 实施拆解与以可读性/可扩展性为先的批次排序见 `emperorpenguin-redesign-roadmap.md`
+> （并行模型与 SoA arena 在其中降级为数据驱动的可选批次 6）。
+
 v2 变更：① 并行执行模型改为 async + mt scheduler（clock-model 形态，Pass 10 封闭分析
 决定可偷性），废弃 folk；② `#if/#define` 采用 C 语言式**文件级作用域** + 命令行 `-D`
 全局注入（语义变更，替代现状的全局 option 表）；③ 只描述最终状态，不含迁移里程碑。

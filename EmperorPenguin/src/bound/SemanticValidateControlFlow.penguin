@@ -24,13 +24,20 @@ class ValidateControlFlowPass {
     fun run(mut this, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_validate_control_flow");
         for (let def in result.definitions) {
+            // O2: attribute this def's reports to it (error owner capture;
+            // recursive member walks inherit the TOP-LEVEL owner — precise
+            // enough for the specialization filter, whose keys are
+            // top-level defs).
+            this.model.some.current_binding_def = bound_def_full_name(def);
             this.validate_control_flow_for_def(def);
+            this.model.some.current_binding_def = "";
         }
     }
 
     fun validate_control_flow_for_def(mut this, def: BoundDefinition) {
         _utils.trace_enter("Enter validate_control_flow_for_def");
-        if (this.model.some.already_processed(def)) { return; }
+        // Batch 3.3a: per-processor guard (pass 9).
+        if (BoundDefinition.get_pass_index(def) >= 9) { return; }
         if (def is BoundDefinition.function_def) {
             let func: BoundFunctionDefinition = def.function_def;
             if (func.body.is_some() && func.symbol.is_some()) {
@@ -62,7 +69,7 @@ class ValidateControlFlowPass {
                 this.validate_control_flow_for_def(child);
             }
         }
-        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(def, 9);
     }
 
     fun validate_expr_control_flow(mut this, expr: BoundExpression, ret_type: BoundType, loop_depth: i64) {

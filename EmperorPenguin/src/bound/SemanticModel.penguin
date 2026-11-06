@@ -21,8 +21,14 @@ class SemanticModel {
     build_scopes_pass: mut BuildScopesPass;
     // Pass 2 collaborator (M4), same pattern as the above.
     resolve_types_pass: mut ResolveTypesPass;
-    // Pass 6 collaborator (M5), same pattern as the above.
-    interfaces_pass: mut InterfacesPass;
+    // B2 iface layout (batch 3.3b; the old "pass 6 InterfacesPass", class
+    // renamed with its vtable-layout responsibility made explicit). Same
+    // Option-back-reference pattern as the above.
+    iface_layout_pass: mut IfaceLayoutPass;
+    // The A5 stage driver (batch 3.3b): owns the per-def passes 4/5 (per-file
+    // segment walk) and 8/9 (dynamic body/validate walk), plus the explicit
+    // late-def entries that physically replace the catch_up family.
+    a5_pass: mut BindA5Pass;
     concurrency_pass: mut ConcurrencyAnalysisPass;
     // Meta pre-processing stage (M6) — runs before the 9 passes in bind().
     meta_rewriter: mut MetaRewriter;
@@ -34,16 +40,61 @@ class SemanticModel {
     bind_expressions_pass: mut BindExpressionsPass;
     // Pass 8 meta-call binder (M8c), same pattern as the above.
     bind_meta_calls_pass: mut BindMetaCallsPass;
-    // M1a: how far the currently-processing def has been advanced; updated in
-    // bind() right before each pass runs (no guard/catch-up yet — tracking only).
+    // M1a: READ-ONLY pipeline stage indicator (batch 3.3a). Written only by
+    // bind()'s stage progression (1..10); read by the stage gates
+    // (try_resolve_template_instantiation's `< 4` fixpoint-ownership gate,
+    // ensure_signature_instantiations' `>= 8` body-window gate) and by the
+    // catch_up replay boundaries. Per-def processing guards/stamps use each
+    // processor's OWN constant pass number — nothing rewrites this field
+    // mid-pass anymore.
     current_pass_index: mut i64 = 0;
+    // P0 (incremental stage timing): set by compile_sources from the
+    // EmperorPenguinCompiler's flag (the IncrementalSession probes
+    // EMPEROR_INCREMENTAL_TIMING). When true the monomorphize fixpoint
+    // records its per-round statistics (stat_round_* on MonomorphizePass —
+    // pure bookkeeping, never read by any decision). Default false: zero
+    // timing calls on every plain compile.
+    timing_enabled: bool = false;
+    // O2 (reconciliation split): the full name of the top-level def whose
+    // per-def processor is currently running (set by the pass-8 body loop
+    // and the pass-9 validate loop; "" outside them). Captured into
+    // SemanticError.owner_def at report time — pure metadata, no decision
+    // reads it; the session's error replay drops evicted specializations'
+    // stale errors through it.
+    current_binding_def: mut string = "";
+    // Batch 3.3a: per-file def segments over result.definitions (built once
+    // per bind() before pass 4). Segments are CONTIGUOUS index ranges keyed
+    // by the owning source file (first-appearance order == the flat
+    // definitions order, so segment-driven iteration is behavior-identical
+    // to the flat loop). A def whose bound_def_source_file is "" (container
+    // shapes without an ast_source) inherits the current segment.
+    def_seg_files: mut _utils.List<string> = new _utils.List<string>();
+    def_seg_starts: mut _utils.List<i64> = new _utils.List<i64>();
+    def_seg_counts: mut _utils.List<i64> = new _utils.List<i64>();
     ast_definitions: mut _utils.List<Definition> = new _utils.List<Definition>();
-    // Host-side compile-time option store for #define / #defined / #option used
-    // outside #fun bodies (e.g. #if (#defined("DEBUG")) conditional compilation).
-    // #fun bodies keep their own store in MetaEngine (unit B). Parallel-list map,
-    // matching MetaEngine's option_keys/option_values shape.
+    // Unified FILE-SCOPED compile-time define store (batch 2.1+2.3) — the ONE
+    // store for #define/#defined/#if folding in the prepass, --define CLI seeds
+    // and #fun-internal queries (MetaEngine has NO store of its own anymore; it
+    // bridges through owner_model + option_view_file). Parallel quadruple lists
+    // keyed (file, key): `meta_option_files` is the owner file of the entry —
+    // CLI seeds are materialized per input file at compile_sources time, so a
+    // file's view is exactly its own entries and defines never leak across
+    // files. `meta_option_code` marks entries created by a code-level #define:
+    // redefining a code entry in the same file is E_DUPLICATE_SYMBOL, while
+    // overwriting a CLI seed is allowed (code wins over --define).
+    meta_option_files: mut _utils.List<string> = new _utils.List<string>();
     meta_option_keys: mut _utils.List<string> = new _utils.List<string>();
     meta_option_values: mut _utils.List<string> = new _utils.List<string>();
+    meta_option_code: mut _utils.List<bool> = new _utils.List<bool>();
+    // Batch 5 (MetaHost whole-seed memo): raw text of every #define meta call
+    // in the unit (def level + statement level, nested containers and #if/
+    // #while branches included), collected by the prepass BEFORE
+    // seed_meta_engine runs. Code-level defines are NOT in the store yet at
+    // seed time (the rewrite that records them runs after seeding), but they
+    // DO affect unit-B synthesis later (#defined folds inside #fun bodies read
+    // the defining file's store view at JIT time) — so the seed fingerprint
+    // must fold them. Each entry: "<source_file>|<raw build_text>".
+    meta_define_texts: mut _utils.List<string> = new _utils.List<string>();
     // Phase 5b: registry of #fun meta functions (collected in pass_build_scopes)
     // and a lazily-used JIT engine for executing #fun calls at compile time and
     // splicing the result. The JIT path only runs in a native pass2+ binary
@@ -93,13 +144,47 @@ class SemanticModel {
     // unit B).
     is_unit_b: bool = false;
     verbose: mut i64 = 0;
-    // Error-report suppression for speculative resolution: the pass-3 AST
-    // collector resolves method-body type args in the CLASS scope, where the
-    // method's own template params are invisible — those resolve failures are
-    // EXPECTED (the instantiation is skipped, and pass 8 re-binds the body
-    // with proper scopes, reporting any REAL errors there). Save/restore
-    // around the speculative window only.
+    // Error-report suppression for speculative resolution — the SPECULATIVE
+    // WINDOW flag (batch 3.4 semantics fixed; see the window table below).
+    // A single global bool, NOT a window stack: the five windows never nest
+    // inside each other (each opens, resolves, closes on one thread of the
+    // pipeline). Windows and the disposition of the errors they swallow:
+    //   W1 pass-3 TYPE collection   (MonomorphizePass.run): resolves method-
+    //      body type args in the def's CLASS/file scope, where the method's
+    //      own template params are invisible — failures are EXPECTED (the
+    //      instantiation is skipped); pass 8 re-binds the body with the
+    //      proper function scope and reports the REAL errors there.
+    //   W2 pass-3 FUNCTION collection (MonomorphizePass.run): same rationale.
+    //   W3 cast-target interface probe (BindExprCastNew.probe_cast_target_
+    //      iface): a failed resolve simply means "not an interface" — the
+    //      caller falls through to the ordinary bind_cast, which reports any
+    //      genuine type error.
+    //   W4 primitive-iface cast rebind probe (BindExprMember, around
+    //      bind_expr_no_port_sugar): a failed inner bind means the rewrite
+    //      condition does not hold — falls through to the ordinary member
+    //      path, which reports the real error.
+    //   W5 users-index drops (index_note_user): not an error window — the
+    //      users table only records resolutions made under a body-bind file
+    //      attribution, so W1/W2-window and signature-level resolutions are
+    //      dropped (they have no owning file; batch-4 A3 moves them into the
+    //      snapshot's speculative-error set instead).
+    // Open/close via speculative_window_begin/end ONLY (never assign directly).
     suppress_report_errors: mut bool = false;
+
+    // Batch 3.4: the speculative-window primitives. Every window swallows
+    // report_error output while resolving names it does not TRUST; the error
+    // disposition for each window is documented on the field above. Zero
+    // behavior vs the historical save/restore idiom — this pair exists so the
+    // windows are grep-able and cannot silently grow new assigns.
+    fun speculative_window_begin(mut this) -> bool {
+        let saved: bool = this.suppress_report_errors;
+        this.suppress_report_errors = true;
+        return saved;
+    }
+
+    fun speculative_window_end(mut this, saved: bool) {
+        this.suppress_report_errors = saved;
+    }
     // --enable-coroutine gate (default off): when false, the RTL-port /
     // concurrency syntax set (ports, construct, connect, wait forms,
     // try/catch, async expressions) reports a clear compile error instead of
@@ -148,6 +233,43 @@ class SemanticModel {
     // counts from their ast index so the prefix alignment is preserved.
     injected_starts: mut _utils.List<i64> = new _utils.List<i64>();
     injected_counts: mut _utils.List<i64> = new _utils.List<i64>();
+    // ===== Batch 3.1: GlobalIndex (add-only reconciliation base) =====
+    // Rebuilt once at the end of bind() — nothing in the existing pipeline
+    // consumes it. users_pending_* is the append-only collection side
+    // (index_note_user); index_current_file is the file of the def whose
+    // body is being bound (set by BindBodiesPass.bind_body_for_def);
+    // index_input_files is the input file order (compile_sources).
+    global_index: mut GlobalIndex = new GlobalIndex();
+    users_pending_target: mut _utils.List<string> = new _utils.List<string>();
+    users_pending_file: mut _utils.List<string> = new _utils.List<string>();
+    index_current_file: mut string = "";
+    index_input_files: mut _utils.List<string> = new _utils.List<string>();
+
+    // Batch 3.3a: build the per-file def segments (see def_seg_files). Called
+    // once per bind() right before pass 4 — after passes 1-3 have produced the
+    // final definitions arrangement (AST defs in file order, libmeta-injected
+    // defs spliced in place, fixpoint specializations appended at the tail).
+    fun build_def_segments(mut this, result: BoundCompilationUnit) {
+        // Fresh lists (List has no clear(); rebind whole objects instead).
+        this.def_seg_files = new _utils.List<string>();
+        this.def_seg_starts = new _utils.List<i64>();
+        this.def_seg_counts = new _utils.List<i64>();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(result.definitions.size())) {
+            let fname: string = bound_def_source_file(result.definitions.at(cast<u64>(i)).some);
+            let seg_count: i64 = cast<i64>(this.def_seg_files.size());
+            let inherit: bool = seg_count > 0
+                && (string_length(fname) == 0 || this.def_seg_files.at(cast<u64>(seg_count - 1)).some == fname);
+            if (inherit) {
+                this.def_seg_counts.set(cast<u64>(seg_count - 1), this.def_seg_counts.at(cast<u64>(seg_count - 1)).some + 1);
+            } else {
+                this.def_seg_files.push(fname);
+                this.def_seg_starts.push(i);
+                this.def_seg_counts.push(1);
+            }
+            i = i + 1;
+        }
+    }
 
     fun libmeta_total_injected(this) -> i64 {
         let out: mut i64 = 0;
@@ -183,6 +305,30 @@ class SemanticModel {
         }
         return out;
     }
+
+    // Batch 3.1: record a reference RESOLUTION HIT for the users table
+    // (target symbol -> set of files that reference it). Called from the
+    // expression/type binding chokepoints (bind_identifier, namespace-
+    // qualified member hits, resolve_type_specifier's named-type hit).
+    // Filters: local/param/temp variables never enter (intra-def noise);
+    // appends with an empty current file are dropped — window W5 (batch 3.4
+    // semantics fixed): signature-level resolutions and resolutions made
+    // inside the W1/W2 collection windows carry no body-bind file
+    // attribution, so they have no owner file to record. When the batch-4
+    // A3 snapshots land, these move into the file snapshot's speculative
+    // resolution set instead of being dropped.
+    fun index_note_user(this, sym: BoundSymbol) {
+        if (sym is BoundSymbol.variable) {
+            if (sym.variable.variable_kind is VariableSymbolKind.Local) { return; }
+            if (sym.variable.variable_kind is VariableSymbolKind.Param) { return; }
+            if (sym.variable.variable_kind is VariableSymbolKind.Temp) { return; }
+        }
+        if (string_length(this.index_current_file) == 0) { return; }
+        let target: string = sym.get_full_name();
+        if (string_length(target) == 0) { return; }
+        this.users_pending_target.push(target);
+        this.users_pending_file.push(this.index_current_file);
+    }
     // ===== E5 port wiring registries (parallel lists — GC-safe) =====
     // PortMeta: a class's declared ports. Key "<class full name>.<port name>"
     // (specialized classes register under their mangled full name when
@@ -195,7 +341,9 @@ class SemanticModel {
     net_var_keys: mut _utils.List<string> = new _utils.List<string>();
     net_hub_names: mut _utils.List<string> = new _utils.List<string>();
     net_hub_created: mut _utils.List<bool> = new _utils.List<bool>();
-    variable_net_counter: mut i64 = 0;
+    // Batch 3.4 (class ⑤): per-file variable-net counter — see the synthetic-
+    // name block comment at the spawn_site_counter field.
+    variable_net_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     // Passthrough wires: input ports whose field was rebound to a _LateSource
     // by connect(this.x, ...) inside the class's own construct.
     passthrough_keys: mut _utils.List<string> = new _utils.List<string>();
@@ -215,18 +363,19 @@ class SemanticModel {
     newed_class_names: mut _utils.List<string> = new _utils.List<string>();
     newed_var_names: mut _utils.List<string> = new _utils.List<string>();
     newed_locs: mut _utils.List<string> = new _utils.List<string>();
-    // Hidden top-level construct counter (__construct_<n> naming).
-    construct_counter: mut i64 = 0;
+    // Hidden top-level construct counter (__construct_<file-tag>_<n> naming;
+    // per-file, batch 3.4 class ⑤).
+    construct_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     // >0 while binding an expression/statement where port sugar (bare port
     // reads, output-assignment writes) must NOT apply — the receiver of a
     // port-channel method call, the inner of a channel-object cast, and the
     // field writes generated by the connect desugaring all need the RAW
     // channel object, not the payload slot.
     port_sugar_suppressed: mut i64 = 0;
-    // Unique-name counters for connect-desugared locals (__conn_wire_<n>,
-    // __conn_relay_<n>).
-    connect_wire_counter: mut i64 = 0;
-    connect_relay_counter: mut i64 = 0;
+    // Unique-name counters for connect-desugared locals (__conn_wire_<tag>_<n>,
+    // __conn_relay_<tag>_<n>; per-file, batch 3.4 class ⑤).
+    connect_wire_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
+    connect_relay_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     // Variable-net registration captured at desugar time (var NAME -> hub
     // NAME; resolution goes through the scope at use time, verifying the
     // var symbol's full name against the hub's so shadowing locals can't
@@ -253,17 +402,29 @@ class SemanticModel {
     // arg_as_bound_type from json.penguin #funs), which file namespaces
     // would hide.
     top_level_in_global: bool = false;
+    // ── Batch 3.4 (invalidation class ⑤): the file-qualified synthetic-name
+    // counters. Each counter numbers synthesized definitions PER FILE (keyed
+    // by the owning file's namespace tag) and the names embed the same tag
+    // (__SpawnCtx__ns_<stem>_<hash>_<n>, __lambda_..., __GenCtx_...), so a
+    // synthesized class is globally unique even when it registers into a
+    // namespace scope shared across files, and editing one file never
+    // renumbers another file's synthetic names (the incremental-invalidation
+    // property roadmap 4.3 needs). See SemanticShared.synth_name_file_tag /
+    // next_synth_counter for the tag/counter protocol and the batch-1.3
+    // history. The remaining synthetic name, __specializing_<tmpl>_<n>, is
+    // deliberately NOT file-qualified: it never reaches the emitted .ll (a
+    // pure JIT-seed name) and its numbering participates in the
+    // specializing_blocks dedup keyed on the model, not on files.
     // Spawn-site counter: every `async f(args)` desugar synthesizes a ctx
-    // class (__SpawnCtx_<n>) + site block; the counter gives each site a
-    // unique class name within the compilation.
-    spawn_site_counter: mut i64 = 0;
+    // class (__SpawnCtx_<tag>_<n>) + future class (__SpawnFut_<tag>_<n>,
+    // same n) + site block; keyed by the body-binding file.
+    spawn_site_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     // Lambda-site counter: every lambda expression desugars to a synthesized
-    // closure class (__lambda_<n>); unique names across the compilation.
-    lambda_site_counter: mut i64 = 0;
+    // closure class (__lambda_<tag>_<n>).
+    lambda_site_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     // Generator-site counter: every `-> IGenerator<T>` function rewrites to a
-    // synthesized coroutine ctx class (__GenCtx_<n>); unique names across the
-    // compilation.
-    generator_site_counter: mut i64 = 0;
+    // synthesized coroutine ctx class (__GenCtx_<tag>_<n>).
+    generator_site_counter: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
 
     fun new(mut this) {
 
@@ -277,7 +438,8 @@ class SemanticModel {
         this.classify_value_types_pass = new ClassifyValueTypesPass(this);
         this.build_scopes_pass = new BuildScopesPass(this);
         this.resolve_types_pass = new ResolveTypesPass(this);
-        this.interfaces_pass = new InterfacesPass(this);
+        this.iface_layout_pass = new IfaceLayoutPass(this);
+        this.a5_pass = new BindA5Pass(this);
         this.concurrency_pass = new ConcurrencyAnalysisPass(this);
         this.meta_rewriter = new MetaRewriter(this);
         this.monomorphize_pass = new MonomorphizePass(this);
@@ -394,17 +556,19 @@ class SemanticModel {
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 3/9: Monomorphizing generics..."); }
         this.monomorphize_pass.run(unit, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 3/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
-        this.current_pass_index = 4;
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 4/9: Binding symbols..."); }
-        this.bind_symbols_pass.run(result);
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 4/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
-        this.current_pass_index = 5;
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 5/9: Generating constructors..."); }
-        this.constructors_pass.run(result);
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 5/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
+        // Batch 3.3 stage structure: passes 1-3 are GLOBAL (scope build, type
+        // resolve, the B1 monomorphize fixpoint). Then the A5 stage driver owns
+        // the per-def passes — its first half (4/5) walks the per-file
+        // segments, the GLOBAL B2 iface layout (vtable merge = cross-file
+        // interface topology) and the cross-file value-type classification
+        // fixpoint sit between the halves (body binding consumes their
+        // output), and its second half (8/9) runs the dynamic body/validate
+        // walk (bind-time synthesis appends defs mid-walk, so a strictly
+        // per-file grouping cannot close).
+        this.a5_pass.run_symbols_and_constructors(result);
         this.current_pass_index = 6;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 6/9: Building interface vtables..."); }
-        this.interfaces_pass.run(unit, result);
+        this.iface_layout_pass.run(unit, result);
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 6/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
         this.current_pass_index = 7;
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 7/9: Classifying value types..."); }
@@ -412,14 +576,7 @@ class SemanticModel {
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 7/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
         this.current_pass_index = 7;
         this.classify_value_types_pass.validate_interface_usage(result);
-        this.current_pass_index = 8;
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9: Binding expressions..."); }
-        this.bind_bodies_pass.run(unit, result);
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 8/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
-        this.current_pass_index = 9;
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9: Validating control flow..."); }
-        this.validate_control_flow_pass.run(result);
-        if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Pass 9/9 done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
+        this.a5_pass.run_bodies_and_validate(unit, result);
         // Pass 10: confinement analysis (mt scheduler only) — the
         // Shareable lattice + per-spawn-site stealability; rewrites
         // stealable sites' spawn extern so the runtime can distribute them.
@@ -433,6 +590,10 @@ class SemanticModel {
         // input double-connect, unconnected module inputs).
         this.validate_port_topology();
         if (this.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Semantic] Done: " + cast<string>(result.definitions.size()) + " definitions, " + cast<string>(this.errors.size()) + " errors"); }
+        // Batch 3.1: rebuild the GlobalIndex once after all passes — the
+        // reconciliation base for batches 3.2-3.4 (add-only, no consumer in
+        // this pipeline; pure data collection over the finished tree).
+        this.global_index.rebuild(this, result);
         result.errors = this.errors;
         result.has_suspension = this.has_suspension;
         return result;
@@ -441,7 +602,10 @@ class SemanticModel {
     fun report_error(this, code: ErrorCode, message: string, location: SourceLocation) {
         _utils.trace_enter("Enter report_error");
         if (this.suppress_report_errors) { return; }
-        this.errors.push(new SemanticError(code, message, location));
+        let e: mut SemanticError = new SemanticError(code, message, location);
+        e.pass_idx = this.current_pass_index;
+        e.owner_def = this.current_binding_def;
+        this.errors.push(e);
     }
 
     // Coroutine-syntax gate: true = allowed to proceed; false = error already
@@ -464,13 +628,80 @@ class SemanticModel {
     fun report_warning(this, code: ErrorCode, message: string, location: SourceLocation) {
         let e: mut SemanticError = new SemanticError(code, message, location);
         e.severity = new ErrorSeverity.Warning();
+        e.pass_idx = this.current_pass_index;
+        e.owner_def = this.current_binding_def;
         this.errors.push(e);
     }
 
     fun report_info(this, code: ErrorCode, message: string, location: SourceLocation) {
         let e: mut SemanticError = new SemanticError(code, message, location);
         e.severity = new ErrorSeverity.Info();
+        e.pass_idx = this.current_pass_index;
+        e.owner_def = this.current_binding_def;
         this.errors.push(e);
+    }
+
+    // ------------------------------------------------------------------
+    // Unified file-scoped define store accessors (batch 2.1+2.3). The store
+    // quadruple (meta_option_files/keys/values/code) is private shape —
+    // everything goes through these five helpers:
+    //   meta_define_seed        CLI --define pre-seed (per input file)
+    //   meta_define_lookup      value read (meta_get_option / #fun bridge)
+    //   meta_define_has         existence read (#defined / #fun bridge)
+    //   meta_define_code_exists is the key a CODE define in this file yet?
+    //                           (CLI seeds don't count — code may overwrite)
+    //   meta_define_code_write  code-level #define (update-or-insert; the
+    //                           caller reports E_DUPLICATE_SYMBOL beforehand)
+    // MetaEngine's option methods bridge here through owner_model with its
+    // option_view_file (the defining file of the #fun being compiled/run).
+    // ------------------------------------------------------------------
+    fun meta_define_seed(mut this, file: string, key: string, value: string) {
+        this.meta_option_files.push(file);
+        this.meta_option_keys.push(key);
+        this.meta_option_values.push(value);
+        this.meta_option_code.push(false);
+    }
+
+    fun meta_define_lookup(this, file: string, key: string) -> Option<string> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_option_keys.size())) {
+            if (this.meta_option_files.at(cast<u64>(i)).some == file && this.meta_option_keys.at(cast<u64>(i)).some == key) {
+                return new Option<string>.some(this.meta_option_values.at(cast<u64>(i)).some);
+            }
+            i = i + 1;
+        }
+        return new Option<string>.none();
+    }
+
+    fun meta_define_has(this, file: string, key: string) -> bool {
+        return this.meta_define_lookup(file, key).is_some();
+    }
+
+    fun meta_define_code_exists(this, file: string, key: string) -> bool {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_option_keys.size())) {
+            if (this.meta_option_files.at(cast<u64>(i)).some == file && this.meta_option_keys.at(cast<u64>(i)).some == key) {
+                return this.meta_option_code.at(cast<u64>(i)).some;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    fun meta_define_code_write(mut this, file: string, key: string, value: string) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.meta_option_keys.size())) {
+            if (this.meta_option_files.at(cast<u64>(i)).some == file && this.meta_option_keys.at(cast<u64>(i)).some == key) {
+                this.meta_option_values.set(cast<u64>(i), value);
+                this.meta_option_code.set(cast<u64>(i), true);
+                return;
+            }
+            i = i + 1;
+        }
+        this.meta_option_files.push(file);
+        this.meta_option_keys.push(key);
+        this.meta_option_values.push(value);
+        this.meta_option_code.push(true);
     }
 
     // ===== E5 port wiring helpers =====
@@ -974,6 +1205,9 @@ class SemanticModel {
         }
         let type_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(type_spec.name);
         if (type_sym.is_some()) {
+            // Batch 3.1: users index (type-position named-type hit; dropped
+            // when no body-bind file is active — signature-level resolutions).
+            this.index_note_user(type_sym.some);
             let result: mut BoundType = type_sym.some.type_sym.bound_type;
             if (cast<i64>(type_spec.generic_args.size()) > 0) {
                 // M4: route VALUE-arg template instantiations through the `_template_X`
@@ -1015,6 +1249,8 @@ class SemanticModel {
         } else {
             return new Option<BoundType>.none();
         }
+        // Batch 3.1: users index (qualified type-position hit).
+        this.index_note_user(found.some);
         let resolved: mut BoundType = found.some.type_sym.bound_type;
         if (cast<i64>(type_spec.generic_args.size()) > 0) {
             resolved = resolved.with_generic_args(this.resolve_types_pass.resolve_generic_args(type_spec, scope));
@@ -1022,107 +1258,14 @@ class SemanticModel {
         return new Option<BoundType>.some(resolved);
     }
 
-    // M3: run a specialized def through the per-def processors for passes
-    // 4..current_pass_index (the passes that normally iterate result.definitions).
-    // This lets a specialization created LATE — e.g. by the M4 meta path during
-    // expression binding (pass 8) — still get symbols/constructors/vtables/
-    // value-type classification/body binding it would otherwise miss (the B1 bug).
-    //
-    // pass_monomorphize (pass 3) calls this right after creating a def; there the
-    // 4..3 range is empty so it is a no-op and the normal pass loop handles passes
-    // 4-8 — keeping the fixpoint's behavior identical. Each processor's
-    // `pass_index >= current_pass_index` guard makes this idempotent; we temporarily
-    // lower current_pass_index to each processor's pass number so a def first seen
-    // in a later pass is still run through the earlier processors (a single global
-    // current_pass_index would otherwise skip them). Passes 2-3 are NOT replayed
-    // here: pass_monomorphize's own resolve_pair + the specialize_* creation handle
-    // those, and replaying resolve_pair would double-resolve.
-    fun already_processed(this, def: BoundDefinition) -> bool {
-        return BoundDefinition.get_pass_index(def) >= this.current_pass_index;
-    }
-
-    fun processed_beyond(this, def: BoundDefinition) -> bool {
-        return BoundDefinition.get_pass_index(def) > this.current_pass_index;
-    }
-
-    fun catch_up_def(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
-        _utils.trace_enter("Enter catch_up_def");
-        let saved: i64 = this.current_pass_index;
-        this.trace("catch_up_def " + this.def_display_name(def) + " (saved pass index " + cast<string>(saved) + ")");
-        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
-        // The returning processors (init_constructors_for_def, build_vtables_*,
-        // classify_def, bind_body_*) mutate the def's inner object IN PLACE and only
-        // re-wrap the same object, so ignoring their return is correct — the def
-        // (the same object held in result.definitions) is updated.
-        if (saved >= 4) { this.current_pass_index = 4; this.bind_symbols_pass.bind_symbols_for_def(def); }
-        if (saved >= 5) { this.current_pass_index = 5; this.constructors_pass.init_constructors_for_def(def, def_scope); }
-        if (saved >= 6) {
-            this.current_pass_index = 6;
-            this.interfaces_pass.build_vtables_for_specialized_def(def, def_scope);
-            this.interfaces_pass.merge_inherited_vtables_for_def(def, def_scope);
-        }
-        if (saved >= 7) {
-            this.current_pass_index = 7;
-            this.classify_value_types_pass.classify_def(def, new _utils.List<string>());
-            this.classify_value_types_pass.validate_interface_usage_def(def);
-        }
-        if (saved >= 8) { this.current_pass_index = 8; this.bind_bodies_pass.bind_body_for_specialized_def(def, result); }
-        this.current_pass_index = saved;
-    }
-
-    // Same replay but WITHOUT the pass-8 body binding: used by bind-time def
-    // synthesis (bind_spawn_async). Signature-level passes (symbols, ctors,
-    // vtables, classification) are safe to run nested inside an expression
-    // bind; body binding is not — the appended def's bodies are bound later
-    // by the (dynamic) pass-8 run loop.
-    fun catch_up_def_before_bodies(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
-        _utils.trace_enter("Enter catch_up_def_before_bodies");
-        let saved: i64 = this.current_pass_index;
-        let def_scope: mut BoundScope = def_lookup_scope(def, result.global_scope);
-        if (saved >= 4) { this.current_pass_index = 4; this.bind_symbols_pass.bind_symbols_for_def(def); }
-        if (saved >= 5) { this.current_pass_index = 5; this.constructors_pass.init_constructors_for_def(def, def_scope); }
-        if (saved >= 6) {
-            this.current_pass_index = 6;
-            this.interfaces_pass.build_vtables_for_specialized_def(def, def_scope);
-            this.interfaces_pass.merge_inherited_vtables_for_def(def, def_scope);
-        }
-        if (saved >= 7) {
-            this.current_pass_index = 7;
-            this.classify_value_types_pass.classify_def(def, new _utils.List<string>());
-            this.classify_value_types_pass.validate_interface_usage_def(def);
-        }
-        this.current_pass_index = saved;
-        // The def's body is still UNBOUND — that is the whole point of this
-        // replay. But the sub-passes above stamp each processor's pass index
-        // onto the def (classify reaches `saved` == 8 when called from pass
-        // 8), which would make the dynamic pass-8 loop's already_processed
-        // guard skip binding the body entirely (async-site spawn ctx classes
-        // failed exactly this way: `this` never entered the method scope,
-        // E_RESOLVE_SYMBOL six times per `async this.m()` site). Reset to 7:
-        // "everything through classification is done, body pending".
-        if (saved >= 8 && BoundDefinition.get_pass_index(def) >= 8) {
-            BoundDefinition.set_pass_index(def, 7);
-        }
-    }
-
-    // Pass-8-forced variant of catch_up_def_before_bodies for defs created
-    // NESTED inside another def's late catch-up chain (e.g. resolve_field_
-    // specialization creating a sibling field-type specialization while the
-    // caller has temporarily lowered current_pass_index to 3 for resolve_pair).
-    // current_pass_index=8 here means "the compilation's real position is the
-    // pass-8 window (current_unit is set), no matter what index the enclosing
-    // bind nested at" — so the fresh def gets symbols, constructors, vtables
-    // AND classification; without this, a pass-8-window specialization that
-    // only rides resolve_pair + push is never classified (pass 7's global run
-    // is already over) and the emitter defaults it to a VALUE class
-    // (E_SIZE_CYCLE on recursive shapes like _ChanNode.next: Option<_ChanNode>).
-    fun catch_up_def_before_bodies_as_pass8(mut this, def: BoundDefinition, result: BoundCompilationUnit) {
-        _utils.trace_enter("Enter catch_up_def_before_bodies_as_pass8");
-        let saved: i64 = this.current_pass_index;
-        this.current_pass_index = 8;
-        this.catch_up_def_before_bodies(def, result);
-        this.current_pass_index = saved;
-    }
+    // (Batch 3.3b) The catch_up family — catch_up_def / catch_up_def_before_
+    // bodies / catch_up_signature_passes — is PHYSICALLY REMOVED. Its three
+    // semantics live on the A5 stage driver as bind_def_complete /
+    // bind_def_signature_before_bodies / bind_def_signature (this.a5_pass):
+    // a late def enters the stage explicitly instead of being replayed
+    // through a multi-pass catch-up that manipulated a global pass pointer.
+    // The per-def processors' per-constant guards (batch 3.3a) are what make
+    // those plain ordered calls sufficient.
 
     // Resolve an impl block's interface/target type by its QUALIFIED NAME ONLY
     // (no generic args). Vtables key on the interface TEMPLATE (matching the

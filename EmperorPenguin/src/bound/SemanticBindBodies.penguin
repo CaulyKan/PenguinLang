@@ -30,7 +30,7 @@ class BindBodiesPass {
             if (this.model.some.libmeta_is_injected(i)) {
                 // Libmeta-injected defs: pass 8 already done (bodies live in
                 // the .so; is_lib_export preset).
-                BoundDefinition.set_pass_index(result.definitions.at(cast<u64>(i)).some, this.model.some.current_pass_index);
+                BoundDefinition.set_pass_index(result.definitions.at(cast<u64>(i)).some, 8);
                 i = i + 1;
                 continue;
             }
@@ -39,11 +39,16 @@ class BindBodiesPass {
                 let ast_def: Definition = unit.definitions.at(cast<u64>(ai)).some;
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
                 if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding " + this.model.some.def_display_name(bound_def)); }
+                // O2: attribute this def's reports to it (error owner capture)
+                this.model.some.current_binding_def = bound_def_full_name(bound_def);
                 result.definitions.set(cast<u64>(i), this.bind_body_for_def(ast_def, bound_def, result));
+                this.model.some.current_binding_def = "";
             } else {
                 let bound_def: BoundDefinition = result.definitions.at(cast<u64>(i)).some;
                 if (this.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   Binding (specialized) " + this.model.some.def_display_name(bound_def)); }
+                this.model.some.current_binding_def = bound_def_full_name(bound_def);
                 result.definitions.set(cast<u64>(i), this.bind_body_for_specialized_def(bound_def, result));
+                this.model.some.current_binding_def = "";
             }
             i = i + 1;
         }
@@ -56,30 +61,31 @@ class BindBodiesPass {
         // here — skip binding (its meta calls would otherwise be JIT'd in the
         // consumer); the IR layer emits a declaration + links the lib instead.
         if (this.model.some.build_scopes_pass.is_lib_export_def(bound_def)) { return bound_def; }
-        if (this.model.some.already_processed(bound_def)) { return bound_def; }
+        // Batch 3.3a: per-processor guard (pass 8).
+        if (BoundDefinition.get_pass_index(bound_def) >= 8) { return bound_def; }
         if (bound_def is BoundDefinition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
-            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_cls.name);
+            let template_name: string = this.model.some.iface_layout_pass.extract_template_name(bound_cls.name);
             let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_cls.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.class_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return bound_def;
         }
         if (bound_def is BoundDefinition.enum_def) {
             let bound_enum: BoundEnumDefinition = bound_def.enum_def;
-            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_enum.name);
+            let template_name: string = this.model.some.iface_layout_pass.extract_template_name(bound_enum.name);
             let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_enum.ast_source);
             if (ast_def.is_some() && ast_def.some is Definition.enum_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return bound_def;
         }
         if (bound_def is BoundDefinition.function_def) {
             let bound_func: mut BoundFunctionDefinition = bound_def.function_def;
-            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_func.name);
+            let template_name: string = this.model.some.iface_layout_pass.extract_template_name(bound_func.name);
             // Prefer the carried AST source: template_name is a bare name, and
             // same-named methods of different classes (map/filter on the
             // iterator classes) would replay the WRONG body.
@@ -87,22 +93,22 @@ class BindBodiesPass {
             if (ast_def.is_some() && ast_def.some is Definition.function_def) {
                 return this.bind_body_for_def(ast_def.some, bound_def, result);
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return bound_def;
         }
         if (bound_def is BoundDefinition.interface_def) {
             let bound_iface: BoundInterfaceDefinition = bound_def.interface_def;
-            let template_name: string = this.model.some.interfaces_pass.extract_template_name(bound_iface.name);
+            let template_name: string = this.model.some.iface_layout_pass.extract_template_name(bound_iface.name);
             let ast_def: Option<Definition> = replay_find_ast_def(this.model.some, template_name, bound_iface.ast_source);
             if (ast_def.is_some()) {
                 if (ast_def.some is Definition.interface_def) {
                     return this.bind_body_for_def(ast_def.some, bound_def, result);
                 }
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return bound_def;
         }
-        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(bound_def, 8);
         return bound_def;
     }
 
@@ -135,6 +141,12 @@ class BindBodiesPass {
         // analyze_try_bind) need a mutable SemanticModel: rebind the Option
         // payload once here.
         let m: mut SemanticModel = this.model.some;
+        // Batch 3.1: file attribution for the users index (references bound
+        // while this def's body is being processed belong to its file; the
+        // specialized-def replay path delegates here with the TEMPLATE's
+        // ast, so on-demand specializations attribute to the template file
+        // — the B1 semantics).
+        m.index_current_file = ast_def_filename(ast_def);
         // Dyn-lib: a def whose symbol lives in a loaded .penguin-lib has no body
         // here — skip binding (its meta calls would otherwise be JIT'd in the
         // consumer); the IR layer emits a declaration + links the lib instead.
@@ -142,7 +154,8 @@ class BindBodiesPass {
             this.model.some.trace("bind_body_for_def skip (lib export): " + this.model.some.def_display_name(bound_def));
             return bound_def;
         }
-        if (this.model.some.already_processed(bound_def)) {
+        // Batch 3.3a: per-processor guard (pass 8).
+        if (BoundDefinition.get_pass_index(bound_def) >= 8) {
             this.model.some.trace("bind_body_for_def skip (already processed): " + this.model.some.def_display_name(bound_def));
             return bound_def;
         }
@@ -156,7 +169,7 @@ class BindBodiesPass {
             // specialized filled__3 body (value_param_values populated) is bound.
             if (cast<i64>(bound_func.value_param_names.size()) > 0 && cast<i64>(bound_func.value_param_values.size()) == 0) {
                 this.model.some.trace("bind_body_for_def skip (value-template, no concrete values): " + bound_func.full_name);
-                BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+                BoundDefinition.set_pass_index(bound_def, 8);
                 return new BoundDefinition.function_def(bound_func);
             }
             if (bound_func.scope.is_some() && ast_func.body.is_some()) {
@@ -197,7 +210,7 @@ class BindBodiesPass {
             }
             this.model.some.current_fn_ast_body = new Option<Expression>.none();
             this.model.some.current_fn_name = "";
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.function_def(bound_func);
         }
         // Primitive interface impls: bind each mangled method's body. AST and
@@ -249,12 +262,12 @@ class BindBodiesPass {
                 this.model.some.current_fn_ast_body = new Option<Expression>.none();
                 this.model.some.current_fn_name = "";
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.initial_routine(bound_init);
         }
         if (bound_def is BoundDefinition.class_def && ast_def is Definition.class_def) {
             let bound_cls: BoundClassDefinition = bound_def.class_def;
-            if (bound_cls.is_generic_template) { BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index); return bound_def; }
+            if (bound_cls.is_generic_template) { BoundDefinition.set_pass_index(bound_def, 8); return bound_def; }
             let ast_cls: ClassDefinition = ast_def.class_def;
             let bound_cls: mut BoundClassDefinition = bound_def.class_def;
             let i: mut i64 = 0;
@@ -279,7 +292,7 @@ class BindBodiesPass {
                             // Value-template methods (N: i32, no bare type params) still
                             // bind — their bodies substitute params to constants below.
                             if (cast<i64>(bound_md.function_def.generic_params.size()) > 0 && cast<i64>(bound_md.function_def.value_param_names.size()) == 0) {
-                                BoundDefinition.set_pass_index(bound_md, this.model.some.current_pass_index);
+                                BoundDefinition.set_pass_index(bound_md, 8);
                             } else {
                                 // req5/M3: substitute value-template params (N) -> their concrete
                                 // constants in the method body before binding, so `fun get() { return N; }`
@@ -398,7 +411,7 @@ class BindBodiesPass {
                     }
                 }
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.class_def(bound_cls);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
@@ -407,7 +420,7 @@ class BindBodiesPass {
             // named but no concrete values yet) — N has nothing to substitute, so a
             // method body using N can't resolve. Only the specialized E__5 body binds.
             if (cast<i64>(bound_enum.value_param_names.size()) > 0 && cast<i64>(bound_enum.value_param_values.size()) == 0) {
-                BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+                BoundDefinition.set_pass_index(bound_def, 8);
                 return new BoundDefinition.enum_def(bound_enum);
             }
             let ast_enum: EnumDefinition = ast_def.enum_def;
@@ -488,7 +501,7 @@ class BindBodiesPass {
                 }
                 inj = inj + 1;
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.enum_def(bound_enum);
         }
         if (bound_def is BoundDefinition.namespace_def && ast_def is Definition.namespace_def) {
@@ -544,7 +557,7 @@ class BindBodiesPass {
                 }
                 k = k + 1;
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.namespace_def(bound_ns);
         }
         if (bound_def is BoundDefinition.interface_def && ast_def is Definition.interface_def) {
@@ -554,7 +567,7 @@ class BindBodiesPass {
             // (value params named but no concrete values yet) — N has nothing to
             // substitute, so a default body using N can't resolve.
             if (cast<i64>(bound_iface.value_param_names.size()) > 0 && cast<i64>(bound_iface.value_param_values.size()) == 0) {
-                BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+                BoundDefinition.set_pass_index(bound_def, 8);
                 return new BoundDefinition.interface_def(bound_iface);
             }
             let i: mut i64 = 0;
@@ -613,7 +626,7 @@ class BindBodiesPass {
                 }
                 i = i + 1;
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.interface_def(bound_iface);
         }
         if (bound_def is BoundDefinition.enum_def && ast_def is Definition.enum_def) {
@@ -651,7 +664,7 @@ class BindBodiesPass {
                 }
                 i = i + 1;
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.enum_def(bound_enum);
         }
         if (bound_def is BoundDefinition.global_var_def && ast_def is Definition.global_var) {
@@ -696,10 +709,10 @@ class BindBodiesPass {
                     }
                 }
             }
-            BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+            BoundDefinition.set_pass_index(bound_def, 8);
             return new BoundDefinition.global_var_def(gv);
         }
-        BoundDefinition.set_pass_index(bound_def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(bound_def, 8);
         return bound_def;
     }
     // Collect a bound block's statements from either shape the parser
@@ -1848,9 +1861,10 @@ class BindBodiesPass {
                 return new Option<Expression>.none();
             }
             this.model.some.passthrough_keys.push(pt_key);
-            let relay_n: i64 = this.model.some.connect_relay_counter;
-            this.model.some.connect_relay_counter = relay_n + 1;
-            let relay_name: string = "__conn_relay_" + cast<string>(relay_n);
+            // Batch 3.4 (class ⑤): per-file connect-desugar locals (tag
+            // embedded, keyed by the body-binding file).
+            let relay_n: i64 = next_synth_counter(this.model.some.connect_relay_counter, this.model.some.index_current_file);
+            let relay_name: string = "__conn_relay_" + synth_name_file_tag(this.model.some.index_current_file) + "_" + cast<string>(relay_n);
             let payload: BoundType = spai.some.payload;
             // let __conn_relay_n : mut _LateSource<T> = new _LateSource<T>();
             let new_e: mut NewExpression = new NewExpression();
@@ -1876,9 +1890,8 @@ class BindBodiesPass {
             // An output port carries a fan-out hub: subscribe() grants THIS
             // input its own wire (independent delivery cursor — repeated
             // connects fan out).
-            let wire_n: i64 = this.model.some.connect_wire_counter;
-            this.model.some.connect_wire_counter = wire_n + 1;
-            let wire_name: string = "__conn_wire_" + cast<string>(wire_n);
+            let wire_n: i64 = next_synth_counter(this.model.some.connect_wire_counter, this.model.some.index_current_file);
+            let wire_name: string = "__conn_wire_" + synth_name_file_tag(this.model.some.index_current_file) + "_" + cast<string>(wire_n);
             let payload2: BoundType = spai.some.payload;
             m.bind_expressions_pass.ensure_generic_iface_spec("ISource", payload2, scope);
             let sub_call: Expression = this.mk_member_call_expr(this.mk_builtin_cast_expr("_Fanout", payload2, source), "subscribe", new _utils.List<Expression>());
@@ -1889,9 +1902,8 @@ class BindBodiesPass {
         // fed by every emit (broadcast hub, independent cursor).
         let ev_t: Option<BoundType> = this.probe_event_type(source, scope);
         if (ev_t.is_some()) {
-            let wire_n2: i64 = this.model.some.connect_wire_counter;
-            this.model.some.connect_wire_counter = wire_n2 + 1;
-            let wire_name2: string = "__conn_wire_" + cast<string>(wire_n2);
+            let wire_n2: i64 = next_synth_counter(this.model.some.connect_wire_counter, this.model.some.index_current_file);
+            let wire_name2: string = "__conn_wire_" + synth_name_file_tag(this.model.some.index_current_file) + "_" + cast<string>(wire_n2);
             let cw_call: Expression = this.mk_member_call_expr(source, "connect_wire", new _utils.List<Expression>());
             stmts.push(this.mk_typed_let_stmt(wire_name2, "LatestChannel", ev_t.some, cw_call, loc));
             return new Option<Expression>.some(this.mk_ident_expr(wire_name2));
@@ -1947,9 +1959,8 @@ class BindBodiesPass {
                 seed_args.push(new Expression.bool_literal(seed_true));
                 stmts.push(this.mk_expr_stmt(this.mk_member_call_expr(hub_ast, "set_seed", seed_args), loc));
             }
-            let wire_n3: i64 = this.model.some.connect_wire_counter;
-            this.model.some.connect_wire_counter = wire_n3 + 1;
-            let wire_name3: string = "__conn_wire_" + cast<string>(wire_n3);
+            let wire_n3: i64 = next_synth_counter(this.model.some.connect_wire_counter, this.model.some.index_current_file);
+            let wire_name3: string = "__conn_wire_" + synth_name_file_tag(this.model.some.index_current_file) + "_" + cast<string>(wire_n3);
             let sub_call3: Expression = this.mk_member_call_expr(hub_ast, "subscribe", new _utils.List<Expression>());
             stmts.push(this.mk_typed_let_stmt(wire_name3, "LatestChannel", payload3, sub_call3, loc));
             return new Option<Expression>.some(this.mk_ident_expr(wire_name3));

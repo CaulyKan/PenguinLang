@@ -1,0 +1,715 @@
+// LspCompileActor: the SINGLE compile actor (batch 4.4, redesign §9).
+//
+// Every incremental transaction — read epoch, incremental compile, write
+// epoch+1, publish — plus every navigation query is serialized inside this
+// one actor's loop. The LspMain docs router forwards document traffic here
+// as LspCompileMsg values through the reqs Fifo:
+//
+//   * OPEN / EDIT messages are COALESCED: the actor drains the Fifo backlog
+//     non-blockingly and folds a consecutive non-query segment into one
+//     transaction per affected session (same-uri writes keep only the
+//     latest — the editor's current text always wins, stale intermediates
+//     are never compiled).
+//   * QUERY messages are never dropped nor merged: a query is answered only
+//     after every edit that arrived BEFORE it has been compiled (strict
+//     interleave order — the guarantee the per-document actors used to give
+//     by handling didChange and queries in one loop).
+//   * CLOSE retires a document: single-file sessions are dropped entirely;
+//     project-mode sessions stay (the file set is stable) and the file's
+//     input falls back to its on-disk text.
+//
+// Compilation state (the emperor.IncrementalSession objects, batch 4.1-4.3)
+// lives ONLY here, one session per routing key (project plan identity, or
+// the document path in single-file mode) — the LSP-side answer to the
+// redesign's "one compile actor" topology and the concurrent-LIB_STATE_CACHE
+// concern (lib metadata reads now happen inside one serialized loop).
+//
+// Publication protocol (workspace diagnostics):
+//   * every OPEN document of a touched session receives the per-file
+//     filtered diagnostics of the fresh compile (a document outside the
+//     project sources still gets its — empty — frame: byte parity with the
+//     per-unit actor, which always published on didOpen/didChange);
+//   * a project session file that is NOT open but previously received
+//     non-empty diagnostics receives an EMPTY set (the clear notification)
+//     once its errors are gone, so stale client-side squiggles on unopened
+//     files disappear.
+//
+// Panic guard: the whole transaction is sjlj-guarded. On a compiler
+// RuntimeError the crashing session is marked POISONED — its next
+// transaction discards the object and rebuilds from a full compile_first —
+// diagnostics are published for the triggering document and the server
+// survives (last_ok keeps serving queries, the LastSuccessModel pattern).
+namespace lsp {
+
+let STDLIB_CORE: string = load_stdlib_text("core_builtin.penguin");
+let STDLIB_IO: string = load_stdlib_text("io.penguin");
+// The concurrency stdlib: documents compile with enable_coroutine on (they
+// may use ports/wait/channels), so the scheduler surface must be injected
+// too — the compiler auto-loads it ONLY under --enable-coroutine (main.penguin).
+let STDLIB_SCHED: string = load_stdlib_text("scheduler.penguin");
+
+// Stdlib sources for document compiles, located once at startup: cwd first
+// (dev/test run from the repo root), then exe-relative candidates — a direct
+// sibling layout AND an upward walk from the exe dir (up to 12 parents), so
+// the server still finds the repo when launched from a nested workdir (the
+// test runner copies the exe into build/testruns/<ts>/prebuilt/... ) or from
+// vscode/server/<platform>/ inside a deployed extension.
+fun load_stdlib_text(name: string) -> string {
+    let candidates: mut std.Vector<string> = new std.Vector<string>();
+    candidates.push("EmperorPenguin/std/penguin/" + name);
+    let exe_dir: string = emperor.compiler_exe_dir();
+    candidates.push(exe_dir + "/EmperorPenguin/std/penguin/" + name);
+    // Walk parents of the exe dir: <parent>/EmperorPenguin/std/penguin/<name>.
+    let dir: mut string = exe_dir;
+    let hops: mut i64 = 0;
+    while (hops < 12) {
+        let last_slash: mut i64 = -1;
+        let pos: mut i64 = string_find(dir, "/");
+        while (pos >= 0) {
+            last_slash = pos;
+            pos = string_find_from(dir, "/", pos + 1);
+        }
+        if (last_slash <= 0) { break; }
+        dir = string_substring(dir, 0, last_slash);
+        candidates.push(dir + "/EmperorPenguin/std/penguin/" + name);
+        hops = hops + 1;
+    }
+    let i: mut i64 = 0;
+    while (i < cast<i64>(candidates.size())) {
+        let path: string = candidates.at(cast<u64>(i)).some;
+        if (std.io.exists(path)) {
+            let text: __builtin.Option<string> = std.io.read_text(path);
+            if (text.is_some()) {
+                return text.some;
+            }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// O2 (reconciliation split): the LSP is a DIAGNOSTICS-only consumer of the
+// incremental session — it never lowers the result to .ll, so the
+// dead-specialization reconciliation (an O(full tree) walk the emit path
+// needs every round) is deferred to every Nth fast-lane round instead.
+// N=20 bounds the memory a run of skips can accumulate (dead defs linger
+// on the retained tree until the Nth round evicts them in one walk).
+let LSP_RECONCILE_INTERVAL: i64 = 20;
+
+// O4 (staggered full-scan rounds): the O1 request-cache safety net
+// (verify_interval — one FULL-collection fixpoint per N fast rounds) used
+// to share the reconcile cadence, making round 20 pay BOTH full walks
+// (~10s spike on EP scale). The stagger below must use CO-PRIME periods
+// (12 vs 20 — first coincidence at round 60): equal-or-multiple periods
+// (e.g. 10/20) still collide every lcm, which the first measurement round
+// exposed (round 20 = verify + reconcile). Worst single round now ≈ the
+// reconcile walk alone; the two safety mechanisms cover each other ~twice
+// as often.
+let LSP_VERIFY_INTERVAL: i64 = 12;
+
+// Message kinds on the reqs Fifo.
+let LSPMSG_DOC: i64 = 0;       // OPEN or EDIT (same handling: text lands)
+let LSPMSG_CLOSE: i64 = 1;     // document closed
+let LSPMSG_QUERY: i64 = 2;     // navigation query (LspMessage attached)
+let LSPMSG_LIFECYCLE: i64 = 3; // initialize/shutdown/exit — answered from
+                               // HERE, behind every pending transaction, so
+                               // the whole outbound stream is totally ordered
+
+// One inbound request to the compile actor.
+class LspCompileMsg {
+    kind: i64 = 0;
+    uri: string = "";
+    path: string = "";
+    // The document's CURRENT text at forwarding time (the editor snapshot
+    // the request operates on — queries lex this, edits compile this).
+    text: string = "";
+    // The original protocol message (queries/lifecycle; responded to verbatim).
+    msg: LspMessage = new LspMessage();
+    // Exit code for the LIFECYCLE exit control (0 after shutdown, 1 not).
+    exit_code: i64 = 0;
+    // The workspace routing config, captured per message from LspMain (the
+    // initialize-loaded config — stable for the session's lifetime).
+    config: LspWorkspaceConfig = new LspWorkspaceConfig();
+
+    fun new(mut this) {}
+}
+
+// One fold of a drained non-query segment: the FINAL state for one uri
+// (same-uri OPEN/EDIT collapses to the last text; a trailing CLOSE wins).
+class LspDocFold {
+    closed: bool = false;
+    path: string = "";
+    text: string = "";
+
+    fun new(mut this) {}
+}
+
+// Mutable-list-through-HashMap wrapper: HashMap values surface as
+// immutable bindings on get(), so the list rides a mut FIELD (the same
+// pattern LspMain used for unit.cmds — field mutability propagates through
+// member access on an immutable binding).
+class LspUriList {
+    uris: mut _utils.List<string> = new _utils.List<string>();
+
+    fun new(mut this) {}
+}
+
+// Per-session compile state (a "session" = one routing key: a project plan
+// identity, or the path itself in single-file mode).
+class LspSessionEntry {
+    // The incremental session.
+    session: mut emperor.IncrementalSession = new emperor.IncrementalSession();
+    // Single-file session flag (plan stays empty then).
+    is_single: bool = true;
+    // The last error-free result + its symbol index (queries read these;
+    // rebuilt together after every clean compile).
+    last_ok: mut Option<emperor.BoundCompilationUnit> = new Option<emperor.BoundCompilationUnit>.none();
+    index_roots: mut std.Vector<SymEntry> = new std.Vector<SymEntry>();
+    index_flat: mut std.Vector<SymEntry> = new std.Vector<SymEntry>();
+    // Project-mode session files that currently carry PUBLISHED non-empty
+    // diagnostics while NOT being open (workspace-clear bookkeeping).
+    published_nonempty: mut std.HashMap<string, bool> = new std.HashMap<string, bool>();
+    // A transaction crashed inside this session: drop + rebuild on the next
+    // touch (the fast/slow lanes may have left the retained model unusable).
+    poisoned: mut bool = false;
+
+    fun new(mut this) {}
+}
+
+class LspCompileActor {
+    output events : LspOutMsg;
+
+    reqs: mut __builtin.Fifo<LspCompileMsg> = new __builtin.Fifo<LspCompileMsg>(64, new __builtin.FifoPolicy.backpressure());
+    // Routing key → session state.
+    sessions: mut std.HashMap<string, LspSessionEntry> = new std.HashMap<string, LspSessionEntry>();
+    // Path → editor text of every OPEN document (the actor's own snapshot,
+    // driven by the OPEN/EDIT/CLOSE folds — never read across actors).
+    open_texts: mut std.HashMap<string, string> = new std.HashMap<string, string>();
+    // Path → resolved compile plan (the routing result is stable for the
+    // server's lifetime: the project files are not re-read per keystroke).
+    plan_cache: mut std.HashMap<string, LspCompilePlan> = new std.HashMap<string, LspCompilePlan>();
+
+    fun new(mut this) {}
+
+    // ── outbound helpers (identical framing to the old per-unit actor) ───
+
+    // Every outbound write yields one scheduler round afterwards: the
+    // events port is a WIRE (one-write-per-round discipline — see
+    // JsonInputParser's header note); two writes inside the same round
+    // collapse and the earlier frame is LOST. A transaction publishes
+    // several frames back-to-back (per-document diagnostics + clears),
+    // so each write must let the reader drain first.
+    fun respond_result(mut this, msg: LspMessage, result_json: string) {
+        let r: mut LspResponse = response_for(msg);
+        r.result_json = result_json;
+        this.events.write(new LspOutMsg.out_response(r));
+        wait;
+    }
+
+    fun respond_error(mut this, msg: LspMessage, code: i64, message: string) {
+        this.events.write(new LspOutMsg.out_error(error_for(msg, code, message)));
+        wait;
+    }
+
+    fun send_diagnostics(mut this, uri: string, params_json: string) {
+        let n: mut LspNotification = new LspNotification();
+        n.method = "textDocument/publishDiagnostics";
+        n.params_json = params_json;
+        this.events.write(new LspOutMsg.out_notification(n));
+        wait;
+    }
+
+    // ── routing ──────────────────────────────────────────────────────────
+
+    // The plan for a document path (cached: routing reads the workspace
+    // config + project files once per distinct path).
+    fun plan_for(mut this, path: string, config: LspWorkspaceConfig) -> LspCompilePlan {
+        let cached: __builtin.Option<LspCompilePlan> = this.plan_cache.get(path);
+        if (cached.is_some()) {
+            return cached.some;
+        }
+        let plan: mut LspCompilePlan = plan_for_document_routed(path, config);
+        this.plan_cache.put(path, plan);
+        return plan;
+    }
+
+    // The session key for a document: the project identity in project mode,
+    // the path itself in single-file mode.
+    fun session_key(this, plan: LspCompilePlan, path: string) -> string {
+        if (plan.project_path == "") {
+            return "single:" + path;
+        }
+        let key: mut string = plan.project_path;
+        let li: mut i64 = 0;
+        while (li < cast<i64>(plan.libs.size())) {
+            key = key + "|" + plan.libs.at(cast<u64>(li)).some;
+            li = li + 1;
+        }
+        let di: mut i64 = 0;
+        while (di < cast<i64>(plan.define_keys.size())) {
+            key = key + "|-D" + plan.define_keys.at(cast<u64>(di)).some + "=" + plan.define_values.at(cast<u64>(di)).some;
+            di = di + 1;
+        }
+        return key;
+    }
+
+    // ── the actor loop ────────────────────────────────────────────────────
+
+    initial {
+        while (true) {
+            let first: LspCompileMsg = wait this.reqs;
+            let batch: mut _utils.List<LspCompileMsg> = new _utils.List<LspCompileMsg>();
+            batch.push(first);
+            // Drain the backlog non-blockingly: everything already queued
+            // joins this batch (same-uri edits fold; queries queue in order).
+            while (true) {
+                let nx: __builtin.Option<LspCompileMsg> = this.reqs.try_poll();
+                if (nx.is_none()) {
+                    break;
+                }
+                batch.push(nx.some);
+            }
+            // COALESCE WINDOW (the didChange debounce, roadmap 4.4): yield
+            // one scheduler round, then drain again. Frames arriving in the
+            // same burst (a test client writes the whole scripted stdin at
+            // once; an editor bursts keystroke notifications) reach the
+            // docs router over the next deltas — the second drain folds
+            // them into THIS batch (same-uri edits collapse to the latest
+            // text, queries stay ordered behind the edits).
+            wait;
+            while (true) {
+                let nx2: __builtin.Option<LspCompileMsg> = this.reqs.try_poll();
+                if (nx2.is_none()) {
+                    break;
+                }
+                batch.push(nx2.some);
+            }
+            this.run_batch(batch);
+        }
+    }
+
+    // Batch execution: consecutive non-query segments coalesce into one
+    // transaction; a query is answered strictly after the edits that
+    // preceded it in the batch.
+    fun run_batch(mut this, batch: _utils.List<LspCompileMsg>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(batch.size())) {
+            let m: LspCompileMsg = batch.at(cast<u64>(i)).some;
+            if (m.kind == LSPMSG_QUERY || m.kind == LSPMSG_LIFECYCLE) {
+                if (m.kind == LSPMSG_LIFECYCLE) {
+                    this.handle_lifecycle(m);
+                } else {
+                    this.handle_query(m);
+                }
+                i = i + 1;
+                continue;
+            }
+            // Fold the consecutive non-query segment [i, j).
+            let folds: mut std.HashMap<string, LspDocFold> = new std.HashMap<string, LspDocFold>();
+            let order: mut _utils.List<string> = new _utils.List<string>();
+            let j: mut i64 = i;
+            while (j < cast<i64>(batch.size())) {
+                let mm: LspCompileMsg = batch.at(cast<u64>(j)).some;
+                if (mm.kind == LSPMSG_QUERY || mm.kind == LSPMSG_LIFECYCLE) {
+                    break;
+                }
+                let f: __builtin.Option<LspDocFold> = folds.get(mm.uri);
+                if (f.is_none()) {
+                    folds.put(mm.uri, new LspDocFold());
+                    order.push(mm.uri);
+                }
+                let fold: mut LspDocFold = folds.get(mm.uri).some;
+                fold.closed = mm.kind == LSPMSG_CLOSE;
+                fold.path = mm.path;
+                fold.text = mm.text;
+                j = j + 1;
+            }
+            this.apply_folds(folds, order, m.config);
+            i = j;
+        }
+    }
+
+    // ── the incremental transaction (one per affected session) ───────────
+
+    fun apply_folds(mut this, folds: std.HashMap<string, LspDocFold>, order: _utils.List<string>, config: LspWorkspaceConfig) {
+        // 1) Fold into the editor-state snapshot.
+        let oi: mut i64 = 0;
+        while (oi < cast<i64>(order.size())) {
+            let uri: string = order.at(cast<u64>(oi)).some;
+            let fold: LspDocFold = folds.get(uri).some;
+            if (fold.closed) {
+                this.open_texts.remove(fold.path);
+            } else {
+                this.open_texts.put(fold.path, fold.text);
+            }
+            oi = oi + 1;
+        }
+
+        // 1b) CLOSED documents do not enter a transaction in v1: the editor
+        //     snapshot already dropped the text (step 1), and re-compiling
+        //     on close (disk fallback in project mode / session retirement
+        //     in single-file mode) crashes inside the incremental session
+        //     when the retained compiler state is revisited — a defect
+        //     deferred to the next batch (see batch44-progress). The
+        //     session stays; a later didOpen of the same path takes the
+        //     (working) didChange-style incremental path.
+        // 2) Group the touched documents by session key (plan identity).
+        let keys: mut _utils.List<string> = new _utils.List<string>();
+        let key_plans: mut std.HashMap<string, LspCompilePlan> = new std.HashMap<string, LspCompilePlan>();
+        let key_orders: mut std.HashMap<string, LspUriList> = new std.HashMap<string, LspUriList>();
+        let ki: mut i64 = 0;
+        while (ki < cast<i64>(order.size())) {
+            let uri: string = order.at(cast<u64>(ki)).some;
+            let fold: LspDocFold = folds.get(uri).some;
+            let plan: LspCompilePlan = this.plan_for(fold.path, config);
+            let key: string = this.session_key(plan, fold.path);
+            if (key_orders.get(key).is_none()) {
+                key_orders.put(key, new LspUriList());
+                key_plans.put(key, plan);
+                keys.push(key);
+            }
+            key_orders.get(key).some.uris.push(uri);
+            ki = ki + 1;
+        }
+
+        // 3) One transaction per touched session.
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(keys.size())) {
+            let key: string = keys.at(cast<u64>(ti)).some;
+            this.run_transaction(key, key_plans.get(key).some, folds, key_orders.get(key).some.uris);
+            ti = ti + 1;
+        }
+    }
+
+    // The single serialized incremental transaction for one session.
+    fun run_transaction(mut this, key: string, plan: LspCompilePlan, folds: std.HashMap<string, LspDocFold>, order: _utils.List<string>) {
+        let entry_opt: __builtin.Option<LspSessionEntry> = this.sessions.get(key);
+        let fresh: bool = entry_opt.is_none();
+        let sess: mut LspSessionEntry = if (fresh) { new LspSessionEntry() } else { entry_opt.some };
+        let is_single: bool = plan.project_path == "";
+
+        let crash_message: mut string = "";
+        try {
+            if (fresh || sess.poisoned) {
+                // (Re)build from scratch: full compile over the current
+                // editor snapshot (every open sibling contributes its text).
+                sess.session = new emperor.IncrementalSession();
+                sess.session.enable_coroutine = true;
+                sess.session.verbose = plan.verbose;
+                // O2: diagnostics path — defer the reconciliation walk to
+                // every Nth fast-lane round (the emit-path CLI keeps the
+                // default 1 = every round; see IncrementalSession).
+                sess.session.reconcile_interval = LSP_RECONCILE_INTERVAL;
+                // O1: the request-cache safety net runs on its own counter
+                // at the same cadence (every 20th fast-lane round pays one
+                // full-collection verification; the default already is 20 —
+                // set explicitly to keep the LSP's knobs in one place).
+                // O4: the two full-scan cadences are STAGGERED (verify at
+                // 10, reconcile at 20) — see LSP_VERIFY_INTERVAL.
+                sess.session.verify_interval = LSP_VERIFY_INTERVAL;
+                sess.is_single = is_single;
+                this.mirror_plan_defines(sess, plan);
+                let first_fold: LspDocFold = folds.get(order.at(cast<u64>(0)).some).some;
+                let inputs: mut _utils.List<emperor.SourceInput> = if (is_single) {
+                    this.single_file_inputs(first_fold.path, first_fold.text)
+                } else {
+                    this.project_inputs(plan)
+                };
+                let result: emperor.BoundCompilationUnit = sess.session.compile_first(inputs);
+                this.after_compile(key, sess, result, folds, order, plan);
+            } else {
+                // Incremental: register every folded document's new text.
+                // update() returns false when the text hash is unchanged;
+                // recompute() then short-circuits at ~zero cost and the
+                // publication path still runs, so the client's diagnostics
+                // refresh after every didChange, exactly as before.
+                this.mirror_plan_defines(sess, plan);
+                let changed_any: mut bool = false;
+                let ui: mut i64 = 0;
+                while (ui < cast<i64>(order.size())) {
+                    let uri: string = order.at(cast<u64>(ui)).some;
+                    let fold: LspDocFold = folds.get(uri).some;
+                    let file: string = fold.path;
+                    if (fold.closed && !is_single) {
+                        // Project mode: a closed document's input falls back
+                        // to its on-disk text (the editor copy is gone).
+                        let disk: __builtin.Option<string> = std.io.read_text(file);
+                        if (disk.is_some()) {
+                            changed_any = sess.session.update(file, disk.some) || changed_any;
+                        }
+                    } else if (!fold.closed) {
+                        // Batch 5 C2 update: the 4.4 "cross-.so bool return
+                        // corrupted in ||" was ROOT-CAUSED to a compiler bug
+                        // (IRGenerator.lower_binary evaluated a short-circuit
+                        // chain's first operand TWICE — the discarded first
+                        // update() ingested the edit, the observed second
+                        // returned false); fixed for all compilers, sentinel
+                        // Tests/FlowControlTest/ShortCircuitDoubleEvaluates-
+                        // FirstOperand.md. The let-bound shape below is kept:
+                        // it is also the GC-pin touch (batch 4.4 known-defect
+                        // workaround) — touching the session's input ledger
+                        // right before the cross-.so update() call keeps the
+                        // lists alive on this coroutine's (conservatively
+                        // scanned) stack — without the read, update()
+                        // intermittently reports NO-match for a file the
+                        // ledger demonstrably holds (the precise-scan path
+                        // misses something inside the HashMap-embedded value
+                        // copy; root cause deferred to the GC batch).
+                        let r5: bool = sess.session.update(file, fold.text);
+                        changed_any = r5 || changed_any;
+                    }
+                    ui = ui + 1;
+                }
+                if (!changed_any) {
+                    this.publish(sess, sess.session.last_errors, folds, order, plan);
+                    return;
+                }
+                let result: emperor.BoundCompilationUnit = sess.session.recompute();
+                this.after_compile(key, sess, result, folds, order, plan);
+            }
+        } catch (e) {
+            crash_message = e.message;
+        }
+        if (string_length(crash_message) > 0) {
+            // Poisoned: the retained model may be mid-mutation garbage. The
+            // next touch rebuilds the session from a full compile.
+            sess.poisoned = true;
+            this.sessions.put(key, sess);
+            let diags: mut std.Vector<LspDiagnostic> = crash_diagnostics(crash_message);
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(order.size())) {
+                let uri: string = order.at(cast<u64>(ci)).some;
+                let fold: LspDocFold = folds.get(uri).some;
+                if (!fold.closed) {
+                    this.send_diagnostics(uri, diagnostics_params_json(uri, diags));
+                }
+                ci = ci + 1;
+            }
+        }
+    }
+
+    // Mirror the plan's defines into the session (batch 4.3 ④: a defines
+    // change inside recompute() itself falls back to the full lane).
+    fun mirror_plan_defines(mut this, sess: LspSessionEntry, plan: LspCompilePlan) {
+        if (sess.is_single && plan.project_path == "") {
+            return;
+        }
+        let keys: mut _utils.List<string> = new _utils.List<string>();
+        let values: mut _utils.List<string> = new _utils.List<string>();
+        let di: mut i64 = 0;
+        while (di < cast<i64>(plan.define_keys.size())) {
+            keys.push(plan.define_keys.at(cast<u64>(di)).some);
+            values.push(plan.define_values.at(cast<u64>(di)).some);
+            di = di + 1;
+        }
+        sess.session.set_cli_defines(keys, values);
+    }
+
+    // Fresh-compile inputs for a single-file session: stdlib + the document.
+    fun single_file_inputs(this, path: string, text: string) -> mut _utils.List<emperor.SourceInput> {
+        let inputs: mut _utils.List<emperor.SourceInput> = new _utils.List<emperor.SourceInput>();
+        inputs.push(new emperor.SourceInput("core_builtin.penguin", STDLIB_CORE));
+        inputs.push(new emperor.SourceInput("io.penguin", STDLIB_IO));
+        inputs.push(new emperor.SourceInput("scheduler.penguin", STDLIB_SCHED));
+        inputs.push(new emperor.SourceInput(path, text));
+        return inputs;
+    }
+
+    // Fresh-compile inputs for a project session (stdlib + lib chain + the
+    // project files, every OPEN document contributing its editor text).
+    fun project_inputs(this, plan: LspCompilePlan) -> mut _utils.List<emperor.SourceInput> {
+        return project_source_inputs(plan, "", "", this.open_texts);
+    }
+
+    // Post-compile bookkeeping: session registration, index rebuild on a
+    // clean result, diagnostics publication.
+    fun after_compile(mut this, key: string, sess: mut LspSessionEntry, result: emperor.BoundCompilationUnit, folds: std.HashMap<string, LspDocFold>, order: _utils.List<string>, plan: LspCompilePlan) {
+        // Single-file sessions die with their last document: retire instead
+        // of registering (a later didOpen of the same path builds fresh).
+        if (sess.is_single) {
+            let all_closed: mut bool = true;
+            let oi: mut i64 = 0;
+            while (oi < cast<i64>(order.size())) {
+                if (!folds.get(order.at(cast<u64>(oi)).some).some.closed) {
+                    all_closed = false;
+                }
+                oi = oi + 1;
+            }
+            if (all_closed) {
+                this.sessions.remove(key);
+                return;
+            }
+        }
+        if (!result.has_errors()) {
+            sess.last_ok = new Option<emperor.BoundCompilationUnit>.some(result);
+            sess.index_roots = new std.Vector<SymEntry>();
+            index_defs(result.definitions, sess.index_roots);
+            sess.index_flat = new std.Vector<SymEntry>();
+            flat_collect(sess.index_roots, sess.index_flat);
+        }
+        this.sessions.put(key, sess);
+        this.publish(sess, result.errors, folds, order, plan);
+    }
+
+    // Dedup-adding helper for publish's target collection.
+    fun add_target(mut this, targets: mut std.HashMap<string, bool>, target_order: mut _utils.List<string>, path: string) {
+        if (targets.get(path).is_none()) {
+            targets.put(path, true);
+            target_order.push(path);
+        }
+    }
+
+    // ── diagnostics publication (the workspace protocol) ──────────────────
+
+    // Every OPEN document of the session receives its per-file filtered
+    // diagnostics (a folded document outside the project sources still gets
+    // its — empty — frame); unopened project files that previously carried
+    // non-empty published diagnostics receive an EMPTY set once their errors
+    // are gone (the workspace clear notification).
+    fun publish(mut this, sess: LspSessionEntry, errors: _utils.List<emperor.SemanticError>, folds: std.HashMap<string, LspDocFold>, order: _utils.List<string>, plan: LspCompilePlan) {
+        // 1) Collect the publish targets: every folded-open path plus every
+        //    project-source path that is currently open (deduplicated).
+        let targets: mut std.HashMap<string, bool> = new std.HashMap<string, bool>();
+        let target_order: mut _utils.List<string> = new _utils.List<string>();
+        let oi: mut i64 = 0;
+        while (oi < cast<i64>(order.size())) {
+            let fold: LspDocFold = folds.get(order.at(cast<u64>(oi)).some).some;
+            if (!fold.closed) {
+                this.add_target(targets, target_order, fold.path);
+            }
+            oi = oi + 1;
+        }
+        if (!sess.is_single) {
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(plan.sources.size())) {
+                let f: string = plan.sources.at(cast<u64>(fi)).some;
+                if (this.open_texts.get(f).is_some()) {
+                    this.add_target(targets, target_order, f);
+                }
+                fi = fi + 1;
+            }
+        }
+
+        // 2) Publish per-path ("" filter in single-file mode = whole list).
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(target_order.size())) {
+            let path: string = target_order.at(cast<u64>(pi)).some;
+            let uri: string = path_to_uri(path);
+            let diags: mut std.Vector<LspDiagnostic> = if (sess.is_single) {
+                error_diagnostics(errors, "")
+            } else {
+                error_diagnostics(errors, path)
+            };
+            this.send_diagnostics(uri, diagnostics_params_json(uri, diags));
+            if (!sess.is_single) {
+                if (cast<i64>(diags.size()) > 0) {
+                    sess.published_nonempty.put(path, true);
+                } else {
+                    sess.published_nonempty.remove(path);
+                }
+            }
+            pi = pi + 1;
+        }
+
+        // 3) Unopened project files with previously published non-empty
+        //    diagnostics: clear them once the error face no longer names
+        //    them (the open-document filter never re-publishes those).
+        if (!sess.is_single) {
+            let still_marked: mut _utils.List<string> = new _utils.List<string>();
+            for (let p in sess.published_nonempty.iter_keys()) {
+                still_marked.push(p);
+            }
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(still_marked.size())) {
+                let path: string = still_marked.at(cast<u64>(ci)).some;
+                if (this.open_texts.get(path).is_none()) {
+                    let has_err: mut bool = false;
+                    let ei: mut i64 = 0;
+                    while (ei < cast<i64>(errors.size())) {
+                        if (errors.at(cast<u64>(ei)).some.location.filename == path) {
+                            has_err = true;
+                        }
+                        ei = ei + 1;
+                    }
+                    if (!has_err) {
+                        sess.published_nonempty.remove(path);
+                        let curi: string = path_to_uri(path);
+                        this.send_diagnostics(curi, diagnostics_params_json(curi, new std.Vector<LspDiagnostic>()));
+                    }
+                }
+                ci = ci + 1;
+            }
+        }
+    }
+
+    // ── lifecycle (answered from the actor: total outbound ordering) ─────
+
+    // initialize / shutdown / exit / unknown session methods. Answered
+    // strictly behind every pending transaction and query, so the shutdown
+    // response never overtakes a query response that arrived earlier (the
+    // exit control rides the same fan-in — every frame queued ahead of it
+    // reaches the wire first).
+    fun handle_lifecycle(mut this, m: LspCompileMsg) {
+        if (m.msg.method == "initialize") {
+            this.respond_result(m.msg, initialize_result_json());
+        } else if (m.msg.method == "shutdown") {
+            this.respond_result(m.msg, "null");
+        } else if (m.msg.method == "exit") {
+            this.events.write(new LspOutMsg.out_exit(m.exit_code));
+        } else if (m.msg.has_id) {
+            this.respond_error(m.msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + m.msg.method);
+        }
+    }
+
+    // ── queries (zero compilation; served from the session's last state) ──
+
+    fun handle_query(mut this, m: LspCompileMsg) {
+        let plan: LspCompilePlan = this.plan_for(m.path, m.config);
+        let key: string = this.session_key(plan, m.path);
+        let entry_opt: __builtin.Option<LspSessionEntry> = this.sessions.get(key);
+        let ctx: mut LspDocContext = new LspDocContext();
+        ctx.path = m.path;
+        ctx.text = m.text;
+        if (entry_opt.is_some()) {
+            ctx.last_ok = entry_opt.some.last_ok;
+            ctx.roots = entry_opt.some.index_roots;
+            ctx.flat = entry_opt.some.index_flat;
+        }
+        if (m.msg.method == "textDocument/definition") {
+            this.respond_result(m.msg, locations_to_json(query_definition(ctx, m.msg)));
+        } else if (m.msg.method == "textDocument/documentSymbol") {
+            this.respond_result(m.msg, symbols_to_json(query_document_symbol(ctx)));
+        } else if (m.msg.method == "textDocument/completion") {
+            this.respond_result(m.msg, completion_items_to_json(query_completion(ctx, m.msg)));
+        } else if (m.msg.method == "textDocument/references") {
+            this.respond_result(m.msg, locations_to_json(query_references(ctx, m.msg)));
+        } else if (m.msg.method == "textDocument/hover") {
+            let h: __builtin.Option<LspHover> = query_hover(ctx, m.msg);
+            if (h.is_some()) {
+                this.respond_result(m.msg, h.some.json_serialize());
+            } else {
+                this.respond_result(m.msg, "null");
+            }
+        } else if (m.msg.method == "textDocument/inlayHint") {
+            let hints: __builtin.Option<std.Vector<LspInlayHint>> = query_inlay_hints(ctx, m.msg);
+            if (hints.is_some()) {
+                this.respond_result(m.msg, inlay_hints_to_json(hints.some));
+            } else {
+                this.respond_result(m.msg, "null");
+            }
+        } else if (m.msg.method == "textDocument/rename") {
+            let we: __builtin.Option<LspWorkspaceEdit> = query_rename(ctx, m.msg);
+            if (we.is_some()) {
+                this.respond_result(m.msg, we.some.json_serialize());
+            } else {
+                this.respond_result(m.msg, "null");
+            }
+        } else if (m.msg.method == "textDocument/formatting") {
+            this.respond_result(m.msg, text_edits_to_json(query_formatting(ctx, m.msg)));
+        } else if (m.msg.has_id) {
+            this.respond_error(m.msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + m.msg.method);
+        }
+    }
+}
+
+}

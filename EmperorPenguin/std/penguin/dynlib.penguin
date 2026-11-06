@@ -64,7 +64,7 @@ namespace emperor {
 // build (pass1 / dotnet tests / pass2) compiles the ANTLR-safe DynlibStub.penguin
 // instead, which disables dyn-lib. The bootstrap's pass2->pass3 / pass3->pass4
 // steps build from EmperorPenguinPass2.penguins, which swaps in THIS file plus
-// json/vector/hashmap (pass3+ only). No meta (#if/#option) anywhere in this
+// json/vector/hashmap (pass3+ only). No meta (#if/#define) anywhere in this
 // module: the compiler's own code is plain penguin.
 // ---------------------------------------------------------------------------
 
@@ -207,7 +207,7 @@ fun _lib_def_source_file(d: BoundDefinition) -> string {
 
 // A lib file must ship VERBATIM when it contains template/meta constructs:
 // consumers re-bind those defs (template bodies, #fun bodies, #specializing
-// blocks, #if/#option splices) to monomorphize NEW instances. Detection: a
+// blocks, #if splices) to monomorphize NEW instances. Detection: a
 // line whose first non-whitespace character is '#' followed by an ASCII
 // letter (every template/meta DEFINITION starts a line this way; inline meta
 // CALLS are not detected — they only appear inside bodies that are either
@@ -2892,7 +2892,10 @@ class LibMetaInjector {
                 while (k < cast<i64>(entries.size())) {
                     let e2: LibMetaInjectEntry = entries.at(cast<u64>(k)).some;
                     this.backfill(e2.json, e2.def);
-                    BoundDefinition.set_pass_index(e2.def, 2);
+                    // Batch 3.3a: stamp 3 (monomorphize-protocol index) — resolve_pair
+                    // stamps/guards at 3 now, so injected defs must arrive there to
+                    // stay skipped by it (pass_index 2 is no longer a reachable state).
+                    BoundDefinition.set_pass_index(e2.def, 3);
                     out.push(e2.def);
                     k = k + 1;
                 }

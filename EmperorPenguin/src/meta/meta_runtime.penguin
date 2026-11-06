@@ -18,6 +18,9 @@ interface ICompiler {
     fun error(this, msg: string);
     fun warn(this, msg: string);
     fun info(this, msg: string);
+    // Option bridge (batch 2.1+2.3): reads/writes land in the unified
+    // file-scoped define store under the #fun's DEFINING file — the #fun sees
+    // its own file's code #defines plus the CLI --define seeds.
     fun set_option(this, key: string, value: string);
     fun get_option(this, key: string) -> string;              // "" when unset
     fun has_option(this, key: string) -> bool;

@@ -1,0 +1,9 @@
+namespace app {
+#template(T: type)
+class Holder {
+    fun stamp(mut this, v: T) -> string {
+        let mut b = new Box<T>(v);
+        return b.label() + "!";
+    }
+}
+}

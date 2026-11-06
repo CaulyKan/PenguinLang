@@ -13,17 +13,32 @@ class BindSymbolsPass {
         this.model = new Option<SemanticModel>.some(model);
     }
 
-    // 唯一入口：原 pass_bind_symbols
+    // 唯一入口：原 pass_bind_symbols。Batch 3.3a: per-file segment walk — the
+    // outer loop runs over model.def_seg_* (first-appearance file order), the
+    // inner over the segment's def indices; the flattened sequence is identical
+    // to the historical flat definitions walk.
     fun run(mut this, result: BoundCompilationUnit) {
         _utils.trace_enter("Enter pass_bind_symbols");
-        for (let def in result.definitions) {
-            this.bind_symbols_for_def(def);
+        let m: mut SemanticModel = this.model.some;
+        let s: mut i64 = 0;
+        while (s < cast<i64>(m.def_seg_files.size())) {
+            let start: i64 = m.def_seg_starts.at(cast<u64>(s)).some;
+            let count: i64 = m.def_seg_counts.at(cast<u64>(s)).some;
+            if (m.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Semantic]   File segment " + m.def_seg_files.at(cast<u64>(s)).some + " (" + cast<string>(count) + " defs)"); }
+            let k: mut i64 = 0;
+            while (k < count) {
+                this.bind_symbols_for_def(result.definitions.at(cast<u64>(start + k)).some);
+                k = k + 1;
+            }
+            s = s + 1;
         }
     }
 
     fun bind_symbols_for_def(mut this, def: BoundDefinition) {
         _utils.trace_enter("Enter bind_symbols_for_def");
-        if (this.model.some.already_processed(def)) { return; }
+        // Batch 3.3a: per-processor guard (pass 4) — no global pass-pointer
+        // comparison (the catch-up replay relies on this being self-sufficient).
+        if (BoundDefinition.get_pass_index(def) >= 4) { return; }
         if (def is BoundDefinition.function_def) {
             this.bind_function_symbols(def.function_def);
         }
@@ -77,7 +92,7 @@ class BindSymbolsPass {
         if (def is BoundDefinition.initial_routine) {
             this.bind_function_symbols_for_init(def.initial_routine);
         }
-        BoundDefinition.set_pass_index(def, this.model.some.current_pass_index);
+        BoundDefinition.set_pass_index(def, 4);
     }
 
     fun bind_function_symbols(mut this, func: BoundFunctionDefinition) {

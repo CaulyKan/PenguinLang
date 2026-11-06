@@ -22,6 +22,98 @@ fun penguin_meta_set_active(me: mut MetaEngine) {
     active_meta = me;
 }
 
+// ── Batch 5: whole-seed memo (redesign §7) ─────────────────────────────────
+//
+// Process-level fingerprint → MetaEngine cache. Every compilation seeds a
+// MetaEngine (seed_meta_engine); the seed fingerprint (SemanticMetaRewrite.
+// compute_meta_seed_fingerprint) conservatively covers EVERY input of unit B:
+// the 15 base source texts, all #fun texts (meta + template sets), all #class
+// build_texts, the --meta-src set, the host_coroutine flag, the extern
+// declaration face AND the define-store state (CLI seeds + every #define raw
+// text — defines feed #defined folds inside #fun bodies at JIT-synthesis
+// time). A fingerprint match therefore means unit B would compile to the
+// identical module set: the whole engine (JIT session + compiled #funs +
+// caller-stubs) is reused as-is and NO unit B pipeline runs.
+//
+// Not split into "resident seed + per-fun small modules" — cross-module ORC
+// resolution has a SEGV history; the memo is whole-seed by design.
+//
+// Eviction drops the entry WITHOUT shutdown(): a retained model (an LSP
+// IncrementalSession fast lane holds its model across transactions) may still
+// reference the engine and call into its JIT session — destroying the session
+// under it would SEGV. Dropping only leaks the native LLJIT handle exactly
+// like an abandoned engine does today (no finalizers exist), so the cache
+// strictly REDUCES native leak rate vs per-model engines.
+//
+// Single-threaded by the 4.4 compile-actor serialization (CLI compiles are
+// single-threaded too); plain parallel lists + linear scan are the compiler
+// convention (no hashmap in the core).
+let meta_engine_cache_fps: mut _utils.List<string> = new _utils.List<string>();
+let meta_engine_cache_engines: mut _utils.List<MetaEngine> = new _utils.List<MetaEngine>();
+let meta_engine_cache_stamps: mut _utils.List<i64> = new _utils.List<i64>();
+let meta_engine_cache_clock: mut i64 = 0;
+
+// NOTE (batch 5): both cache accessors alias the three global lists into
+// LOCALS at function entry and touch ONLY the locals afterwards. BabyPenguin
+// (the pass1 bootstrap compiler) has a register-allocation bug where a global
+// accessed inside a branch and again after the block yields a void-typed
+// uninitialized register for the later use (red sentinel:
+// Tests/NamespaceTest/GlobalLoadInBranchClobbersLaterUse.md) — one load per
+// function avoids the shape entirely. The lists are references; pushes and
+// removes through the aliases mutate the shared objects directly.
+fun meta_engine_cache_lookup(fp: string) -> Option<MetaEngine> {
+    let fps: mut _utils.List<string> = meta_engine_cache_fps;
+    let engs: mut _utils.List<MetaEngine> = meta_engine_cache_engines;
+    let sts: mut _utils.List<i64> = meta_engine_cache_stamps;
+    let i: mut i64 = 0;
+    while (i < cast<i64>(fps.size())) {
+        if (fps.at(cast<u64>(i)).some == fp) {
+            meta_engine_cache_clock = meta_engine_cache_clock + 1;
+            sts.set(cast<u64>(i), meta_engine_cache_clock);
+            return new Option<MetaEngine>.some(engs.at(cast<u64>(i)).some);
+        }
+        i = i + 1;
+    }
+    return new Option<MetaEngine>.none();
+}
+
+fun meta_engine_cache_store(fp: string, eng: mut MetaEngine) {
+    let fps: mut _utils.List<string> = meta_engine_cache_fps;
+    let engs: mut _utils.List<MetaEngine> = meta_engine_cache_engines;
+    let sts: mut _utils.List<i64> = meta_engine_cache_stamps;
+    // Replace an existing same-fingerprint entry (defensive; seed runs once
+    // per model, two models with the same fp should share one entry).
+    let i: mut i64 = 0;
+    while (i < cast<i64>(fps.size())) {
+        if (fps.at(cast<u64>(i)).some == fp) {
+            engs.set(cast<u64>(i), eng);
+            return;
+        }
+        i = i + 1;
+    }
+    // Capacity bound (LRU by stamp): drop the least-recently-hit entry when
+    // full. Drop-only — see the header comment for why shutdown is unsafe.
+    if (cast<i64>(fps.size()) >= 6) {
+        let victim: mut i64 = 0;
+        let best: mut i64 = 9223372036854775807;
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(sts.size())) {
+            if (sts.at(cast<u64>(vi)).some < best) {
+                best = sts.at(cast<u64>(vi)).some;
+                victim = vi;
+            }
+            vi = vi + 1;
+        }
+        fps.remove(cast<u64>(victim));
+        engs.remove(cast<u64>(victim));
+        sts.remove(cast<u64>(victim));
+    }
+    meta_engine_cache_clock = meta_engine_cache_clock + 1;
+    fps.push(fp);
+    engs.push(eng);
+    sts.push(meta_engine_cache_clock);
+}
+
 // Phase 6 v2 token→pointer bridge: resolve a compile-time type token back to the
 // host's LIVE BoundType object (the one #typeof assigned the token for). Called
 // from (a) the per-call-site caller-stub, to materialize each `type` argument as a
@@ -266,7 +358,9 @@ fun penguin_meta_get_ast_result() -> Expression { return active_ast_result; }
 // SemanticModel channels above (all unit B sees is the <meta_externs> decls).
 // -------------------------------------------------------------------------
 
-// Options: #define / #option / #defined sugar reaches the same store.
+// Options: #define / #defined / #compiler().set_option all reach the ONE
+// unified file-scoped store on the owning SemanticModel (the engine bridges
+// through owner_model with the #fun's defining file as the view key).
 fun penguin_meta_set_option(key: string, value: string) { active_meta.set_option(key, value); }
 
 fun penguin_meta_get_option(key: string) -> string {

@@ -119,6 +119,17 @@ namespace BabyPenguin.Parser.SyntaxNodes
                     ParenthesizedExpression = Build<Expression>(walker, context.expression()).GetEffectiveExpression();
                     PrimaryExpressionType = Type.ParenthesizedExpression;
                 }
+                else if (context.metaCallExpression() != null)
+                {
+                    // The meta splicer consumes every meta call it supports
+                    // (#define statements, #defined inside #if
+                    // conditions); a survivor is an unknown name or a
+                    // misplaced meta call.
+                    var name = context.metaCallExpression().identifier()?.GetText() ?? "?";
+                    throw new BabyPenguinException(
+                        $"unknown or misplaced meta call #{name} (meta calls are only supported as #define statements and inside #if/#while conditions)",
+                        SourceLocation, code: ErrorCode.E_UNSUPPORTED);
+                }
                 else
                 {
                     throw new System.NotImplementedException("Invalid primary expression");

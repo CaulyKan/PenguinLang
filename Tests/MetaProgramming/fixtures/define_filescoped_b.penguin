@@ -1,0 +1,10 @@
+// Fixture for MetaDefineFileScoped.md — compiled BEFORE the md's own source
+// (which #defines LEAKKEY). File-scoped semantics: this file must NOT see it.
+#if (#defined("LEAKKEY")) {
+    fun marker() -> string { return "leaked"; }
+} #else {
+    fun marker() -> string { return "isolated"; }
+}
+initial {
+    println(marker());
+}

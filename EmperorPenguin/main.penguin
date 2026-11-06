@@ -74,6 +74,9 @@ initial {
         __builtin.eprintln("  --libmeta=text|direct                      libmeta ingestion mode (default: direct)");
         __builtin.eprintln("  --define A=B / --meta-src <file>           compile-time option store / explicit unit-B meta sources");
         __builtin.eprintln("  -g / --debug                               emit DWARF debug info (function/line/variable) into the .ll");
+        __builtin.eprintln("  --dump-index                               dump the GlobalIndex (symbols/types/instances/ifaces/users + fingerprints) to stderr after the semantic passes");
+        __builtin.eprintln("  --incremental                             compile through an IncrementalSession (per-file snapshots + parse cache; behaviorally identical to the full compile)");
+        __builtin.eprintln("  --edit=<file>=<replacement>                with --incremental: after the first compile, replace <file>'s text with <replacement>'s content and re-compile the session (repeatable, applied in order)");
         __builtin.eprintln("  --enable-meta, -target=, -llvm-win=        link-time flags (parsed here, honored by the external driver)");
         __builtin.eprintln("Emits LLVM IR only: -o X -> X.ll (+ X.def/.libs); -o X.penguin-lib -> X.ll + X.libmeta.");
         __builtin.eprintln("Linking is external (emperor_penguin / emperor_penguin.bat; see their --help).");
@@ -353,30 +356,108 @@ initial {
     if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin] Compiling " + cast<string>(config.source_files.size()) + " source files..."); }
 
     _utils.trace_set_verbose(config.verbose);
-    let mut compiler = new EmperorPenguinCompiler();
-    compiler.verbose = config.verbose;
-    compiler.enable_coroutine = config.coroutine_enabled;
-    compiler.enable_mt_scheduler = config.multithread_scheduler_enabled || config.clock_model_enabled;
-    compiler.warn_concurrency = config.warn_concurrency;
-    compiler.strict_handoff = config.strict_handoff;
-    compiler.meta_user_inputs = user_meta_inputs;
-    compiler.cli_define_keys = config.cli_define_keys;
-    compiler.cli_define_values = config.cli_define_values;
-    // Dyn-lib routing data: shipped instances (the lib-source boundary is set
-    // via SourceInput.is_lib on the merged inputs, counted in compile_sources).
-    let lii: mut i64 = 0;
-    while (lii < cast<i64>(lib_state.instances.size())) {
-        compiler.lib_instances.push(lib_state.instances.at(cast<u64>(lii)).some);
-        lii = lii + 1;
+    // Batch 4.1: --incremental routes the compilation through an
+    // IncrementalSession (the envelope around compile_sources that keeps
+    // per-file FileSnapshots + the parse cache across transactions). With
+    // no --edit this is behaviorally identical to the plain full compile.
+    // Sessions do not carry --meta-src (unit-B recursion is full-compile
+    // territory) — such invocations fall back to the plain path with a
+    // note.
+    let use_session: bool = config.incremental && cast<i64>(config.meta_source_files.size()) == 0;
+    if (config.incremental && !use_session) {
+        __builtin.eprintln("[EmperorPenguin] Note: --incremental is not supported with --meta-src; running the plain full compile.");
     }
-    if (use_direct_libmeta) {
-        let mdi: mut i64 = 0;
-        while (mdi < cast<i64>(lib_state.meta_docs.size())) {
-            compiler.prebuilt_lib_metas.push(lib_state.meta_docs.at(cast<u64>(mdi)).some);
-            mdi = mdi + 1;
+    let result: BoundCompilationUnit = if (use_session) {
+        let session: mut IncrementalSession = new IncrementalSession();
+        session.verbose = config.verbose;
+        session.enable_coroutine = config.coroutine_enabled;
+        session.enable_mt_scheduler = config.multithread_scheduler_enabled || config.clock_model_enabled;
+        session.warn_concurrency = config.warn_concurrency;
+        session.strict_handoff = config.strict_handoff;
+        session.dump_index = config.dump_index;
+        session.set_cli_defines(config.cli_define_keys, config.cli_define_values);
+        let sli: mut i64 = 0;
+        while (sli < cast<i64>(lib_state.instances.size())) {
+            session.lib_instances.push(lib_state.instances.at(cast<u64>(sli)).some);
+            sli = sli + 1;
         }
-    }
-    let result = compiler.compile_sources(inputs);
+        if (use_direct_libmeta) {
+            let smi: mut i64 = 0;
+            while (smi < cast<i64>(lib_state.meta_docs.size())) {
+                session.prebuilt_lib_metas.push(lib_state.meta_docs.at(cast<u64>(smi)).some);
+                smi = smi + 1;
+            }
+        }
+        session.compile_first(inputs);
+        // Batch 4.2: the didChange transaction driver (--edit, in order).
+        // Each edit is one update()+recompute() transaction; the LAST
+        // transaction's result is what gets emitted below.
+        let edi: mut i64 = 0;
+        while (edi < cast<i64>(config.edit_files.size())) {
+            let target_file: string = config.edit_files.at(cast<u64>(edi)).some;
+            let replacement_path: string = config.edit_replacements.at(cast<u64>(edi)).some;
+            let new_text: string = _utils.file_read_text(replacement_path);
+            if (string_length(new_text) == 0 && !_utils.file_exists(replacement_path)) {
+                __builtin.eprintln("[EmperorPenguin] Error: --edit replacement file not readable: " + replacement_path);
+                __builtin.exit(1);
+            }
+            if (session.update(target_file, new_text)) {
+                if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Session] didChange: " + target_file); }
+            } else {
+                if (config.verbose >= 1) { __builtin.eprintln("[EmperorPenguin Session] didChange (text unchanged, no-op): " + target_file); }
+            }
+            session.recompute();
+            // Batch 4.3: the four-class invalidation report (affected
+            // clean files + dependency classes; stderr only).
+            if (config.dump_invalidation) {
+                let ri: mut i64 = 0;
+                while (ri < cast<i64>(session.last_invalidation_report.size())) {
+                    __builtin.eprintln("[EmperorPenguin Invalidation] " + session.last_invalidation_report.at(cast<u64>(ri)).some);
+                    ri = ri + 1;
+                }
+            }
+            edi = edi + 1;
+        }
+        if (config.dump_index) {
+            __builtin.eprintln(session.last_index_summary);
+        }
+        session.last_result.some
+    } else {
+        let mut compiler = new EmperorPenguinCompiler();
+        compiler.verbose = config.verbose;
+        compiler.enable_coroutine = config.coroutine_enabled;
+        compiler.enable_mt_scheduler = config.multithread_scheduler_enabled || config.clock_model_enabled;
+        compiler.warn_concurrency = config.warn_concurrency;
+        compiler.strict_handoff = config.strict_handoff;
+        compiler.meta_user_inputs = user_meta_inputs;
+        compiler.cli_define_keys = config.cli_define_keys;
+        compiler.cli_define_values = config.cli_define_values;
+        // Batch 3.1: --dump-index reconciliation tool.
+        compiler.dump_index = config.dump_index;
+        // Dyn-lib routing data: shipped instances (the lib-source boundary is set
+        // via SourceInput.is_lib on the merged inputs, counted in compile_sources).
+        let lii: mut i64 = 0;
+        while (lii < cast<i64>(lib_state.instances.size())) {
+            compiler.lib_instances.push(lib_state.instances.at(cast<u64>(lii)).some);
+            lii = lii + 1;
+        }
+        if (use_direct_libmeta) {
+            let mdi: mut i64 = 0;
+            while (mdi < cast<i64>(lib_state.meta_docs.size())) {
+                compiler.prebuilt_lib_metas.push(lib_state.meta_docs.at(cast<u64>(mdi)).some);
+                mdi = mdi + 1;
+            }
+        }
+        let r2: BoundCompilationUnit = compiler.compile_sources(inputs);
+
+        // Batch 3.1: the GlobalIndex reconciliation dump (stderr only — stdout
+        // and the emitted .ll are untouched). Printed BEFORE the error gate so
+        // failed compiles can dump too.
+        if (config.dump_index) {
+            __builtin.eprintln(compiler.index_summary);
+        }
+        r2
+    };
 
     if (result.has_errors()) {
         __builtin.eprintln("[EmperorPenguin] Compilation failed with " + cast<string>(result.errors.size()) + " errors:");

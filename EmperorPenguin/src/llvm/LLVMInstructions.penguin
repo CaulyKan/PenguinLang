@@ -1,0 +1,898 @@
+// Instruction-emission core of the LLVM emitter (batch 0.1 split): the
+// per-instruction dispatch and the scalar/aggregate instruction emitters
+// (const/arg/assign/cast/binop/unaryop/br/ret/global load-store).
+namespace emperor {
+
+class LLVMInstructions {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    // --- Instruction lowering ---
+
+    // Get source location from an IR instruction
+    fun get_inst_loc(inst: IRInstruction) -> SourceLocation {
+        _utils.trace_enter("Enter get_inst_loc");
+        if (inst is IRInstruction.const_inst) { return inst.const_inst.location; }
+        if (inst is IRInstruction.arg) { return inst.arg.location; }
+        if (inst is IRInstruction.assign) { return inst.assign.location; }
+        if (inst is IRInstruction.cast_inst) { return inst.cast_inst.location; }
+        if (inst is IRInstruction.binop) { return inst.binop.location; }
+        if (inst is IRInstruction.unaryop) { return inst.unaryop.location; }
+        if (inst is IRInstruction.rdmbr) { return inst.rdmbr.location; }
+        if (inst is IRInstruction.wrmbr) { return inst.wrmbr.location; }
+        if (inst is IRInstruction.br) { return inst.br.location; }
+        if (inst is IRInstruction.br_cond) { return inst.br_cond.location; }
+        if (inst is IRInstruction.gc_poll) { return inst.gc_poll.location; }
+        if (inst is IRInstruction.ret) { return inst.ret.location; }
+        if (inst is IRInstruction.ret_void) { return inst.ret_void.location; }
+        if (inst is IRInstruction.call) { return inst.call.location; }
+        if (inst is IRInstruction.call_void) { return inst.call_void.location; }
+        if (inst is IRInstruction.call_indirect) { return inst.call_indirect.location; }
+        if (inst is IRInstruction.call_virt) { return inst.call_virt.location; }
+        if (inst is IRInstruction.new_inst) { return inst.new_inst.location; }
+        if (inst is IRInstruction.new_enum) { return inst.new_enum.location; }
+        if (inst is IRInstruction.isenum) { return inst.isenum.location; }
+        if (inst is IRInstruction.rdenum) { return inst.rdenum.location; }
+        if (inst is IRInstruction.isinstance) { return inst.isinstance.location; }
+        if (inst is IRInstruction.box) { return inst.box.location; }
+        if (inst is IRInstruction.unbox) { return inst.unbox.location; }
+        if (inst is IRInstruction.global_load) { return inst.global_load.location; }
+        if (inst is IRInstruction.global_store) { return inst.global_store.location; }
+        if (inst is IRInstruction.array_new_zeroed) { return inst.array_new_zeroed.location; }
+        return new SourceLocation("", 0, 0);
+    }
+
+    // Emit an instruction line with debug info suffix
+    fun emit_line(mut this, line: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_line(line=" + cast<string>(line) + ")");
+ }
+        // GC v2 phase 2 — promoted-register definition rewrite: a line
+        // defining a promoted register (`%tN = <op>`) becomes a temp def +
+        // a store into the register's slot. Every body def site (rdmbr
+        // loads, call/alloc results, unbox, global loads, casts, ...)
+        // feeds the frame slot this way, without each emitter needing its
+        // own mutable branch. Sites that already store explicitly emit
+        // `store ...` lines, which start differently and pass through.
+        // The store type is the register's HOME type — "ptr" for reference
+        // registers, the inline struct for the 3c value-class/enum homes
+        // (the scan registered it before body emission; a promoted register
+        // is single-def, so no later registration can have clobbered it).
+        if (string_length(line) > 4 && string_substring(line, 0, 3) == "  %") {
+            let eq: i64 = this.gc_find_line_def_name_end(line);
+            if (eq > 3) {
+                let def_name: string = "%" + string_substring(line, 3, eq - 3);
+                if (em.gcscan.is_gc_only_reg(def_name)) {
+                    let rest: string = string_substring(line, eq + 3, string_length(line) - eq - 3);
+                    let tmp: string = em.values.next_tmp();
+                    let home_type: mut string = em.gcscan.gc_only_home(def_name);
+                    if (home_type == "" || home_type == "void") { home_type = "ptr"; }
+                    em.sb.append("  " + tmp + " = " + rest + em.current_dbg + "\n");
+                    em.sb.append("  store " + home_type + " " + tmp + ", ptr " + em.values.get_alloca_name(def_name) + "\n");
+                    return;
+                }
+            }
+        }
+        em.sb.append(line + em.current_dbg + "\n");
+    }
+
+    // Index of the space ENDING the `  %name` at the start of a definition
+    // line (`  %t5 = ...` → 5), when followed by " = "; -1 otherwise.
+    fun gc_find_line_def_name_end(this, line: string) -> i64 {
+        let n: i64 = string_length(line);
+        let i: mut i64 = 3;
+        while (i < n) {
+            let ch: string = string_char_at(line, i);
+            if (ch == " ") {
+                if (i + 3 <= n && string_substring(line, i, 3) == " = ") { return i; }
+                return -1;
+            }
+            if (ch == "=") { return -1; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    fun emit_instruction(mut this, inst: IRInstruction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_instruction");
+        // Set current debug location from instruction
+        let loc: SourceLocation = get_inst_loc(inst);
+        em.current_dbg = em.debug.debug_loc(loc);
+        // Skip debug for labels
+        if (inst is IRInstruction.label_inst) { em.current_dbg = ""; this.emit_label(inst.label_inst); return; }
+        if (inst is IRInstruction.const_inst) { this.emit_const(inst.const_inst); em.debug.maybe_emit_imm_dbg(inst.const_inst.result, em.current_dbg); return; }
+        if (inst is IRInstruction.arg) { this.emit_arg(inst.arg); return; }
+        if (inst is IRInstruction.assign) { this.emit_assign(inst.assign); em.debug.maybe_emit_imm_dbg(inst.assign.dest, em.current_dbg); return; }
+        if (inst is IRInstruction.cast_inst) { this.emit_cast(inst.cast_inst); return; }
+        if (inst is IRInstruction.binop) { this.emit_binop(inst.binop); return; }
+        if (inst is IRInstruction.unaryop) { this.emit_unaryop(inst.unaryop); return; }
+        if (inst is IRInstruction.rdmbr) { em.objects.emit_rdmbr(inst.rdmbr); return; }
+        if (inst is IRInstruction.wrmbr) { em.objects.emit_wrmbr(inst.wrmbr); return; }
+        if (inst is IRInstruction.br) { this.emit_br(inst.br); return; }
+        if (inst is IRInstruction.br_cond) { this.emit_br_cond(inst.br_cond); return; }
+        if (inst is IRInstruction.gc_poll) { this.emit_gc_poll(); return; }
+        if (inst is IRInstruction.ret) { this.emit_ret(inst.ret); return; }
+        if (inst is IRInstruction.ret_void) { this.emit_ret_void(); return; }
+        if (inst is IRInstruction.call) { em.calls.emit_call(inst.call); return; }
+        if (inst is IRInstruction.call_void) { em.calls.emit_call_void(inst.call_void); return; }
+        if (inst is IRInstruction.call_indirect) { em.calls.emit_call_indirect(inst.call_indirect); return; }
+        if (inst is IRInstruction.call_virt) { em.calls.emit_call_virt(inst.call_virt); return; }
+        if (inst is IRInstruction.new_inst) { em.objects.emit_new(inst.new_inst); return; }
+        if (inst is IRInstruction.new_enum) { em.objects.emit_new_enum(inst.new_enum); return; }
+        if (inst is IRInstruction.isenum) { em.objects.emit_isenum(inst.isenum); return; }
+        if (inst is IRInstruction.rdenum) { em.objects.emit_rdenum(inst.rdenum); return; }
+        if (inst is IRInstruction.isinstance) { em.objects.emit_isinstance(inst.isinstance); return; }
+        if (inst is IRInstruction.box) { em.objects.emit_box(inst.box); return; }
+        if (inst is IRInstruction.unbox) { em.objects.emit_unbox(inst.unbox); return; }
+        if (inst is IRInstruction.global_load) { this.emit_global_load(inst.global_load); return; }
+        if (inst is IRInstruction.global_store) { this.emit_global_store(inst.global_store); return; }
+        if (inst is IRInstruction.array_new_zeroed) { em.values.emit_array_new_zeroed(inst.array_new_zeroed); return; }
+        if (inst is IRInstruction.array_get) { em.values.emit_array_get(inst.array_get); return; }
+        if (inst is IRInstruction.array_set) { em.values.emit_array_set(inst.array_set); return; }
+        if (inst is IRInstruction.array_len) { em.values.emit_array_len(inst.array_len); return; }
+    }
+
+    fun emit_const(mut this, inst: IRConst) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_const(inst=" + inst.display() + ")");
+ }
+        let ir_type: string = inst.result.get_ir_type();
+        let result_name: string = inst.result.display();
+        // void has no LLVM value; skip emission entirely to avoid
+        // generating invalid IR like "add void 0, void"
+        if (ir_type == "void") { return; }
+        if (em.types.is_string_type(ir_type)) {
+            let stripped: string = strip_string_quotes(inst.value);
+            let found: Option<StringLitEntry> = em.globals.find_string_lit(stripped);
+            if (found.is_some()) {
+                if (em.gcscan.is_mutable_reg(result_name)) {
+                    let alloca_name: string = em.values.get_alloca_name(result_name);
+                    this.emit_line("  store ptr " + found.some.global_name() + ", ptr " + alloca_name);
+                } else {
+                    em.reg_map.push(new RegMapping(result_name, found.some.global_name()));
+                }
+            }
+            return;
+        }
+        if (em.types.is_bool_type(ir_type)) {
+            let val: mut string = "0";
+            if (inst.value == "true") { val = "1"; }
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                let alloca_name: string = em.values.get_alloca_name(result_name);
+                this.emit_line("  store i8 " + val + ", ptr " + alloca_name);
+            } else {
+                this.emit_line("  " + result_name + " = add i8 0, " + val);
+            }
+            em.values.register_llvm_type(result_name, "i8");
+            return;
+        }
+        if (em.types.is_int_type(ir_type)) {
+            let llvm_type: string = em.types.ir_type_to_llvm(ir_type);
+            // Coerce the value register if its type differs from the result type
+            // (e.g. an i64 constant being assigned to an i16 variable)
+            let coerced: string = em.values.coerce_operand(inst.value, llvm_type);
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                let alloca_name: string = em.values.get_alloca_name(result_name);
+                this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + alloca_name);
+            } else {
+                this.emit_line("  " + result_name + " = add " + llvm_type + " 0, " + coerced);
+            }
+            em.values.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        if (em.types.is_float_type(ir_type)) {
+            // Float/double constants: LLVM requires fadd (not add) and a float
+            // literal with a '.' or exponent (e.g. "3.0", "3.5", "1e5") — a bare
+            // integer like "3" is rejected by clang ("integer constant must have
+            // integer type"). Normalize the literal, then emit fadd 0.0 or store.
+            let llvm_type: string = em.types.ir_type_to_llvm(ir_type);
+            let normalized: string = normalize_float_literal(inst.value);
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                let alloca_name: string = em.values.get_alloca_name(result_name);
+                this.emit_line("  store " + llvm_type + " " + normalized + ", ptr " + alloca_name);
+            } else {
+                this.emit_line("  " + result_name + " = fadd " + llvm_type + " 0.0, " + normalized);
+            }
+            em.values.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        if (ir_type == "funptr") {
+            // Function-address constant: a `fun` value is a callable OBJECT
+            // (single ptr), so the constant is the per-function singleton
+            // synthesized by ensure_funval — not the bare code address. The
+            // singleton is a pure constant global; every site referencing the
+            // same function shares it, so fun-value equality is stable.
+            let funval_sym: string = em.calls.ensure_funval(inst.value);
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                let alloca_name: string = em.values.get_alloca_name(result_name);
+                this.emit_line("  store ptr " + funval_sym + ", ptr " + alloca_name);
+            } else {
+                em.reg_map.push(new RegMapping(result_name, funval_sym));
+            }
+            em.values.register_llvm_type(result_name, "ptr");
+            return;
+        }
+        // fallback
+        let llvm_type: string = em.types.ir_type_to_llvm(ir_type);
+        if (em.gcscan.is_mutable_reg(result_name)) {
+            let alloca_name: string = em.values.get_alloca_name(result_name);
+            // The alloca may be STRUCT-backed (mutable value-class/enum
+            // binding): a scalar zero constant must store as a struct
+            // zeroinitializer, not a raw value (the try-bind defensive zero).
+            let alloca_type: string = em.values.get_llvm_type(result_name);
+            if (em.string_starts_with(alloca_type, "%class.") || em.string_starts_with(alloca_type, "%enum.")) {
+                this.emit_line("  store " + alloca_type + " zeroinitializer, ptr " + alloca_name);
+            } else {
+                this.emit_line("  store " + llvm_type + " " + inst.value + ", ptr " + alloca_name);
+            }
+        } else if (em.string_starts_with(llvm_type, "%enum.")) {
+            // Enum struct values cannot use add; map directly
+            let phome: string = em.objects.promoted_struct_home(result_name);
+            if (phome != "") {
+                this.emit_line("  store " + llvm_type + " " + inst.value + ", ptr " + phome);
+            } else {
+                em.reg_map.push(new RegMapping(result_name, inst.value));
+            }
+        } else {
+            this.emit_line("  " + result_name + " = add " + llvm_type + " 0, " + inst.value);
+        }
+        // Preserve a struct-backed mutable reg's STORAGE type — registering
+        // the IR-derived "ptr" over it would corrupt later stores.
+        let final_type: string = em.values.get_llvm_type(result_name);
+        if (em.string_starts_with(final_type, "%class.") || em.string_starts_with(final_type, "%enum.")) {
+            em.values.register_llvm_type(result_name, final_type);
+        } else {
+            em.values.register_llvm_type(result_name, llvm_type);
+        }
+    }
+
+    fun emit_arg(mut this, inst: IRArg) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_arg(inst=" + inst.display() + ")");
+ }
+        let result_name: string = inst.result.display();
+        let param_name: string = "%" + inst.param_name;
+        // A value-class parameter was copied into local storage at function
+        // entry (see emit_function): route the body's uses of the parameter at
+        // the COPY so mutations stay local. `this` receivers have no copy and
+        // alias the caller's slot directly.
+        let target: mut string = param_name;
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(em.value_param_copies.size())) {
+            if (em.value_param_copies.at(cast<u64>(ci)).some.ir_name == param_name) {
+                target = em.value_param_copies.at(cast<u64>(ci)).some.llvm_value;
+            }
+            ci = ci + 1;
+        }
+        em.reg_map.push(new RegMapping(result_name, target));
+        let llvm_type: string = em.types.ir_type_to_llvm(inst.result.get_ir_type());
+        // For byval aggregate parameters (>16 bytes), the LLVM IR parameter is a
+        // pointer; register it as "ptr" so coerce_operand / materialize_enum_ptr
+        // emit proper ptr->struct loads.
+        if (em.types.llvm_type_size(llvm_type) > 16) {
+            em.values.register_llvm_type(param_name, "ptr");
+        } else if (llvm_type != "") {
+            em.values.register_llvm_type(param_name, llvm_type);
+        }
+        // A value-class parameter's COPY storage is a pointer to its struct.
+        if (target != param_name) {
+            em.values.register_llvm_type(target, "ptr");
+        }
+    }
+
+    fun emit_assign(mut this, inst: IRAssign) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_assign(inst=" + inst.display() + ")");
+ }
+        let dest_name: string = inst.dest.display();
+        let src_resolved: string = em.values.resolve_value(inst.src);
+        let ir_type: string = inst.dest.get_ir_type();
+        let llvm_type: string = em.types.ir_type_to_llvm(ir_type);
+        // Skip void/unknown assignments (can occur from VM enum variant check issues)
+        if (llvm_type == "void" || src_resolved == "unknown") {
+            this.emit_line("  ; skipped void/unknown assign to " + dest_name);
+            return;
+        }
+        if (em.gcscan.is_mutable_reg(dest_name)) {
+            // Mutable: store to alloca slot. The alloca type comes from
+            // scan_mutable_regs (a value-class mutable binding's alloca holds
+            // the STRUCT — reassignment copies memberwise; coerce_operand
+            // emits the ptr->struct load when the source is a pointer). Only
+            // STRUCT registrations are authoritative — scalar registrations
+            // are derivable from the IR type, and on temp/named display-name
+            // collisions the latest scalar registration may belong to the
+            // OTHER register.
+            let alloca_name: string = em.values.get_alloca_name(dest_name);
+            let store_type: mut string = llvm_type;
+            let reg_alloca_type: string = em.values.get_llvm_type(dest_name);
+            if (em.string_starts_with(reg_alloca_type, "%class.") || em.string_starts_with(reg_alloca_type, "%enum.")) {
+                store_type = reg_alloca_type;
+            }
+            let coerced: string = em.values.coerce_operand(src_resolved, store_type);
+            this.emit_line("  store " + store_type + " " + coerced + ", ptr " + alloca_name);
+            // The register now holds unrelated content — its inline-field
+            // provenance (struct_field_sources) is stale and must not divert
+            // later member writes to the old field slot.
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(em.struct_field_sources.size())) {
+                if (em.struct_field_sources.at(cast<u64>(pi)).some.ir_name == dest_name) {
+                    em.struct_field_sources.remove(cast<u64>(pi));
+                } else {
+                    pi = pi + 1;
+                }
+            }
+        } else if (llvm_type == "ptr") {
+            // Value-class binding (ref<X> value class): COPY into fresh storage
+            // (value-copy semantics) — unless the write-chain scan marked this
+            // ASSIGN as an alias (receiver materialization, the unbox idiom
+            // `let self: mut Self = cast<mut Self>(this)` whose body writes
+            // through to the box). Reference classes alias the pointer either
+            // way (copying a pointer IS sharing).
+            let vc_struct: string = em.types.value_class_struct_type(ir_type);
+            if (string_length(vc_struct) > 0 && !em.gcscan.is_alias_assign(dest_name)) {
+                let src_ptr: string = em.objects.materialize_enum_ptr(src_resolved, vc_struct);
+                let vc_size: i64 = em.types.llvm_type_size(vc_struct);
+                // The copy gets its own storage. A suffixed name avoids
+                // colliding with a TEMP register that shares the display
+                // name (user variable "t2" vs temp index 2 both display as
+                // "%t2"); consumers reach it through the reg_map alias.
+                let copy_alloca: string = dest_name + ".val";
+                em.values.emit_entry_alloca(copy_alloca, vc_struct);
+                em.plan.needs_memcpy = true;
+                this.emit_line("  call void @llvm.memcpy.p0.p0.i32(ptr " + copy_alloca + ", ptr " + src_ptr + ", i32 " + cast<string>(vc_size) + ", i1 false)");
+                em.reg_map.push(new RegMapping(dest_name, copy_alloca));
+                em.values.register_llvm_type(dest_name, "ptr");
+                em.values.register_llvm_type(copy_alloca, "ptr");
+            } else {
+                // pointer assignment: map dest to source directly
+                em.reg_map.push(new RegMapping(dest_name, src_resolved));
+                // PIN mirror for an alias assign (receiver materialization /
+                // unbox handoff): the mapped pointer is consumed as an lvalue
+                // receiver across arg-evaluation polls.
+                em.gcscan.gc_chain_pin_store(dest_name, src_resolved);
+            }
+        } else if (em.string_starts_with(llvm_type, "%enum.")) {
+            // enum struct assignment: coerce ptr->struct if needed, then map
+            let coerced: string = em.values.coerce_operand(src_resolved, llvm_type);
+            em.reg_map.push(new RegMapping(dest_name, coerced));
+        } else {
+            let coerced: string = em.values.coerce_operand(src_resolved, llvm_type);
+            // Self-assign normalization guard: an immutable register lowered
+            // straight into its own SSA name (BINOP result named after the
+            // user variable, e.g. `%t2 = add i64 %a, %b` for `let t2 = a+b`)
+            // must not be redefined (`%t2 = add i64 0, %t2` is a multiple
+            // definition). The normalize-add is the identity here — skip it.
+            if (coerced != dest_name) {
+                if (llvm_type == "float" || llvm_type == "double") {
+                    // Float/double copy: LLVM requires fadd with a float zero
+                    // ("0.0"), mirroring emit_const's float branch.
+                    this.emit_line("  " + dest_name + " = fadd " + llvm_type + " 0.0, " + coerced);
+                } else {
+                    this.emit_line("  " + dest_name + " = add " + llvm_type + " 0, " + coerced);
+                }
+            }
+        }
+        // Register the destination's value-model type. For a mutable reg the
+        // STORAGE type (struct-backed value class) must survive — re-registering
+        // the IR-derived "ptr" would clobber it (get_llvm_type resolves to the
+        // LATEST entry). For a value-class copy the binding is a ptr to its own
+        // fresh storage, so "ptr" is right.
+        if (em.gcscan.is_mutable_reg(dest_name)) {
+            let reg_alloca_type: string = em.values.get_llvm_type(dest_name);
+            if (em.string_starts_with(reg_alloca_type, "%class.") || em.string_starts_with(reg_alloca_type, "%enum.")) {
+                em.values.register_llvm_type(dest_name, reg_alloca_type);
+            } else {
+                em.values.register_llvm_type(dest_name, llvm_type);
+            }
+        } else {
+            em.values.register_llvm_type(dest_name, llvm_type);
+        }
+    }
+
+    fun emit_cast(mut this, inst: IRCast) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_cast(inst=" + inst.display() + ")");
+ }
+        let result_name: string = inst.result.display();
+        let operand_resolved: mut string = em.values.resolve_value(inst.operand);
+        let from_ir_type: string = inst.from_type;
+        // When the IR source type is void (e.g. from RDENUM whose payload_type
+        // was not resolved), fall back to the operand's registered LLVM type.
+        let from_llvm: string = if (from_ir_type == "void") {
+            let reg_type: string = em.values.get_llvm_type(operand_resolved);
+            if (reg_type != "" && reg_type != "void") { reg_type } else { em.types.ir_type_to_llvm(from_ir_type) }
+        } else {
+            em.types.ir_type_to_llvm(from_ir_type)
+        };
+        let to_llvm: string = em.types.ir_type_to_llvm(inst.to_type);
+
+        // A pointer-typed cast whose operand resolved to a STRUCT VALUE
+        // (mutable reg / struct SSA holding a value class or enum) must first
+        // be materialized to a pointer — bitcast/getelementptr on a struct
+        // SSA value is invalid IR.
+        if (from_llvm == "ptr") {
+            let actual_type: string = em.values.get_llvm_type(operand_resolved);
+            if (em.string_starts_with(actual_type, "%class.") || em.string_starts_with(actual_type, "%enum.")) {
+                operand_resolved = em.objects.struct_value_to_ptr(inst.operand, actual_type);
+            }
+        }
+
+        // If operand is an icmp result (i1) and target is string, use bool_to_string
+        if (em.types.is_string_type(inst.to_type) && em.values.is_icmp_value(operand_resolved)) {
+            em.plan.needs_bool_to_string = true;
+            this.emit_line("  " + result_name + " = call ptr @_emperor_bool_to_string(i1 " + operand_resolved + ")");
+            return;
+        }
+
+        // If operand is an icmp result (i1) but from_llvm expects wider type, zext first
+        if (em.values.is_icmp_value(operand_resolved) && from_llvm != "i1") {
+            let zext_tmp: string = em.values.next_tmp();
+            this.emit_line("  " + zext_tmp + " = zext i1 " + operand_resolved + " to " + from_llvm);
+            operand_resolved = zext_tmp;
+        }
+
+        // int → string: call runtime. When inst.from_type is void (from RDENUM),
+        // use the resolved from_llvm type to detect the actual integer type.
+        let effective_from: string = if (inst.from_type == "void" && em.types.is_int_type(from_llvm)) {
+            from_llvm
+        } else {
+            inst.from_type
+        };
+        if (em.types.is_string_type(inst.to_type) && em.types.is_int_type(effective_from)) {
+            em.plan.needs_int_to_string = true;
+            if (effective_from == "i64") {
+                this.emit_line("  " + result_name + " = call ptr @_emperor_i64_to_string(" + from_llvm + " " + operand_resolved + ")");
+            } else if (effective_from == "i8" || effective_from == "i16") {
+                // Signed i8/i16 must be sign-extended to i32 before calling
+                // _emperor_int_to_string(i32); otherwise LLVM zero-extends,
+                // turning negative values into large positive integers.
+                let sext_tmp: string = em.values.next_tmp();
+                this.emit_line("  " + sext_tmp + " = sext " + from_llvm + " " + operand_resolved + " to i32");
+                this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + sext_tmp + ")");
+            } else {
+                this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(" + from_llvm + " " + operand_resolved + ")");
+            }
+            return;
+        }
+
+        // float/double → string: extend float to double, then call runtime
+        if (em.types.is_string_type(inst.to_type) && (from_llvm == "float" || from_llvm == "double")) {
+            em.plan.needs_double_to_string = true;
+            if (from_llvm == "float") {
+                let fpext_tmp: string = em.values.next_tmp();
+                this.emit_line("  " + fpext_tmp + " = fpext float " + operand_resolved + " to double");
+                this.emit_line("  " + result_name + " = call ptr @_emperor_double_to_string(double " + fpext_tmp + ")");
+            } else {
+                this.emit_line("  " + result_name + " = call ptr @_emperor_double_to_string(double " + operand_resolved + ")");
+            }
+            return;
+        }
+
+        // bool → string: call runtime
+        if (em.types.is_string_type(inst.to_type) && em.types.is_bool_type(inst.from_type)) {
+            em.plan.needs_bool_to_string = true;
+            this.emit_line("  " + result_name + " = call ptr @_emperor_bool_to_string(i8 " + operand_resolved + ")");
+            return;
+        }
+
+        // char → string: the CHARACTER itself (reference semantics —
+        // BabyPenguin's C# char.ToString()), UTF-8 encoded by the runtime
+        // helper. "char" is not an is_int_type spelling, so without this arm
+        // the cast fell through every case and emitted garbage (segfault).
+        if (em.types.is_string_type(inst.to_type) && inst.from_type == "char") {
+            em.plan.needs_char_to_string = true;
+            this.emit_line("  " + result_name + " = call ptr @_emperor_char_to_string(i32 " + operand_resolved + ")");
+            return;
+        }
+
+        // enum → string: extract tag index, convert to string
+        if (em.types.is_string_type(inst.to_type) && em.types.is_enum_type(inst.from_type)) {
+            em.plan.needs_int_to_string = true;            
+            // operand_resolved may be a ptr (from NEW_ENUM registered as ptr);
+            // coerce it to the struct value before extractvalue.
+            let coerced_operand: string = em.values.coerce_operand(operand_resolved, from_llvm);
+            
+            let tag_tmp: string = em.values.next_tmp();
+            this.emit_line("  " + tag_tmp + " = extractvalue " + from_llvm + " " + coerced_operand + ", 1");
+            // The tag field is declared i64 (see emit_type_definitions), so
+            // narrow the extracted tag back to i32.
+            let tag_i32: string = em.values.next_tmp();
+            this.emit_line("  " + tag_i32 + " = trunc i64 " + tag_tmp + " to i32");
+            this.emit_line("  " + result_name + " = call ptr @_emperor_int_to_string(i32 " + tag_i32 + ")");
+            return;
+        }
+
+        let cast_op: string = em.cast_op(from_llvm, to_llvm);
+        if (from_llvm == to_llvm) {
+            if (from_llvm == "ptr") {
+                this.emit_line("  " + result_name + " = getelementptr i8, ptr " + operand_resolved + ", i64 0");
+                // Register the identity-cast result as a pointer: downstream
+                // coerce_operand calls (e.g. a struct store of this value)
+                // need the registered type to emit the ptr->struct load.
+                em.values.register_llvm_type(result_name, "ptr");
+            } else {
+                this.emit_line("  " + result_name + " = add " + to_llvm + " 0, " + operand_resolved);
+            }
+            return;
+        }
+        this.emit_line("  " + result_name + " = " + cast_op + " " + from_llvm + " " + operand_resolved + " to " + to_llvm);
+    }
+
+    // A `+` whose result type is ref<string> concatenates, but the bound
+    // operands keep their OWN types (e.g. `"x" + n` has an i64 right operand —
+    // BabyPenguin's VM stringifies lazily at runtime there, RuntimeFrame's
+    // StringValue fast path). The native backend must convert non-string
+    // operands explicitly before the _emperor_string_concat call: passing a
+    // raw i64/f64 as the ptr argument is invalid IR ("defined with type 'i64'
+    // but expected 'ptr'"). Mirror emit_cast's per-type to-string arms
+    // (sign-/float-extend details included). Non-primitive operands keep the
+    // historical passthrough.
+    fun coerce_concat_operand_to_string(mut this, value: IRValue, resolved: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let from_ir: string = value.get_ir_type();
+        if (em.types.is_string_type(from_ir)) { return resolved; }
+        let from_llvm: mut string = em.types.ir_type_to_llvm(from_ir);
+        if (from_ir == "void" || from_llvm == "void") {
+            let reg_type: string = em.values.get_llvm_type(resolved);
+            if (reg_type != "" && reg_type != "void") { from_llvm = reg_type; }
+        }
+        let tmp: string = em.values.next_tmp();
+        if (em.values.is_icmp_value(resolved)) {
+            em.plan.needs_bool_to_string = true;
+            this.emit_line("  " + tmp + " = call ptr @_emperor_bool_to_string(i1 " + resolved + ")");
+            return tmp;
+        }
+        if (em.types.is_bool_type(from_ir)) {
+            em.plan.needs_bool_to_string = true;
+            this.emit_line("  " + tmp + " = call ptr @_emperor_bool_to_string(i8 " + resolved + ")");
+            return tmp;
+        }
+        if (from_ir == "char") {
+            em.plan.needs_char_to_string = true;
+            this.emit_line("  " + tmp + " = call ptr @_emperor_char_to_string(i32 " + resolved + ")");
+            return tmp;
+        }
+        if (em.types.is_int_type(from_ir) || em.types.is_int_type(from_llvm)) {
+            em.plan.needs_int_to_string = true;
+            // Effective SOURCE type mirrors emit_cast: the semantic spelling
+            // decides signedness (u8's LLVM spelling is i8, but it must NOT
+            // be sign-extended — narrow types pass through like emit_cast's
+            // else arm and clang's C-style promotion keeps the bit pattern).
+            let effective_from: string = if (from_ir == "void" && em.types.is_int_type(from_llvm)) {
+                from_llvm
+            } else {
+                from_ir
+            };
+            if (effective_from == "i64") {
+                this.emit_line("  " + tmp + " = call ptr @_emperor_i64_to_string(" + from_llvm + " " + resolved + ")");
+            } else if (effective_from == "i8" || effective_from == "i16") {
+                // Signed i8/i16 must be sign-extended to i32 before calling
+                // _emperor_int_to_string(i32); zero-extension would turn
+                // negative values into large positive integers.
+                let sext_tmp: string = em.values.next_tmp();
+                this.emit_line("  " + sext_tmp + " = sext " + from_llvm + " " + resolved + " to i32");
+                this.emit_line("  " + tmp + " = call ptr @_emperor_int_to_string(i32 " + sext_tmp + ")");
+            } else {
+                this.emit_line("  " + tmp + " = call ptr @_emperor_int_to_string(" + from_llvm + " " + resolved + ")");
+            }
+            return tmp;
+        }
+        if (em.types.is_float_type(from_ir) || from_llvm == "float" || from_llvm == "double") {
+            em.plan.needs_double_to_string = true;
+            if (from_llvm == "float") {
+                let fpext_tmp: string = em.values.next_tmp();
+                this.emit_line("  " + fpext_tmp + " = fpext float " + resolved + " to double");
+                this.emit_line("  " + tmp + " = call ptr @_emperor_double_to_string(double " + fpext_tmp + ")");
+            } else {
+                this.emit_line("  " + tmp + " = call ptr @_emperor_double_to_string(double " + resolved + ")");
+            }
+            return tmp;
+        }
+        return resolved;
+    }
+
+    fun emit_binop(mut this, inst: IRBinOp) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_binop(inst=" + inst.display() + ")");
+ }
+        let result_name: string = inst.result.display();
+        let left_resolved: string = em.values.resolve_value(inst.left);
+        let right_resolved: string = em.values.resolve_value(inst.right);
+        let llvm_type: string = em.types.ir_type_to_llvm(inst.ir_type);
+
+        // String concatenation: BINOP add with ref<string> type. The operands
+        // keep their own bound types, so coerce non-string ones to strings
+        // before the runtime call.
+        if (inst.op == "add" && em.types.is_string_type(inst.ir_type)) {
+            let left_str: string = this.coerce_concat_operand_to_string(inst.left, left_resolved);
+            let right_str: string = this.coerce_concat_operand_to_string(inst.right, right_resolved);
+            this.emit_line("  " + result_name + " = call ptr @_emperor_string_concat(ptr " + left_str + ", ptr " + right_str + ")");
+            return;
+        }
+
+        // Comparison operators: use operand types for the comparison, result is i1
+        if (this.is_comparison_binop(inst.op)) {
+            // Strings must be compared by content, not by char* pointer value
+            // (every literal is a distinct global and every substring/concat is a
+            // fresh GC allocation, so `icmp eq ptr` is almost always false for
+            // equal text — e.g. the lexer's keyword match). Route eq/ne on
+            // ref<string> through a runtime strcmp-based helper.
+            if (em.types.is_string_type(inst.left.get_ir_type()) || em.types.is_string_type(inst.right.get_ir_type())) {
+                if (inst.op == "eq" || inst.op == "ne") {
+                    let eq_tmp: string = em.values.next_tmp();
+                    this.emit_line("  " + eq_tmp + " = call i32 @_emperor_string_equal(ptr " + left_resolved + ", ptr " + right_resolved + ")");
+                    if (inst.op == "eq") {
+                        this.emit_line("  " + result_name + " = icmp ne i32 " + eq_tmp + ", 0");
+                    } else {
+                        this.emit_line("  " + result_name + " = icmp eq i32 " + eq_tmp + ", 0");
+                    }
+                    em.icmp_results.push(result_name);
+                    em.values.register_llvm_type(result_name, "i1");
+                    return;
+                }
+                // Relational ops on strings are lexicographic: the raw pointer
+                // icmp below would compare ADDRESSES (literal allocation order,
+                // content-independent garbage). Route through the strcmp-style
+                // sign helper instead.
+                let cmp_pred: string = if (inst.op == "lt" || inst.op == "slt") { "slt" }
+                    else { if (inst.op == "gt" || inst.op == "sgt") { "sgt" }
+                    else { if (inst.op == "le" || inst.op == "sle") { "sle" }
+                    else { if (inst.op == "ge" || inst.op == "sge") { "sge" } else { "" } } } };
+                if (cmp_pred != "") {
+                    let cmp_tmp: string = em.values.next_tmp();
+                    this.emit_line("  " + cmp_tmp + " = call i32 @_emperor_string_compare(ptr " + left_resolved + ", ptr " + right_resolved + ")");
+                    this.emit_line("  " + result_name + " = icmp " + cmp_pred + " i32 " + cmp_tmp + ", 0");
+                    em.icmp_results.push(result_name);
+                    em.values.register_llvm_type(result_name, "i1");
+                    return;
+                }
+            }
+            let operand_llvm_type: string = em.types.ir_type_to_llvm(inst.left.get_ir_type());
+            let coerced_left: string = em.values.coerce_operand(left_resolved, operand_llvm_type);
+            let coerced_right: string = em.values.coerce_operand(right_resolved, operand_llvm_type);
+            let llvm_op: string = binop_to_llvm(inst.op, inst.left.get_ir_type());
+            this.emit_line("  " + result_name + " = " + llvm_op + " " + operand_llvm_type + " " + coerced_left + ", " + coerced_right);
+            em.icmp_results.push(result_name);
+            em.values.register_llvm_type(result_name, "i1");
+            return;
+        }
+
+        // Coerce operands to expected LLVM type
+        let coerced_left: string = em.values.coerce_operand(left_resolved, llvm_type);
+        let coerced_right: string = em.values.coerce_operand(right_resolved, llvm_type);
+
+        let llvm_op: string = binop_to_llvm(inst.op, inst.ir_type);
+        this.emit_line("  " + result_name + " = " + llvm_op + " " + llvm_type + " " + coerced_left + ", " + coerced_right);
+        em.values.register_llvm_type(result_name, llvm_type);
+    }
+
+    fun is_comparison_binop(this, op: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_comparison_binop(op=" + cast<string>(op) + ")");
+ }
+        if (op == "eq") { return true; }
+        if (op == "ne") { return true; }
+        if (op == "slt") { return true; }
+        if (op == "sgt") { return true; }
+        if (op == "sle") { return true; }
+        if (op == "sge") { return true; }
+        if (op == "lt") { return true; }
+        if (op == "gt") { return true; }
+        if (op == "le") { return true; }
+        if (op == "ge") { return true; }
+        return false;
+    }
+
+    fun emit_unaryop(mut this, inst: IRUnaryOp) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_unaryop(inst=" + inst.display() + ")");
+ }
+        let result_name: string = inst.result.display();
+        let operand_resolved: string = em.values.resolve_value(inst.operand);
+        let llvm_type: string = em.types.ir_type_to_llvm(inst.ir_type);
+        if (inst.op == "neg") {
+            let coerced: string = em.values.coerce_operand(operand_resolved, llvm_type);
+            if (em.types.is_float_type(inst.ir_type)) {
+                // Float negation: LLVM requires fsub with a float zero ("0.0")
+                this.emit_line("  " + result_name + " = fsub " + llvm_type + " 0.0, " + coerced);
+            } else {
+                this.emit_line("  " + result_name + " = sub " + llvm_type + " 0, " + coerced);
+            }
+            em.values.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        if (inst.op == "plus") {
+            let coerced: string = em.values.coerce_operand(operand_resolved, llvm_type);
+            this.emit_line("  " + result_name + " = freeze " + llvm_type + " " + coerced);
+            em.values.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        if (inst.op == "not") {
+            // If operand is an icmp result (i1), zext to i8 first to avoid
+            // type mismatch (xor i8 expects i8, not i1)
+            let operand: mut string = operand_resolved;
+            if (em.values.is_icmp_value(operand_resolved)) {
+                let zext_tmp: string = em.values.next_tmp();
+                this.emit_line("  " + zext_tmp + " = zext i1 " + operand_resolved + " to i8");
+                operand = zext_tmp;
+            }
+            this.emit_line("  " + result_name + " = xor i8 " + operand + ", 1");
+            em.values.register_llvm_type(result_name, "i8");
+            return;
+        }
+        if (inst.op == "bitnot") {
+            let coerced: string = em.values.coerce_operand(operand_resolved, llvm_type);
+            this.emit_line("  " + result_name + " = xor " + llvm_type + " " + coerced + ", -1");
+            em.values.register_llvm_type(result_name, llvm_type);
+            return;
+        }
+        this.emit_line("  ; unknown unaryop " + inst.op);
+    }
+
+    fun emit_br(mut this, inst: IRBr) {
+        _utils.trace_enter("Enter emit_br");
+        this.emit_line("  br label %" + inst.target_name);
+    }
+
+    fun emit_br_cond(mut this, inst: IRBrCond) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_br_cond");
+        let cond_resolved: string = em.values.resolve_value(inst.cond);
+        let is_icmp_result: bool = em.values.is_icmp_value(cond_resolved);
+        if (is_icmp_result) {
+            this.emit_line("  br i1 " + cond_resolved + ", label %" + inst.true_name + ", label %" + inst.false_name);
+        } else {
+            let cond_i1: string = "%cond_" + cast<string>(em.cond_counter);
+            em.cond_counter = em.cond_counter + 1;
+            this.emit_line("  " + cond_i1 + " = trunc i8 " + cond_resolved + " to i1");
+            this.emit_line("  br i1 " + cond_i1 + ", label %" + inst.true_name + ", label %" + inst.false_name);
+        }
+    }
+
+    fun emit_ret(mut this, inst: IRRet) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_ret(inst=" + inst.display() + ")");
+ }
+        this.emit_gc_frame_unlink();
+        if (em.current_sret_llvm_type != "") {
+            // sret: store the return struct into the sret buffer, ret void
+            let val_resolved: string = em.values.resolve_value(inst.value);
+            // val_resolved may be a struct value (e.g. from NEW_ENUM) or a pointer
+            // (e.g. an sret alloca from a forwarded call). Coerce to struct value first.
+            let coerced: string = em.values.coerce_operand(val_resolved, em.current_sret_llvm_type);
+            this.emit_line("  store " + em.current_sret_llvm_type + " " + coerced + ", ptr " + em.current_sret_param);
+            this.emit_line("  ret void");
+        } else {
+            // void-as-unit: returning a void-typed value (a T-typed return
+            // with T=void) lowers to a plain `ret void` — the value has no
+            // LLVM representation and must not be resolved.
+            if (em.current_ret_type == "void") {
+                this.emit_line("  ret void");
+                return;
+            }
+            let val_resolved: mut string = em.values.resolve_value(inst.value);
+            let llvm_type: string = em.types.ir_type_to_llvm(em.current_ret_type);
+            // Coerce i1 (icmp result) to the expected return type (e.g. i8 for bool)
+            if (em.values.is_icmp_value(val_resolved) && llvm_type != "i1") {
+                let zext_tmp: string = em.values.next_tmp();
+                this.emit_line("  " + zext_tmp + " = zext i1 " + val_resolved + " to " + llvm_type);
+                val_resolved = zext_tmp;
+            }
+            // Value-class return (llvm ptr in the value model): the resolved
+            // value may be a loaded STRUCT (mutable reg / struct SSA) — return
+            // a pointer to its storage instead.
+            if (llvm_type == "ptr") {
+                let actual_type: string = em.values.get_llvm_type(val_resolved);
+                if (em.string_starts_with(actual_type, "%class.") || em.string_starts_with(actual_type, "%enum.")) {
+                    val_resolved = em.objects.struct_value_to_ptr(inst.value, actual_type);
+                }
+            }
+            this.emit_line("  ret " + llvm_type + " " + val_resolved);
+        }
+    }
+
+    fun emit_ret_void(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_ret_void");
+        this.emit_gc_frame_unlink();
+        if (em.current_ret_type == "void") {
+            this.emit_line("  ret void");
+        } else {
+            this.emit_line("  unreachable");
+        }
+    }
+
+    // GC v2: pop the current function's frame descriptor off the stack
+    // chain before leaving (the entry-block gep of prev dominates every
+    // ret block). The exception path is covered by the try frame's saved
+    // head (scheduler.c restores it on throw).
+    //
+    // Emitted UNCONDITIONALLY: whether this function will have a descriptor
+    // is only known after the whole body is emitted (struct temps add frame
+    // slots from inside body emission), so the decision is deferred to
+    // emit_gc_frame_descriptor, which strips these lines when the descriptor
+    // turned out not to exist. Gating on the prediction here was the source
+    // of the leaked-frame mt crash family.
+    fun emit_gc_frame_unlink(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let restored: string = em.values.next_tmp();
+        // The literal gep name: gc_frame_prev_gep may still be empty here
+        // (prediction false) even though the descriptor will exist; the
+        // descriptor always defines this exact name.
+        this.emit_line("  " + restored + " = load ptr, ptr %__gcf.prev");
+        this.emit_line("  call void @_emperor_gc_frame_set(ptr " + restored + ")");
+    }
+
+    // GC v2: safepoint poll — a cheap C call (one load + ret when no
+    // collection is pending) placed before every call and allocation site.
+    fun emit_gc_poll(mut this) {
+        this.emit_line("  call void @_emperor_gc_poll()");
+    }
+
+    fun emit_label(mut this, inst: IRLabelInst) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_label(inst=" + inst.display() + ")");
+ }
+        em.sb.append(inst.label_name + ":\n");
+    }
+
+    fun emit_global_load(mut this, inst: IRGlobalLoad) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_global_load(inst=" + inst.display() + ")");
+ }
+        let result_name: string = inst.result.display();
+        let global_name: string = "@" + sanitize_name(inst.global_name);
+        // A value-class global stores the STRUCT inline. A write-chain load
+        // (`g.x = 9` lowers to GLOBAL_LOAD + WRMBR) must address the global
+        // itself (lvalue addressing); every other read LOADS the struct — a
+        // copy (value-copy semantics). Reference/string globals load ptr as
+        // before.
+        let vc_struct: string = em.types.value_class_struct_type(inst.ir_type);
+        if (string_length(vc_struct) > 0) {
+            if (em.gcscan.is_write_chain_reg(result_name)) {
+                em.reg_map.push(new RegMapping(result_name, global_name));
+                em.values.register_llvm_type(result_name, "ptr");
+                return;
+            }
+            em.objects.emit_def_load(result_name, vc_struct, global_name);
+            return;
+        }
+        let llvm_type: string = em.types.ir_type_to_llvm(inst.ir_type);
+        this.emit_line("  " + result_name + " = load " + llvm_type + ", ptr " + global_name);
+        em.values.register_llvm_type(result_name, llvm_type);
+        // PIN mirror for a write-chain ref-global load (`g.a.b = 9` chains
+        // a GLOBAL_LOAD): the loaded object pointer is an lvalue chain step
+        // in SSA until the WRMBR. (The value-class wchain branch above maps
+        // to the GLOBAL's own address — stable, nothing to pin.)
+        if (llvm_type == "ptr") {
+            em.gcscan.gc_chain_pin_store(result_name, result_name);
+        }
+    }
+
+    fun emit_global_store(mut this, inst: IRGlobalStore) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_global_store(inst=" + inst.display() + ")");
+ }
+        let value_resolved: string = em.values.resolve_value(inst.value);
+        let value_type: string = inst.value.get_ir_type();
+        let llvm_type: mut string = em.types.ir_type_to_llvm(value_type);
+        // A value-class global stores the STRUCT inline: coerce the value
+        // (ptr->struct load) and store the whole struct.
+        if (llvm_type == "ptr") {
+            let vc: string = em.types.value_class_struct_type(value_type);
+            if (string_length(vc) > 0) { llvm_type = vc; }
+        }
+        let coerced: string = em.values.coerce_operand(value_resolved, llvm_type);
+        let global_name: string = "@" + sanitize_name(inst.global_name);
+        this.emit_line("  store " + llvm_type + " " + coerced + ", ptr " + global_name);
+    }
+}
+
+}

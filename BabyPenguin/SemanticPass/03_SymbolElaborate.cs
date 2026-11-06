@@ -204,13 +204,27 @@ namespace BabyPenguin.SemanticPass
                                 func.IsStatic = true;
                                 foreach (var param in syntaxNode.Parameters)
                                 {
+                                    // Untyped non-`this` parameter (e.g. `fun stamp(self, v: T)`
+                                    // where `self` is a plain identifier, NOT the `this` receiver
+                                    // which the parser pre-types as `Self`): parameters have no
+                                    // initializer to infer from, so EmperorPenguin treats them as
+                                    // void and elides them from the calling convention (the call
+                                    // site never passes them — void-as-unit elision). Mirror that
+                                    // OBSERVABLE behavior here by declaring the parameter out of
+                                    // existence: it gets no FunctionParameter, no parameter symbol
+                                    // (a body read reports a clean E_RESOLVE_SYMBOL instead of the
+                                    // previous NullReferenceException crash), and the remaining
+                                    // parameters renumber so arity/ARG alignment stays consistent.
+                                    if (param.TypeSpecifier == null)
+                                        continue;
+
                                     if (func.Parameters.Any(f => f.Name == param.Name))
                                     {
                                         throw new BabyPenguinException($"Duplicate parameter name '{param.Name}' for function '{syntaxNode.Name}'", param.SourceLocation, code: ErrorCode.E_DUPLICATE_PARAM);
                                     }
                                     else
                                     {
-                                        var paramTypeName = param.TypeSpecifier!.Name; // TODO: type inference
+                                        var paramTypeName = param.TypeSpecifier.Name;
                                         var paramType = Model.ResolveType(paramTypeName, scope: func);
                                         if (paramType == null)
                                         {

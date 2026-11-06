@@ -11,6 +11,23 @@ export class SemanticError {
     message: string = "";
     location: !mut SourceLocation = new SourceLocation("", 0, 0);
     severity: mut ErrorSeverity = new ErrorSeverity.Error();
+    // Batch 4.2 (incremental session, fast lane): the pipeline stage this
+    // error was reported at (model.current_pass_index at report time; 0 for
+    // pre-pipeline construction). Pure metadata — never printed, never
+    // consulted by the full path; the session's error replay sorts the
+    // merged (replayed clean + fresh changed-file) error list by
+    // (pass_idx, file segment order, intra-file order) to reproduce the
+    // full-compile ordering byte-exactly.
+    pass_idx: mut i64 = 0;
+    // O2 (reconciliation split): the full name of the TOP-LEVEL def whose
+    // per-def processing reported this error ("" for global-stage /
+    // pass-1/2 / location-less reports). Pure metadata on the full path;
+    // the session's error replay uses it to DROP the stale errors of a
+    // specialization the reconciliation just evicted (a dead instance's
+    // snapshot-carried error would otherwise survive as a phantom
+    // diagnostic — repro: O2c scenario, Tests/IncrementalTest/
+    // IncrementalDeadSpecializationStaleError.md).
+    owner_def: mut string = "";
 
     fun new(mut this, code: ErrorCode, message: string, location: SourceLocation) {
         this.code = code;
@@ -39,13 +56,13 @@ export class BoundCompilationUnit {
     // return-type walk includes them — sharing one map would change which def
     // a lookup resolves. Each map is built lazily on first use over the whole
     // definition tree (preorder, first-wins — same winner as the linear walk)
-    // and extended incrementally as monomorphize/catch_up append new
+    // and extended incrementally as monomorphize/A5-late-binding append new
     // TOP-LEVEL defs (nested trees never change after pass 1), so a miss is
     // definitive.
-    func_def_index: mut _utils.StrMap = new _utils.StrMap();
+    func_def_index: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     func_defs_flat: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     func_defs_indexed_upto: mut i64 = 0;
-    func_ret_index: mut _utils.StrMap = new _utils.StrMap();
+    func_ret_index: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
     func_ret_flat: mut _utils.List<BoundDefinition> = new _utils.List<BoundDefinition>();
     func_ret_indexed_upto: mut i64 = 0;
 

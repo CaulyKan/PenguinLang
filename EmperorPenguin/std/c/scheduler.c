@@ -1340,6 +1340,11 @@ static int win_fd_ready(int fd, int for_write) {
 
 int64_t _emperor_fd_poll(int64_t timeout_ms) {
     if (!fd_waiters) return 0;
+    /* Bounded wait (the classic scheduler's 50ms idle cap — bug #5 family):
+     * timeout_ms > 0 stops after the deadline so the Penguin loop can keep
+     * re-polling delta-parked pollers while idle with fd waiters. */
+    const int64_t deadline =
+        (timeout_ms > 0) ? (int64_t)GetTickCount64() + timeout_ms : 0;
     for (;;) {
         int woken = 0;
         for (EmperorFdWaiter* w = fd_waiters; w;) {
@@ -1354,6 +1359,7 @@ int64_t _emperor_fd_poll(int64_t timeout_ms) {
         }
         if (woken) return woken;
         if (timeout_ms == 0) return 0; /* pure readiness probe */
+        if (timeout_ms > 0 && (int64_t)GetTickCount64() >= deadline) return 0;
         /* Block until an external event: there is no epoll-for-pipes on
          * Windows, so readiness is re-probed at a small interval (idle cost
          * is one PeekNamedPipe per waiter per 2 ms — the LSP parks exactly

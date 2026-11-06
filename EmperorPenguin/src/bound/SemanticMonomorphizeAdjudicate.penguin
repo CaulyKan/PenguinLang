@@ -1,0 +1,277 @@
+// Batch 3.2 (pipeline A/B re-order, roadmap 3.2): the B1 ADJUDICATION half
+// of MonomorphizePass. The fixpoint driver in SemanticMonomorphize.penguin is
+// split into two concerns:
+//   A4 (collection)  — MonoCollect walks the bound tree + AST and accumulates
+//                      instantiation REQUESTS (pure traversal, no def
+//                      construction; see SemanticMonomorphizeCollect.penguin).
+//   B1 (adjudication)— THIS module: the single point where a round's requests
+//                      are decided. Per request: guard checks (template-param
+//                      args, already-exists dedup, ambiguous method names left
+//                      to the pass-8 receiver-inference path), construction
+//                      through the ensure/specialize funnels, the B1 record
+//                      write (MonomorphizePass.b1_adjudicated — kind + request
+//                      site), resolve/fix-this/shipped-instance marking and
+//                      the result.definitions push.
+// Method bodies moved VERBATIM from MonomorphizePass.run (zero semantic
+// change — same operations, same order, same interleaving: type requests are
+// adjudicated before the function-request collection of the same round, and
+// finalize (resolve+push) runs after both halves, exactly as the monolithic
+// loop did). The on-demand creation paths outside pass 3 (pass-8 expression
+// binding, meta responders — see the call-site site tags) share the same
+// creation funnels and therefore the same B1 record; they deliberately keep
+// the ensure form (the fixpoint is over when they run).
+namespace emperor {
+
+class MonoAdjudicate {
+    // Back-reference to the owning pass (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern, mirroring the batch 0.1/0.2
+    // splits): all shared monomorphize state stays on MonomorphizePass
+    // (whose own model field is reached via owner).
+    owner: mut Option<MonomorphizePass> = new Option<MonomorphizePass>.none();
+
+    fun new(mut this, owner: mut MonomorphizePass) {
+        this.owner = new Option<MonomorphizePass>.some(owner);
+    }
+
+    // B1 half 1: adjudicate one round's TYPE instantiation requests
+    // (class/enum/interface). Construction goes through ensure_specialized_def
+    // (the shared creation funnel — the B1 record is written inside it from
+    // the "fixpoint-type" site tag set here).
+    fun adjudicate_type_requests(mut this, instantiations: _utils.List<BoundType>, result: mut BoundCompilationUnit, unit: CompilationUnit, specialized_defs: mut _utils.List<BoundDefinition>, specialized_asts: mut _utils.List<Definition>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        // catch_up_def takes `mut this`: rebind the (immutably-typed)
+        // Option payload to a mutable binding first.
+        let m: mut SemanticModel = owner.model.some;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(instantiations.size())) {
+            let inst: BoundType = instantiations.at(cast<u64>(i)).some;
+            if (let template_def := inst.type_definition.some) {
+                if (template_def is BoundDefinition.class_def) {
+                    let cls: BoundClassDefinition = template_def.class_def;
+                    if (cast<i64>(cls.generic_params.size()) > 0) {
+                        let ast_def: Option<Definition> = owner.specialize.find_ast_def_by_name(unit.definitions, cls.name);
+                        if (ast_def.is_some()) {
+                            owner.b1_site = "fixpoint-type";
+                            let spec: Option<BoundDefinition> = owner.specialize.ensure_specialized_def(inst, result.global_scope);
+                            if (spec.is_some()) {
+                                // (batch 3.3b) the historical catch_up_def call here was a
+                                // CONSTANT no-op: the fixpoint runs at pipeline stage 3, so the
+                                // replay boundary (saved >= 4) never opened — the global stages
+                                // pick the def up. Removed rather than routed to A5.
+                                if (owner.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized class " + cls.name); }
+                                specialized_defs.push(spec.some);
+                                specialized_asts.push(ast_def.some);
+                            }
+                        }
+                    }
+                }
+                if (template_def is BoundDefinition.enum_def) {
+                    let e: BoundEnumDefinition = template_def.enum_def;
+                    if (cast<i64>(e.generic_params.size()) > 0) {
+                        let ast_def: Option<Definition> = owner.specialize.find_ast_def_by_name(unit.definitions, e.name);
+                        if (ast_def.is_some()) {
+                            owner.b1_site = "fixpoint-type";
+                            let spec: Option<BoundDefinition> = owner.specialize.ensure_specialized_def(inst, result.global_scope);
+                            if (spec.is_some()) {
+                                // (batch 3.3b) constant no-op catch_up_def removed (stage 3).
+                                if (owner.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized enum " + e.name); }
+                                specialized_defs.push(spec.some);
+                                specialized_asts.push(ast_def.some);
+                            }
+                        }
+                    }
+                }
+                if (template_def is BoundDefinition.interface_def) {
+                    let iface: BoundInterfaceDefinition = template_def.interface_def;
+                    if (cast<i64>(iface.generic_params.size()) > 0) {
+                        let ast_def: Option<Definition> = owner.specialize.find_ast_def_by_name(unit.definitions, iface.name);
+                        if (ast_def.is_some()) {
+                            owner.b1_site = "fixpoint-type";
+                            let spec: Option<BoundDefinition> = owner.specialize.ensure_specialized_def(inst, result.global_scope);
+                            if (spec.is_some()) {
+                                // (batch 3.3b) constant no-op catch_up_def removed (stage 3).
+                                if (owner.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized interface " + iface.name); }
+                                specialized_defs.push(spec.some);
+                                specialized_asts.push(ast_def.some);
+                            }
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // B1 half 2: adjudicate one round's FUNCTION instantiation requests.
+    // Guards: template-param args skipped; AMBIGUOUS METHOD NAMES skipped (a
+    // bare method name several classes define is left to the pass-8
+    // receiver-inference path); dedup against this batch + previous rounds.
+    fun adjudicate_function_requests(mut this, func_instantiations: _utils.List<FunctionInstantiation>, result: mut BoundCompilationUnit, unit: CompilationUnit, specialized_defs: mut _utils.List<BoundDefinition>, specialized_asts: mut _utils.List<Definition>) {
+        let owner: mut MonomorphizePass = this.owner.some;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(func_instantiations.size())) {
+            let inst: FunctionInstantiation = func_instantiations.at(cast<u64>(fi)).some;
+            // Skip instantiations carrying unresolved template params
+            // (collected out of still-generic template bodies) — same
+            // rationale as the ensure_specialized_def guard above.
+            let inst_has_tpl: mut bool = false;
+            let fig: mut i64 = 0;
+            while (fig < cast<i64>(inst.generic_args.size())) {
+                if (bound_type_is_template_param(arg_as_bound_type(inst.generic_args.at(cast<u64>(fig)).some))) { inst_has_tpl = true; }
+                fig = fig + 1;
+            }
+            if (inst_has_tpl) { fi = fi + 1; continue; }
+            // Full base name for the mangle (it encodes the qualified name).
+            let inst_tmpl: Option<BoundDefinition> = owner.collect.find_bound_function_def(result.definitions, inst.func_name);
+            // AMBIGUOUS METHOD NAMES: a generic method call collected from a
+            // member access carries only the bare method name — when several
+            // classes define the same-named method template (map/filter/
+            // reduce/into on every iterator class), picking any one of them
+            // here attaches the specialization to the WRONG class (garbage
+            // bodies: this resolves against another class, `new C` breaks).
+            // Skip here and let the pass-8 ensure path create it — that one
+            // infers the callee from the RECEIVER (infer_member_callee_sym).
+            if (inst_tmpl.is_some() && inst_tmpl.some is BoundDefinition.function_def) {
+                if (owner.collect.is_ambiguous_method_template(result.definitions, inst.func_name)) {
+                    fi = fi + 1;
+                    continue;
+                }
+                // CROSS-KIND COLLISION: the bare name denotes BOTH a free
+                // function template (what find_bound_function_def matched —
+                // request order decides WHICH) and a class method template.
+                // The collector records member calls `a.identity<string>(..)`
+                // under the bare METHOD name, so a fixpoint specialization
+                // here attaches to the WRONG template (a spurious free
+                // identity<string> next to the real Foo.identity<string>),
+                // and the shared-AST catch-up then poisons the explicit free
+                // call's argument types (void params). Skip and let pass-8
+                // route both shapes precisely: identifier callee →
+                // try_explicit_generic_specialization on the free template,
+                // member callee → infer_member_callee_sym on the receiver's
+                // class (MethodTemplateNameCollidesWithFreeFunction).
+                let cls_hit: Option<BoundDefinition> = owner.collect.find_bound_function_def_in_class(result.definitions, inst.func_name);
+                if (cls_hit.is_some() && cls_hit.some is BoundDefinition.function_def) {
+                    if (cls_hit.some.function_def.full_name != inst_tmpl.some.function_def.full_name) {
+                        fi = fi + 1;
+                        continue;
+                    }
+                }
+            }
+            let inst_full_base: mut string = inst.func_name;
+            if (inst_tmpl.is_some() && inst_tmpl.some is BoundDefinition.function_def) {
+                inst_full_base = inst_tmpl.some.function_def.full_name;
+            }
+            let mangled: string = MonomorphizePass.mangle_generic_name(inst_full_base, inst.generic_args);
+            let already_exists: mut bool = false;
+            let check_i: mut i64 = 0;
+            while (check_i < cast<i64>(specialized_defs.size())) {
+                let sd: BoundDefinition = specialized_defs.at(cast<u64>(check_i)).some;
+                if (sd is BoundDefinition.function_def) {
+                    if (sd.function_def.name == mangled) {
+                        already_exists = true;
+                    }
+                }
+                check_i = check_i + 1;
+            }
+            // Also check result.definitions for specializations from previous iterations
+            if (!already_exists) {
+                let check_j: mut i64 = 0;
+                while (check_j < cast<i64>(result.definitions.size())) {
+                    let sd: BoundDefinition = result.definitions.at(cast<u64>(check_j)).some;
+                    if (sd is BoundDefinition.function_def) {
+                        if (sd.function_def.name == mangled) {
+                            already_exists = true;
+                        }
+                    }
+                    check_j = check_j + 1;
+                }
+            }
+            if (!already_exists) {
+                let tmpl_def: Option<BoundDefinition> = inst_tmpl;
+                if (tmpl_def.is_some() && tmpl_def.some is BoundDefinition.function_def) {
+                    let tmpl_func: BoundFunctionDefinition = tmpl_def.some.function_def;
+                    if (cast<i64>(tmpl_func.generic_params.size()) > 0) {
+                        let ast_def: Option<Definition> = owner.specialize.find_ast_def_by_name(unit.definitions, inst.func_name);
+                        if (ast_def.is_some()) {
+                            // Find the specialized class scope if this is a method in a specialized generic class
+                            let method_class_scope: Option<BoundScope> = owner.specialize.find_method_class_scope(result.definitions, specialized_defs, inst.func_name);
+                            // The specialized function's scope parent is the TEMPLATE's
+                            // enclosing scope (file namespace / namespace), so body name
+                            // resolution sees the same siblings as the template.
+                            let tmpl_parent_scope: mut BoundScope = def_lookup_scope(tmpl_def.some, result.global_scope);
+                            owner.b1_site = "fixpoint-func";
+                            let spec_result: Option<BoundDefinition> = owner.specialize.specialize_function_def(
+                                tmpl_func, inst.generic_args, mangled, tmpl_parent_scope, method_class_scope);
+                            if (spec_result.is_some()) {
+                                if (spec_result.some is BoundDefinition.function_def) {
+                                    owner.b1_record(spec_result.some.function_def.full_name, "fun", owner.b1_site);
+                                }
+                                if (owner.model.some.verbose >= 2) { __builtin.eprintln("[EmperorPenguin Monomorphize]   Specialized function " + mangled); }
+                                specialized_defs.push(spec_result.some);
+                                specialized_asts.push(ast_def.some);
+                            }
+                        }
+                    }
+                }
+            }
+            fi = fi + 1;
+        }
+    }
+
+    // B1 finalize: resolve the round's batch (resolve_pair BEFORE pushing so
+    // mut reference updates persist), fix `this` params for class-method
+    // specializations, apply the dyn-lib shipped-instance marking, then push
+    // the batch into result.definitions. Returns the batch size.
+    fun finalize_round(mut this, result: mut BoundCompilationUnit, specialized_defs: mut _utils.List<BoundDefinition>, specialized_asts: mut _utils.List<Definition>) -> i64 {
+        let owner: mut MonomorphizePass = this.owner.some;
+        // Resolve types BEFORE pushing so mut reference updates persist
+        let k: mut i64 = 0;
+        while (k < cast<i64>(specialized_defs.size())) {
+            let spec_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+            let ast_def: Definition = specialized_asts.at(cast<u64>(k)).some;
+            if (spec_def is BoundDefinition.function_def) {
+                if (spec_def.function_def.scope.is_some()) {
+                    specialized_defs.set(cast<u64>(k), owner.model.some.resolve_types_pass.resolve_pair(ast_def, spec_def, spec_def.function_def.scope.some));
+                } else {
+                    specialized_defs.set(cast<u64>(k), owner.model.some.resolve_types_pass.resolve_pair(ast_def, spec_def, result.global_scope));
+                }
+                // Fix up 'this' parameter type for class method specializations
+                let updated_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+                let parent_cls: Option<BoundClassDefinition> = owner.specialize.find_parent_class_for_method(result.definitions, specialized_defs, updated_def.function_def.full_name);
+                if (parent_cls.is_some()) {
+                    owner.specialize.fix_this_param_type(updated_def.function_def, parent_cls.some);
+                    specialized_defs.set(cast<u64>(k), updated_def);
+                }
+            } else {
+                specialized_defs.set(cast<u64>(k), owner.model.some.resolve_types_pass.resolve_pair(ast_def, spec_def, result.global_scope));
+            }
+            // Dyn-lib: a specialized instance that a loaded lib SHIPS is emitted
+            // as a declaration (linked to the lib symbol) instead of being
+            // re-compiled into the consumer. Guard: the instance's TEMPLATE
+            // must be lib-sourced (shipped verbatim in the lib's metadata) —
+            // a consumer-local template whose specialization mangles onto a
+            // shipped name is a metadata/name collision and would silently
+            // produce a declaration whose ABI does not match the .so symbol.
+            let resolved_def: BoundDefinition = specialized_defs.at(cast<u64>(k)).some;
+            if (owner.model.some.build_scopes_pass.is_shipped_instance(resolved_def)) {
+                if (owner.specialize.specialization_template_is_lib_sourced(resolved_def, result)) {
+                    owner.model.some.build_scopes_pass.mark_lib_export(resolved_def);
+                } else {
+                    owner.model.some.report_error(new ErrorCode.E_DUPLICATE_SYMBOL(),
+                        "specialization '" + owner.specialize.spec_full_name(resolved_def) + "' collides with an instance shipped by a loaded .penguin-lib, but its template is not provided by that lib (the lib metadata lists the instance without shipping the template source); redefining it is not supported",
+                        new SourceLocation("", 0, 0));
+                }
+            }
+            k = k + 1;
+        }
+
+        let j: mut i64 = 0;
+        while (j < cast<i64>(specialized_defs.size())) {
+            result.definitions.push(specialized_defs.at(cast<u64>(j)).some);
+            j = j + 1;
+        }
+        return cast<i64>(specialized_defs.size());
+    }
+}
+
+}

@@ -3,6 +3,7 @@
 Phase 5a.4: def-level meta resolves inside namespaces too. `ns.val()` is included by `#if (true)` and called from the initial block.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

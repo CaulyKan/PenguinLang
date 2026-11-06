@@ -1,0 +1,872 @@
+// member-access binding: field/method lookup on classes, enums,
+// namespaces and generic (specialized) containers.
+// Batch 0.2 mechanical split of SemanticBindExpressions.penguin —
+// method bodies moved verbatim (see the driver class there).
+namespace emperor {
+
+class BindExprMember {
+    // Back-reference to the owning pass (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern, mirroring the batch 0.1
+    // LLVMEmitter split): all shared binding state stays on
+    // BindExpressionsPass (whose own model field is reached via owner).
+    owner: mut Option<BindExpressionsPass> = new Option<BindExpressionsPass>.none();
+
+    fun new(mut this, owner: mut BindExpressionsPass) {
+        this.owner = new Option<BindExpressionsPass>.some(owner);
+    }
+
+    fun get_field_mutability_from_class(this, cls: BoundClassDefinition, field_name: string) -> Mutability {
+        _utils.trace_enter("Enter get_field_mutability_from_class");
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(cls.fields.size())) {
+            let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+            if (fd is BoundDefinition.class_field) {
+                if (fd.class_field.name == field_name) {
+                    return fd.class_field.mutability;
+                }
+            }
+            fi = fi + 1;
+        }
+        return new Mutability.Mutable();
+    }
+
+
+    // True when a field's declared type is one of the class's generic params
+    // (e.g. `a: T` in `#template(T: type) class A`). Such fields are implicitly
+    // immutable — you can't know whether T is a value or reference type, so
+    // BabyPenguin treats the substituted arg as immutable (`A<!mut i32>.a`).
+    fun field_is_generic_param(this, cls: BoundClassDefinition, field_name: string) -> bool {
+        _utils.trace_enter("Enter field_is_generic_param");
+        if (let ast_def := cls.ast_source.some) {
+            if (ast_def is Definition.class_def) {
+                let ast_cls: ClassDefinition = ast_def.class_def;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(ast_cls.members.size())) {
+                    let member: Definition = ast_cls.members.at(cast<u64>(mi)).some;
+                    if (member is Definition.class_field) {
+                        if (member.class_field.name == field_name) {
+                            if (let ts := member.class_field.type_spec.some) {
+                                // `auto T` explicitly follows container mutability,
+                                // so it is not implicitly immutable.
+                                if (ts.is_auto_mutability) { return false; }
+                                let ts_name: string = ts.name;
+                                let gi: mut i64 = 0;
+                                while (gi < cast<i64>(cls.generic_params.size())) {
+                                    if (cls.generic_params.at(cast<u64>(gi)).some == ts_name) {
+                                        return true;
+                                    }
+                                    gi = gi + 1;
+                                }
+                            }
+                        }
+                    }
+                    mi = mi + 1;
+                }
+            }
+        }
+        return false;
+    }
+    fun resolve_field_type_from_class(this, base_type: BoundType, cls: BoundClassDefinition, field_name: string, scope: BoundScope) -> mut BoundType {
+        _utils.trace_enter("Enter resolve_field_type_from_class");
+        // If base type has generic args, look up the field in the specialized class
+        if (cast<i64>(base_type.generic_args.size()) > 0) {
+            let mangled: string = MonomorphizePass.mangle_generic_name(cls.full_name, base_type.generic_args);
+            let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+            if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+                let spec_bt: BoundType = spec_sym.some.type_sym.bound_type;
+                if (let spec_td := spec_bt.type_definition.some) {
+                    if (spec_td is BoundDefinition.class_def) {
+                        let spec_cls: BoundClassDefinition = spec_td.class_def;
+                        let fi: mut i64 = 0;
+                        while (fi < cast<i64>(spec_cls.fields.size())) {
+                            let fd: BoundDefinition = spec_cls.fields.at(cast<u64>(fi)).some;
+                            if (fd is BoundDefinition.class_field) {
+                                if (fd.class_field.name == field_name) {
+                                    return fd.class_field.bound_type;
+                                }
+                            }
+                            fi = fi + 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: search in generic class fields
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(cls.fields.size())) {
+            let fd: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+            if (fd is BoundDefinition.class_field) {
+                if (fd.class_field.name == field_name) {
+                    return fd.class_field.bound_type;
+                }
+            }
+            fi = fi + 1;
+        }
+        return new BoundType();
+    }
+
+
+    // Resolve the specialized class/enum def for a generic base type reference
+    // (e.g. Option<i64> → Option__i64) so member lookup can search the specialized
+    // def's vtables (which include #specializing-injected impls that the template
+    // does not carry). Returns the template def unchanged when the base is
+    // non-generic, or none when no specialized def exists yet.
+    fun resolve_specialized_container_def(this, base_type: BoundType, scope: BoundScope) -> Option<BoundDefinition> {
+        if (cast<i64>(base_type.generic_args.size()) == 0) { return base_type.type_definition; }
+        if (base_type.type_definition.is_none()) { return new Option<BoundDefinition>.none(); }
+        let td: BoundDefinition = base_type.type_definition.some;
+        let name: mut string = "";
+        if (td is BoundDefinition.class_def) { name = td.class_def.full_name; }
+        if (td is BoundDefinition.enum_def) { name = td.enum_def.full_name; }
+        if (td is BoundDefinition.interface_def) { name = td.interface_def.full_name; }
+        if (string_length(name) == 0) { return new Option<BoundDefinition>.none(); }
+        let mangled: string = MonomorphizePass.mangle_generic_name(name, base_type.generic_args);
+        let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+        if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+            return spec_sym.some.type_sym.bound_type.type_definition;
+        }
+        return new Option<BoundDefinition>.none();
+    }
+
+
+    // Bind a namespace-scope member access that carries GENERIC ARGS
+    // (`__builtin.Option<i64>.member`, `ns.Enum<T>.variant`): the plain
+    // namespace lookup returns the TEMPLATE type symbol and drops the args, so
+    // the following member lookup misses #specializing-injected impls (they
+    // live on the SPECIALIZED def only, e.g. Option__i64). Mirror
+    // bind_identifier's generic-type branch: resolve the args, mangle from the
+    // template def's full name, prefer the specialized type symbol; with no
+    // specialization yet, fall back to the template+args type so the member
+    // lookup still takes the generic-base (specialized-def) search paths.
+    // Returns none when the member isn't a type or an arg fails to resolve —
+    // callers then fall through to the plain namespace lookup.
+    fun bind_namespaced_generic_type_member(mut this, ns_scope: BoundScope, expr: MemberAccessExpression, bound_base: Option<BoundExpression>, scope: mut BoundScope) -> Option<BoundExpression> {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        let found: Option<BoundSymbol> = ns_scope.lookup_symbol(expr.member_name);
+        if (found.is_none()) { return new Option<BoundExpression>.none(); }
+        if (!(found.some is BoundSymbol.type_sym)) { return new Option<BoundExpression>.none(); }
+        let resolved_args: mut _utils.List<BoundTypeArg> = new _utils.List<BoundTypeArg>();
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(expr.generic_args.size())) {
+            let arg_bt: BoundType = owner.model.some.resolve_type_specifier(expr.generic_args.at(cast<u64>(gi)).some, scope);
+            if (arg_bt.kind is TypeKind.ErrorKind) { return new Option<BoundExpression>.none(); }
+            resolved_args.push(make_type_arg(arg_bt));
+            gi = gi + 1;
+        }
+        let tmpl_bt: BoundType = found.some.type_sym.bound_type;
+        if (tmpl_bt.type_definition.is_some()) {
+            let td: BoundDefinition = tmpl_bt.type_definition.some;
+            let base_full: mut string = "";
+            if (td is BoundDefinition.class_def) { base_full = td.class_def.full_name; }
+            if (td is BoundDefinition.enum_def) { base_full = td.enum_def.full_name; }
+            if (td is BoundDefinition.interface_def) { base_full = td.interface_def.full_name; }
+            if (string_length(base_full) > 0) {
+                let mangled: string = MonomorphizePass.mangle_generic_name(base_full, resolved_args);
+                let spec_sym: Option<BoundSymbol> = scope.lookup_type_in_scope(mangled);
+                if (spec_sym.is_some() && spec_sym.some is BoundSymbol.type_sym) {
+                    let bt: BoundType = spec_sym.some.type_sym.bound_type;
+                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, spec_sym);
+                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                }
+            }
+        }
+        let tmpl_with_args: mut BoundType = tmpl_bt.with_generic_args(resolved_args);
+        let result2: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(tmpl_with_args, bound_base, expr.member_name, found);
+        return new Option<BoundExpression>.some(new BoundExpression.member_access(result2));
+    }
+
+
+    // Look up `member_name` in the SPECIALIZED class/enum scope for a generic base
+    // type (e.g. Option<i64> → Option__i64). #specializing-injected impl methods are
+    // registered in the specialized scope, not the template's. Returns none when the
+    // base is non-generic or the member isn't found there.
+    fun lookup_specialized_scope_member(this, base_type: BoundType, member_name: string, scope: BoundScope) -> Option<BoundSymbol> {
+        if (let spec_def := this.resolve_specialized_container_def(base_type, scope).some) {
+            if (spec_def is BoundDefinition.class_def) {
+                if (spec_def.class_def.scope.is_some()) {
+                    return spec_def.class_def.scope.some.lookup_symbol(member_name);
+                }
+            }
+            if (spec_def is BoundDefinition.enum_def) {
+                if (spec_def.enum_def.scope.is_some()) {
+                    return spec_def.enum_def.scope.some.lookup_symbol(member_name);
+                }
+            }
+        }
+        return new Option<BoundSymbol>.none();
+    }
+
+
+    // The vtables to search for a member access on `base_type`: the SPECIALIZED
+    // class/enum def's vtables when the base is generic (Option<i64>), else the
+    // template's vtables. #specializing-injected impl vtables live on the
+    // specialized def, not the template.
+    fun resolve_container_vtables(this, base_type: BoundType, template_vtables: _utils.List<BoundVTable>, scope: BoundScope) -> _utils.List<BoundVTable> {
+        if (let spec_def := this.resolve_specialized_container_def(base_type, scope).some) {
+            if (spec_def is BoundDefinition.class_def) {
+                return spec_def.class_def.vtables;
+            }
+            if (spec_def is BoundDefinition.enum_def) {
+                return spec_def.enum_def.vtables;
+            }
+        }
+        return template_vtables;
+    }
+
+
+    // Ensure the specialized def of a generic interface instantiation
+    // (`__builtin.ISource` + i64 -> ISource$<mangle>) exists — created,
+    // type-resolved, signature-caught-up and registered for body binding.
+    // The virtual call sites (cast<ISink<T>>(port).write) resolve their
+    // signatures through the specialized def; without it the template's
+    // unresolved T-shaped returns poison the call ABI.
+    fun ensure_generic_iface_spec(mut this, iface_short: string, payload: BoundType, scope: mut BoundScope) {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        if (owner.model.some.current_unit.is_none()) { return; }
+        let ts: mut TypeSpecifier = new TypeSpecifier();
+        ts.qualified_parts.push("__builtin");
+        ts.name = iface_short;
+        ts.generic_args.push(owner.coroutine.spawn_type_spec(payload));
+        let bt: BoundType = owner.model.some.resolve_type_specifier(ts, scope);
+        if (bt.type_definition.is_none()) { return; }
+        let td: BoundDefinition = bt.type_definition.some;
+        let full_base: mut string = "";
+        let is_generic_iface: mut bool = false;
+        if (td is BoundDefinition.interface_def) {
+            is_generic_iface = cast<i64>(td.interface_def.generic_params.size()) > 0;
+            full_base = td.interface_def.full_name;
+        }
+        if (!is_generic_iface || cast<i64>(bt.generic_args.size()) == 0) { return; }
+        let mangled: string = MonomorphizePass.mangle_generic_name(full_base, bt.generic_args);
+        if (owner.model.some.global_scope.lookup_type_in_scope(mangled).is_some()) { return; }
+        owner.model.some.monomorphize_pass.b1_site = "member-iface";
+        let spec: Option<BoundDefinition> = owner.model.some.monomorphize_pass.ensure_specialized_def(bt, owner.model.some.global_scope);
+        if (spec.is_none()) { return; }
+        let ast_spec: Option<Definition> = owner.model.some.monomorphize_pass.find_ast_def_by_name(owner.model.some.ast_definitions, iface_short);
+        // Sequence the new def through resolve + the signature-level catch-up.
+        // Batch 3.3a: resolve_pair stamps the monomorphize-protocol index 3 by
+        // itself and the catch-up guards are per-processor constants — no
+        // pass-pointer lowering needed; vtables/classification still run.
+        let m1: mut SemanticModel = owner.model.some;
+        if (ast_spec.is_some()) {
+            let resolved_def1: BoundDefinition = owner.model.some.resolve_types_pass.resolve_pair(ast_spec.some, spec.some, this.spec_resolve_scope(spec.some));
+            m1.a5_pass.bind_def_signature_before_bodies(resolved_def1, owner.model.some.current_unit.some);
+            owner.model.some.current_unit.some.definitions.push(resolved_def1);
+        } else {
+            m1.a5_pass.bind_def_signature_before_bodies(spec.some, owner.model.some.current_unit.some);
+            owner.model.some.current_unit.some.definitions.push(spec.some);
+        }
+    }
+
+    // Bind a member access's base: RAW (port sugar suppressed) when the base
+    // is itself a member access onto a port field (a channel-object receiver).
+    fun bind_member_base(mut this, base: Expression, base_is_port: Option<PortAccessInfo>, scope: mut BoundScope) -> Option<BoundExpression> {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        if (base_is_port.is_some()) {
+            return owner.coroutine.bind_expr_no_port_sugar(base, scope);
+        }
+        return owner.bind_expression(base, scope);
+    }
+
+    // True when a member-access BASE denotes a VALUE (an object), as opposed
+    // to a type / namespace reference (the base of an unbound or static
+    // method reference).
+    fun member_base_is_value(mut this, ma: BoundMemberAccessExpression) -> bool {
+        if (ma.base_expr.is_none()) { return false; }
+        let b: BoundExpression = ma.base_expr.some;
+        if (b is BoundExpression.identifier) {
+            if (b.identifier.symbol.is_some()) {
+                let s: BoundSymbol = b.identifier.symbol.some;
+                if (s is BoundSymbol.type_sym) { return false; }
+                if (s is BoundSymbol.namespace_sym) { return false; }
+            }
+            return true;
+        }
+        if (b is BoundExpression.member_access) {
+            let inner: BoundMemberAccessExpression = b.member_access;
+            if (inner.member_symbol.is_some()) {
+                let s2: BoundSymbol = inner.member_symbol.some;
+                if (s2 is BoundSymbol.type_sym) { return false; }
+                if (s2 is BoundSymbol.namespace_sym) { return false; }
+            }
+            return true;
+        }
+        return true;
+    }
+
+    // A method reference in VALUE position: bind_member_access gives the
+    // method's full fun type (receiver included). A reference through a VALUE
+    // base (`x.call`) is BOUND — the receiver is baked into the callable
+    // object, so the value's type STRIPS the this parameter
+    // (fun<Ret, Params...>). A reference through a TYPE base (`Temp.call`)
+    // stays UNBOUND — the full type keeps the receiver as the first parameter
+    // (fun<Ret, Temp, Params...>; h(a, x) ≡ Temp.b(a, x)). Call positions are
+    // unaffected: bind_function_call dispatches on member_symbol, not on this
+    // type.
+    fun adjust_method_ref_type(mut this, ma: BoundMemberAccessExpression) -> BoundExpression {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        if (ma.member_symbol.is_none()) { return new BoundExpression.member_access(ma); }
+        let sym: BoundSymbol = ma.member_symbol.some;
+        if (!(sym is BoundSymbol.function_sym)) { return new BoundExpression.member_access(ma); }
+        let fsym: BoundFunctionSymbol = sym.function_sym;
+        if (!owner.call.function_is_method(fsym)) { return new BoundExpression.member_access(ma); }
+        let bt: BoundType = ma.get_bound_type();
+        if (!(bt.kind is TypeKind.FunctionKind)) { return new BoundExpression.member_access(ma); }
+        if (cast<i64>(bt.generic_args.size()) < 2) { return new BoundExpression.member_access(ma); }
+        if (this.member_base_is_value(ma)) {
+            // Receiver mutability: a `mut this` method referenced on an
+            // immutable binding must fail (same rule as calling it).
+            if (cast<i64>(fsym.parameters.size()) > 0) {
+                let this_param: BoundFunctionParameter = fsym.parameters.at(cast<u64>(0)).some;
+                if (this_param.is_mutable && ma.base_expr.is_some()) {
+                    let base_type: BoundType = ma.base_expr.some.get_bound_type();
+                    if (base_type.mutability is Mutability.Immutable) {
+                        owner.model.some.report_error(new ErrorCode.E_TYPE_MISMATCH(),
+                            "Cannot bind method '" + fsym.name + "' with 'mut this' on an immutable binding",
+                            fsym.location);
+                    }
+                }
+            }
+            let ret: BoundType = arg_as_bound_type(bt.generic_args.at(cast<u64>(0)).some);
+            let params: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+            let i: mut i64 = 2;
+            while (i < cast<i64>(bt.generic_args.size())) {
+                params.push(arg_as_bound_type(bt.generic_args.at(cast<u64>(i)).some));
+                i = i + 1;
+            }
+            let stripped: BoundType = owner.model.some.type_registry.make_function_type(ret, params, bt.is_async_function);
+            let replacement: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(stripped, ma.base_expr, ma.member_name, ma.member_symbol);
+            return new BoundExpression.member_access(replacement);
+        }
+        return new BoundExpression.member_access(ma);
+    }
+
+    // Quiet probes for the interface-cast immediate-call rewrite below: resolve
+    // a cast's target as an interface WITHOUT reporting (a failed resolution
+    // just means the rewrite does not apply and the cast binds normally).
+    // Uses the SAME resolution path as bind_cast (resolve_type_specifier with
+    // its anywhere fallbacks) so the two never disagree; failures resolve to
+    // the error type, which is not InterfaceKind, so the rewrite declines.
+    fun bind_member_access(mut this, expr: MemberAccessExpression, scope: mut BoundScope) -> Option<BoundExpression> {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        _utils.trace_enter("Enter bind_member_access");        if (expr.base_expr.is_some()) {
+            // Interface-cast immediate-call exception (primitive interfaces
+            // round): `cast<I>(prim).m(...)` — when the base of this member
+            // access is a cast to an INTERFACE whose inner expression is a
+            // primitive (incl. string), rewrite to a plain `prim.m(...)` and
+            // rebind, so the primitive interface-method dispatch (the
+            // primitive_impl registry) resolves a direct call. This is the
+            // ONLY sanctioned position for a primitive-to-interface cast:
+            // the rewritten AST drops the cast node entirely, so bind_cast's
+            // E_TYPE_MISMATCH for every other position stays in force.
+            if (expr.base_expr.some is Expression.cast_expr) {
+                let rce: CastExpression = expr.base_expr.some.cast_expr;
+                let target_iface: Option<BoundType> = if (rce.target_type.is_some()) {
+                    owner.castnew.probe_cast_target_iface(rce.target_type.some, scope)
+                } else {
+                    owner.castnew.probe_cast_target_iface_anywhere(rce.type_name)
+                };
+                if (target_iface.is_some() && rce.inner.is_some()) {
+                    // The cast must be resolved through the TARGET interface's
+                    // member set: `cast<IHash>(a).foo()` may not reach a method
+                    // some OTHER primitive impl provides.
+                    let iface_declares: mut bool = false;
+                    if (let idef := target_iface.some.type_definition.some) {
+                        if (idef is BoundDefinition.interface_def) {
+                            if (idef.interface_def.scope.is_some()) {
+                                let msym: Option<BoundSymbol> = idef.interface_def.scope.some.lookup_symbol(expr.member_name);
+                                if (msym.is_some() && msym.some is BoundSymbol.function_sym) {
+                                    iface_declares = true;
+                                }
+                            }
+                        }
+                    }
+                    if (iface_declares) {
+                        // Probe with port sugar SUPPRESSED — speculative window
+                        // W4 (batch 3.4 semantics fixed): the E5 port rewrites
+                        // generate cast-shaped ASTs whose inner is a port member
+                        // access — probing that with the bare-read sugar on would
+                        // desugar into another cast and recurse forever. A failed
+                        // inner bind means the primitive-interface rewrite
+                        // condition does not hold; the code below falls through
+                        // to the ordinary member path, which reports the real
+                        // error.
+                        let wm: mut SemanticModel = owner.model.some;
+                        let saved: bool = wm.speculative_window_begin();
+                        let inner_bound: Option<BoundExpression> = owner.coroutine.bind_expr_no_port_sugar(rce.inner.some, scope);
+                        wm.speculative_window_end(saved);
+                        if (inner_bound.is_some()) {
+                            let ibt: BoundType = inner_bound.some.get_bound_type();
+                            if (ibt.kind is TypeKind.PrimitiveKind) {
+                                let rew: mut MemberAccessExpression = new MemberAccessExpression();
+                                rew.base_expr = rce.inner;
+                                rew.member_name = expr.member_name;
+                                return this.bind_member_access(rew, scope);
+                            }
+                        }
+                    }
+                }
+            }
+            // E5 receiver-raw rule: when the base of this member access is
+            // itself a member access onto a declared port field, the access
+            // operates on the port's CHANNEL OBJECT (a method call like
+            // `this.y.write(v)` / `f.x.close()`) — bind the base RAW, without
+            // the bare-read payload conversion.
+            let base_is_port: Option<PortAccessInfo> = owner.coroutine.resolve_port_access_for_base(expr.base_expr.some, scope);
+            let bound_base: Option<BoundExpression> = this.bind_member_base(expr.base_expr.some, base_is_port, scope);
+            if (bound_base.is_some()) {
+                let base_type: BoundType = bound_base.some.get_bound_type();
+                // Ownership payload privacy (design doc §9.3): the wrapper's
+                // internal slots must not be reachable — a direct read of
+                // __payload leaks the payload without consuming the wrapper
+                // (exclusivity void); a direct write forges state. .move()
+                // is the only way out, .is_owned() the only introspection.
+                if (expr.member_name == "__payload" || expr.member_name == "__state") {
+                    let td: Option<BoundDefinition> = base_type.type_definition;
+                    if (td.is_some()) {
+                        let d: BoundDefinition = td.some;
+                        if (d is BoundDefinition.class_def) {
+                            if (d.class_def.name == "Ownership") {
+                                owner.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                    "Ownership internals are private: use .move() to take the payload (or .is_owned() to inspect state); direct '"
+                                    + expr.member_name + "' access would bypass the exclusivity guarantee (design doc §9)",
+                                    new SourceLocation("", 0, 0));
+                                return new Option<BoundExpression>.none();
+                            }
+                        }
+                    }
+                }
+                // E5 bare port READ: `X.p` in value position (p a declared
+                // port of X's class) is the settle-point payload read. The
+                // read matrix lets outsiders read outputs but only the owner
+                // read its inputs; construct bodies may not read ports (a
+                // settle point is a suspension).
+                if (base_is_port.is_none() && owner.model.some.port_sugar_suppressed == 0) {
+                    let pai: Option<PortAccessInfo> = owner.coroutine.resolve_port_access(expr, scope);
+                    if (pai.is_some()) {
+                        let info: PortAccessInfo = pai.some;
+                        if (owner.coroutine.in_construct_routine(scope)) {
+                            owner.model.some.report_error(new ErrorCode.E_EVENT_INVALID(),
+                                "Cannot read port '" + expr.member_name + "' inside a construct block - a port read is a settle point (it waits for the current time to settle), and construct bodies must not wait",
+                                new SourceLocation("", 0, 0));
+                            return new Option<BoundExpression>.none();
+                        }
+                        if (info.is_input && !info.base_is_this) {
+                            owner.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                "Cannot read input port '" + expr.member_name + "' of another module - inputs are only visible inside their module",
+                                new SourceLocation("", 0, 0));
+                            return new Option<BoundExpression>.none();
+                        }
+                        // The full `X.p` member access AST (the read's channel
+                        // operand), rebuilt fresh — the generated code embeds
+                        // it inside a cast expression.
+                        let port_ma: mut MemberAccessExpression = new MemberAccessExpression();
+                        port_ma.base_expr = expr.base_expr;
+                        port_ma.member_name = expr.member_name;
+                        return owner.bind_expression(owner.coroutine.mk_bare_port_read_expr(new Expression.member_access(port_ma), info.payload, scope), scope);
+                    }
+                }
+                // Port-field source/sink surface: EP's IChannel carries only
+                // close/is_closed (no interface inheritance), so write/
+                // try_write/current/try_poll on an IChannel-typed value (a
+                // module's port field) resolve nowhere. Rewrite to an explicit
+                // interface cast — `cast<mut ISink<T>>(x).write(v)` /
+                // `cast<mut ISource<T>>(x).current()` — which dispatches
+                // virtually to the backing channel.
+                if (base_type.kind is TypeKind.InterfaceKind && cast<i64>(base_type.generic_args.size()) == 1) {
+                    if (base_type.type_definition.is_some() && base_type.type_definition.some is BoundDefinition.interface_def) {
+                        if (base_type.type_definition.some.interface_def.name == "IChannel") {
+                            if (expr.member_name == "write" || expr.member_name == "try_write" || expr.member_name == "current" || expr.member_name == "try_poll") {
+                                // Write-side permission matrix for the method form:
+                                // driving a port through `this.y.write(v)` /
+                                // `f.y.write(v)` obeys the assignment-sugar rules
+                                // (inputs are connect-only; outputs are driven by
+                                // their owner only), and counts as a body driver.
+                                if (base_is_port.is_some()) {
+                                    let winfo: PortAccessInfo = base_is_port.some;
+                                    if (expr.member_name == "write" || expr.member_name == "try_write") {
+                                        if (winfo.is_input) {
+                                            owner.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                                "Cannot write input port '" + winfo.field_sym.name + "' - inputs are wired exclusively through connect",
+                                                new SourceLocation("", 0, 0));
+                                            return new Option<BoundExpression>.none();
+                                        }
+                                        if (!winfo.base_is_this) {
+                                            owner.model.some.report_error(new ErrorCode.E_MUTABILITY(),
+                                                "Cannot drive output port '" + winfo.field_sym.name + "' of another module from outside '" + winfo.class_full_name + "'",
+                                                new SourceLocation("", 0, 0));
+                                            return new Option<BoundExpression>.none();
+                                        }
+                                        owner.coroutine.register_body_driver(winfo, scope);
+                                    }
+                                }
+                                let iface_name: string = if (expr.member_name == "write" || expr.member_name == "try_write") { "ISink" } else { "ISource" };
+                                let payload: BoundType = arg_as_bound_type(base_type.generic_args.at(cast<u64>(0)).some);
+                                this.ensure_generic_iface_spec(iface_name, payload, scope);
+                                let iface_ts: mut TypeSpecifier = new TypeSpecifier();
+                                iface_ts.qualified_parts.push("__builtin");
+                                iface_ts.name = iface_name;
+                                iface_ts.generic_args.push(owner.coroutine.spawn_type_spec(payload));
+                                iface_ts.is_mutable = true;
+                                let cast_node: mut CastExpression = new CastExpression();
+                                cast_node.target_type = new Option<TypeSpecifier>.some(iface_ts);
+                                cast_node.type_name = iface_name;
+                                cast_node.inner = new Option<Expression>.some(expr.base_expr.some);
+                                let rew: mut MemberAccessExpression = new MemberAccessExpression();
+                                rew.base_expr = new Option<Expression>.some(new Expression.cast_expr(cast_node));
+                                rew.member_name = expr.member_name;
+                                return this.bind_member_access(rew, scope);
+                            }
+                        }
+                    }
+                }
+                // Primitive interface-method dispatch: `impl IHash for i64 { ... }`
+                // methods are mangled to `<name>$$<primitive>` at bind time and
+                // recorded in the primitive_impl registry. Resolve `k.hash()` on a
+                // primitive base to the mangled symbol (direct call, no vtable).
+                // Unmatched names fall through to the existing paths below.
+                if (base_type.kind is TypeKind.PrimitiveKind) {
+                    let base_name: string = base_type.display_name();
+                    let pi2: mut i64 = 0;
+                    while (pi2 < cast<i64>(owner.model.some.primitive_impl_for_type.size())) {
+                        if (owner.model.some.primitive_impl_for_type.at(cast<u64>(pi2)).some == base_name
+                            && owner.model.some.primitive_impl_method_name.at(cast<u64>(pi2)).some == expr.member_name) {
+                            let impl_sym: mut BoundFunctionSymbol = owner.model.some.primitive_impl_method_sym.at(cast<u64>(pi2)).some;
+                            let bt: mut BoundType = owner.call.find_function_return_type(impl_sym);
+                            let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, new Option<BoundSymbol>.some(new BoundSymbol.function_sym(impl_sym)));
+                            return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                        }
+                        pi2 = pi2 + 1;
+                    }
+                }
+                if (let td := base_type.type_definition.some) {
+                    if (td is BoundDefinition.class_def) {
+                        let cls: BoundClassDefinition = td.class_def;
+                        if (cls.scope.is_some()) {
+                            let found: Option<BoundSymbol> = cls.scope.some.lookup_symbol(expr.member_name);
+                            if (found.is_some()) {
+                                let bt: mut BoundType = owner.literal.resolve_symbol_type(found.some);
+                                // For fields, look up the field definition for accurate type
+                                if (found.some is BoundSymbol.variable) {
+                                    if (found.some.variable.variable_kind is VariableSymbolKind.Field) {
+                                        bt = this.resolve_field_type_from_class(base_type, cls, expr.member_name, scope);
+                                        // Adjust field type mutability based on field's declared
+                                        // mutability (Auto/Mutable/Immutable) and container mutability.
+                                        let field_mut: Mutability = this.get_field_mutability_from_class(cls, expr.member_name);
+                                        if (field_mut is Mutability.Auto) {
+                                            // For Auto fields, use container's mutability
+                                            // UNLESS the field type already has explicit Mutable
+                                            // (from generic specialization like A<mut i32>), or the
+                                            // field's type is a generic param (implicitly immutable).
+                                            // A generic-param field is only immutable when the
+                                            // substituted arg is NOT explicitly mutable (A<mut i32>
+                                            // stays mutable — the field's own type carries it).
+                                            if (this.field_is_generic_param(cls, expr.member_name)) {
+                                                if (!(bt.mutability is Mutability.Mutable)) {
+                                                    bt = bt.with_mutability(new Mutability.Immutable());
+                                                }
+                                            } else if (!(bt.mutability is Mutability.Mutable)) {
+                                                bt = bt.with_mutability(base_type.mutability);
+                                            }
+                                        } else if (field_mut is Mutability.Mutable) {
+                                            bt = bt.with_mutability(new Mutability.Mutable());
+                                        } else if (field_mut is Mutability.Immutable) {
+                                            bt = bt.with_mutability(new Mutability.Immutable());
+                                        }
+                                    }
+                                }
+                                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                            }
+                            // For a generic base (Box<i64>), the #specializing-injected impl
+                            // methods live in the SPECIALIZED scope (not the template's), so
+                            // resolve them there — they lower to a direct call on the
+                            // specialized impl (matching how normal `impl` methods resolve).
+                            let spec_scope_found: Option<BoundSymbol> = this.lookup_specialized_scope_member(base_type, expr.member_name, scope);
+                            if (spec_scope_found.is_some()) {
+                                let bt: BoundType = owner.literal.resolve_symbol_type(spec_scope_found.some);
+                                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, spec_scope_found);
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                            }
+                            // Fallback: search implemented interface scopes for default methods.
+                            // Detect ambiguity: if two or more implemented interfaces each
+                            // provide a member with this name, the access is ambiguous
+                            // (e.g. Foo.foo() where Foo implements both IB and IC, each
+                            // defining foo). Collect every matching interface first so we
+                            // never silently pick the first. For a generic base (Box<i64>),
+                            // search the SPECIALIZED def's vtables (the template's are empty
+                            // for #specializing-injected impls).
+                            let vtables_src: _utils.List<BoundVTable> = this.resolve_container_vtables(base_type, cls.vtables, scope);
+                            let vi: mut i64 = 0;
+                            let match_iface_names: mut _utils.List<string> = new _utils.List<string>();
+                            while (vi < cast<i64>(vtables_src.size())) {
+                                let vtable: BoundVTable = vtables_src.at(cast<u64>(vi)).some;
+                                let iface_type: BoundType = vtable.interface_type;
+                                if (let iface_def := iface_type.type_definition.some) {
+                                    if (iface_def is BoundDefinition.interface_def) {
+                                        let iface: BoundInterfaceDefinition = iface_def.interface_def;
+                                        if (iface.scope.is_some()) {
+                                            let iface_found: Option<BoundSymbol> = iface.scope.some.lookup_symbol(expr.member_name);
+                                            if (iface_found.is_some()) {
+                                                match_iface_names.push(iface.name);
+                                            }
+                                        }
+                                    }
+                                }
+                                vi = vi + 1;
+                            }
+                            if (cast<i64>(match_iface_names.size()) > 1) {
+                                owner.model.some.report_error(new ErrorCode.E_INTERNAL(),
+                                    "Ambiguous member '" + expr.member_name + "' on type '" + cls.name +
+                                    "': provided by multiple implemented interfaces ('" +
+                                    match_iface_names.at(cast<u64>(0)).some + "', '" +
+                                    match_iface_names.at(cast<u64>(1)).some + "')",
+                                    new SourceLocation("", 0, 0));
+                                let ambig_result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(owner.model.some.type_registry.make_error_type(), bound_base, expr.member_name, new Option<BoundSymbol>.none());
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(ambig_result));
+                            }
+                            if (cast<i64>(match_iface_names.size()) == 1) {
+                                // Exactly one interface provides the member — resolve it.
+                                let vi2: mut i64 = 0;
+                                while (vi2 < cast<i64>(vtables_src.size())) {
+                                    let vtable: BoundVTable = vtables_src.at(cast<u64>(vi2)).some;
+                                    let iface_type: BoundType = vtable.interface_type;
+                                    if (let iface_def := iface_type.type_definition.some) {
+                                        if (iface_def is BoundDefinition.interface_def) {
+                                            let iface: BoundInterfaceDefinition = iface_def.interface_def;
+                                            if (iface.scope.is_some()) {
+                                                let iface_found: Option<BoundSymbol> = iface.scope.some.lookup_symbol(expr.member_name);
+                                                if (iface_found.is_some()) {
+                                                    let bt: BoundType = owner.literal.resolve_symbol_type(iface_found.some);
+                                                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, iface_found);
+                                                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    vi2 = vi2 + 1;
+                                }
+                            }
+                        }
+                    }
+                    if (td is BoundDefinition.enum_def) {
+                        let e: BoundEnumDefinition = td.enum_def;
+                        if (e.scope.is_some()) {
+                            let found: Option<BoundSymbol> = e.scope.some.lookup_symbol(expr.member_name);
+                            if (let sym := found.some) {
+                                let bt: mut BoundType = owner.literal.resolve_symbol_type(sym);
+                                if (sym is BoundSymbol.enum_member) {
+                                    // Prefer the enum definition's member_type, which
+                                    // resolve_enum_types updates (pass 2). The scope
+                                    // symbol's member_type can be stale (void) on the
+                                    // BabyPenguin VM (pass1) because the value-copy
+                                    // there does not propagate the mutation.
+                                    bt = sym.enum_member.member_type;
+                                    let midx: i64 = sym.enum_member.enum_value;
+                                    if (midx >= 0 && midx < cast<i64>(e.members.size())) {
+                                        bt = e.members.at(cast<u64>(midx)).some.member_type;
+                                    }
+                                    bt = owner.model.some.substitute_generic_args(bt, base_type, new BoundDefinition.enum_def(e));
+                                }
+                                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                            }
+                        }
+                        // For a generic base (Option<i64>), the #specializing-injected
+                        // impl methods live in the SPECIALIZED scope (not the template's),
+                        // so resolve them there — they lower to a direct call on the
+                        // specialized impl (matching how normal `impl` methods resolve).
+                        let spec_scope_found: Option<BoundSymbol> = this.lookup_specialized_scope_member(base_type, expr.member_name, scope);
+                        if (spec_scope_found.is_some()) {
+                            let bt: BoundType = owner.literal.resolve_symbol_type(spec_scope_found.some);
+                            let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, spec_scope_found);
+                            return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                        }
+                        // Fallback: search implemented interface scopes for methods.
+                        // For a generic base (Option<i64>), search the SPECIALIZED def's
+                        // vtables — #specializing-injected impls live there, not on the
+                        // template (whose vtables are empty).
+                        let vtables_src: _utils.List<BoundVTable> = this.resolve_container_vtables(base_type, e.vtables, scope);
+                        let vi: mut i64 = 0;
+                        while (vi < cast<i64>(vtables_src.size())) {
+                            let vtable: BoundVTable = vtables_src.at(cast<u64>(vi)).some;
+                            let iface_type: BoundType = vtable.interface_type;
+                            if (let iface_def := iface_type.type_definition.some) {
+                                if (iface_def is BoundDefinition.interface_def) {
+                                    let iface: BoundInterfaceDefinition = iface_def.interface_def;
+                                    if (iface.scope.is_some()) {
+                                        let iface_found: Option<BoundSymbol> = iface.scope.some.lookup_symbol(expr.member_name);
+                                        if (iface_found.is_some()) {
+                                            let bt: BoundType = owner.literal.resolve_symbol_type(iface_found.some);
+                                            let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, iface_found);
+                                            return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                        }
+                                    }
+                                }
+                            }
+                            vi = vi + 1;
+                        }
+                    }
+                    if (td is BoundDefinition.interface_def) {
+                        let iface: BoundInterfaceDefinition = td.interface_def;
+                        // For a generic interface base (e.g. f.bar() where f: IFoo<u8>),
+                        // resolve through the specialized def (IFoo__u8) so method
+                        // signatures use concrete types (T -> u8) and the symbol points
+                        // to the specialized method (ns.IFoo__u8.bar). Falls back to
+                        // the template scope for non-generic interfaces.
+                        let search_scope: Option<BoundScope> = owner.castnew.specialized_interface_scope(iface, base_type, scope);
+                        if (search_scope.is_some()) {
+                            let found: Option<BoundSymbol> = search_scope.some.lookup_symbol(expr.member_name);
+                            if (found.is_some()) {
+                                let bt: BoundType = owner.literal.resolve_symbol_type(found.some);
+                                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
+                                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                            }
+                        }
+                    }
+                }
+                // Handle namespace-qualified access (e.g., Foo.msg where Foo is a namespace)
+                if (bound_base.some is BoundExpression.identifier) {
+                    let base_id: BoundIdentifierExpression = bound_base.some.identifier;
+                    if (let base_sym := base_id.symbol.some) {
+                        if (base_sym is BoundSymbol.namespace_sym) {
+                            let ns_scope: Option<BoundScope> = base_sym.namespace_sym.namespace_scope;
+                            if (ns_scope.is_some()) {
+                                // Generic args on the namespaced member (`__builtin.Option<i64>.member`):
+                                // resolve through the specialized def — see
+                                // bind_namespaced_generic_type_member.
+                                if (cast<i64>(expr.generic_args.size()) > 0) {
+                                    let gen: Option<BoundExpression> = this.bind_namespaced_generic_type_member(ns_scope.some, expr, bound_base, scope);
+                                    if (gen.is_some()) { return gen; }
+                                }
+                                let found: Option<BoundSymbol> = ns_scope.some.lookup_symbol(expr.member_name);
+                                if (found.is_some()) {
+                                    // Batch 3.1: users index (namespace-qualified hit).
+                                    owner.model.some.index_note_user(found.some);
+                                    let bt: BoundType = owner.literal.resolve_symbol_type(found.some);
+                                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
+                                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Chained namespace access (depth >= 2, e.g. std.io.probe): the
+                // inner member access (std.io) bound above as a member access
+                // carrying the nested namespace symbol in member_symbol —
+                // continue the namespace-qualified lookup from THAT scope.
+                // Without this branch only one dot of namespace qualification
+                // resolves and every deeper call falls to the void fallback.
+                if (bound_base.some is BoundExpression.member_access) {
+                    let inner_ma: BoundMemberAccessExpression = bound_base.some.member_access;
+                    if (let inner_sym := inner_ma.member_symbol.some) {
+                        if (inner_sym is BoundSymbol.namespace_sym) {
+                            let inner_ns_scope: Option<BoundScope> = inner_sym.namespace_sym.namespace_scope;
+                            if (inner_ns_scope.is_some()) {
+                                // Generic args on the chained namespaced member
+                                // (`std.ns.Enum<T>.member`): same specialized-def
+                                // resolution as the single-namespace case above.
+                                if (cast<i64>(expr.generic_args.size()) > 0) {
+                                    let gen: Option<BoundExpression> = this.bind_namespaced_generic_type_member(inner_ns_scope.some, expr, bound_base, scope);
+                                    if (gen.is_some()) { return gen; }
+                                }
+                                let found: Option<BoundSymbol> = inner_ns_scope.some.lookup_symbol(expr.member_name);
+                                if (found.is_some()) {
+                                    // Batch 3.1: users index (chained namespace-qualified hit).
+                                    owner.model.some.index_note_user(found.some);
+                                    let bt: BoundType = owner.literal.resolve_symbol_type(found.some);
+                                    let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(bt, bound_base, expr.member_name, found);
+                                    return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Member not found: if base is a concrete type (class, enum),
+                // report E_RESOLVE_SYMBOL instead of silently creating an empty
+                // member access (which causes E_INTERNAL in the IR generator).
+                // `.copy()` on a value type is auto-generated ICopy and is resolved
+                // by bind_function_call, so don't report it here.
+                let is_value_copy: bool = expr.member_name == "copy" && owner.model.some.classify_value_types_pass.base_type_has_icopy(base_type);
+                if (base_type.type_definition.is_some() && !is_value_copy) {
+                    let td: BoundDefinition = base_type.type_definition.some;
+                    if (td is BoundDefinition.class_def || td is BoundDefinition.enum_def) {
+                        let tname: mut string = "?";
+                        if (td is BoundDefinition.class_def) { tname = td.class_def.name; }
+                        if (td is BoundDefinition.enum_def) { tname = td.enum_def.name; }
+                        owner.model.some.report_error(new ErrorCode.E_RESOLVE_SYMBOL(),
+                            "Type '" + base_type.display_name() + "' has no member '" + expr.member_name + "'",
+                            new SourceLocation("", 0, 0));
+                    }
+                }
+                let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(new BoundType(), bound_base, expr.member_name, new Option<BoundSymbol>.none());
+                return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+            }
+        }
+        let result: mut BoundMemberAccessExpression = new BoundMemberAccessExpression(new BoundType(), new Option<BoundExpression>.none(), expr.member_name, new Option<BoundSymbol>.none());
+        return new Option<BoundExpression>.some(new BoundExpression.member_access(result));
+    }
+
+
+    // The inference callee for a member call: the receiver's SPECIALIZED
+    // class's method symbol when the receiver is a generic instance (the
+    // member symbol itself resolved from the TEMPLATE scope — specializing
+    // that def leaves `this` as the template type), else the fallback symbol.
+    fun ensure_receiver_class_spec(mut this, recv_bt: BoundType, scope: mut BoundScope) -> Option<BoundDefinition> {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        if (owner.model.some.current_unit.is_none()) { return new Option<BoundDefinition>.none(); }
+        let td: BoundDefinition = recv_bt.type_definition.some;
+        let full_base: mut string = "";
+        let tmpl_short: mut string = "";
+        if (td is BoundDefinition.class_def) { full_base = td.class_def.full_name; tmpl_short = td.class_def.name; }
+        if (td is BoundDefinition.enum_def) { full_base = td.enum_def.full_name; tmpl_short = td.enum_def.name; }
+        if (string_length(full_base) == 0) { return new Option<BoundDefinition>.none(); }
+        let mangled: string = MonomorphizePass.mangle_generic_name(full_base, recv_bt.generic_args);
+        let existing: Option<BoundSymbol> = owner.model.some.global_scope.lookup_type_in_scope(mangled);
+        if (existing.is_some() && existing.some is BoundSymbol.type_sym) {
+            if (existing.some.type_sym.bound_type.type_definition.is_some()) {
+                return existing.some.type_sym.bound_type.type_definition;
+            }
+        }
+        owner.model.some.monomorphize_pass.b1_site = "member-callee";
+        let spec: Option<BoundDefinition> = owner.model.some.monomorphize_pass.ensure_specialized_def(recv_bt, owner.model.some.global_scope);
+        if (spec.is_none()) { return new Option<BoundDefinition>.none(); }
+        let ast_spec: Option<Definition> = owner.model.some.monomorphize_pass.find_ast_def_by_name(owner.model.some.ast_definitions, tmpl_short);
+        // Batch 3.3a: resolve_pair stamps the protocol index itself.
+        let m1: mut SemanticModel = owner.model.some;
+        if (ast_spec.is_some()) {
+            let to_register: BoundDefinition = m1.resolve_types_pass.resolve_pair(ast_spec.some, spec.some, this.spec_resolve_scope(spec.some));
+            m1.a5_pass.bind_def_signature_before_bodies(to_register, m1.current_unit.some);
+            m1.current_unit.some.definitions.push(to_register);
+            return new Option<BoundDefinition>.some(to_register);
+        }
+        m1.a5_pass.bind_def_signature_before_bodies(spec.some, m1.current_unit.some);
+        m1.current_unit.some.definitions.push(spec.some);
+        return new Option<BoundDefinition>.some(spec.some);
+    }
+
+    // Substitute a template CLASS's type params inside `bt` — the template
+    // method's resolved return type (e.g. Option<U>) — with the receiver's
+    // generic args (a MapIterator<i64,i64> receiver -> Option<i64>). Used by
+    // the member-call return-type refresh when the specialized def doesn't
+    // exist yet (see the refresh site); display-name param matching mirrors
+    // substitute_generic_args.
+    fun spec_resolve_scope(this, def: BoundDefinition) -> BoundScope {
+        let owner: mut BindExpressionsPass = this.owner.some;
+        if (def is BoundDefinition.function_def && def.function_def.scope.is_some()) {
+            return def.function_def.scope.some;
+        }
+        if (def is BoundDefinition.class_def && def.class_def.scope.is_some()) {
+            return def.class_def.scope.some;
+        }
+        if (def is BoundDefinition.enum_def && def.enum_def.scope.is_some()) {
+            return def.enum_def.scope.some;
+        }
+        if (def is BoundDefinition.interface_def && def.interface_def.scope.is_some()) {
+            return def.interface_def.scope.some;
+        }
+        return owner.model.some.global_scope;
+    }
+}
+
+}

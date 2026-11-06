@@ -1,6 +1,6 @@
 # MetaCompilerOptions
 ## Description
-The compile-time option store via the `#compiler()` facade: `set_option("FOO", "bar")` then `has_option("FOO")` / `get_option("FOO")` read it back; `get_option("MISSING")` on an unset key returns `""`. The `#fun` returns 2 (the MISSING-branch) after exercising the set/read path. Same store as `#define`/`#option`/`#defined` (they share `active_meta`'s option_keys/values). Requires native Pass2/Pass3.
+The compile-time define store via the `#compiler()` facade: `set_option("FOO", "bar")` then `has_option("FOO")` / `get_option("FOO")` read it back; `get_option("MISSING")` on an unset key returns `""`. The `#fun` returns 3 after exercising the set/read path. Since batch 2.1/2.3 there is ONE unified file-scoped store: the engine has no store of its own — `#compiler().set_option` and `#defined` inside a `#fun` bridge to the host store keyed by the #fun's DEFINING file, so that file's code `#define`s and the CLI `--define` seeds are visible (see MetaFunCliDefineVisible). Requires native Pass2/Pass3.
 
 ## Apply To
 * EmperorPenguin Pass2

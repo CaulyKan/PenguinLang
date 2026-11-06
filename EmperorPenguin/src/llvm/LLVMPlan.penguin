@@ -1,0 +1,458 @@
+// Emit plan concern of the LLVM emitter (batch 1.1): the single
+// pre-emission sweep. Every cross-function plan state that the emission
+// trunk used to accumulate while emitting (the needs_* runtime-declaration
+// booleans, the string table, the extern face, the function-signature
+// table, the type-layout closure, the lazily-ensured metadata tables) is
+// collected here BEFORE any function body is emitted, into an explicit
+// EmitPlan value. The emission trunk consumes the plan; the assembly stage
+// reads it.
+//
+// Two state groups live on the plan:
+//   frozen     — decided in precollect(), never written again afterwards.
+//                The emission-side assignments that used to set these
+//                booleans are GONE (deleted, not moved).
+//   registered — booleans whose condition is embedded deep in emission
+//                decisions (value-copy memcpys chosen by the write-chain /
+//                gc scans, string coercions at call argument boundaries).
+//                The plan hosts them; the emission trunk registers them via
+//                direct field writes (em.plan.needs_* = true). They are as
+//                deterministic as the tmp counter — same input, same
+//                emission order, same value — and migrate into the frozen
+//                group when those emitters become function-local (batch 1.2).
+//
+// Reference-bound tables (lists/maps/string builders) stay on the LLVMEmitter
+// fields they always lived on; the plan mirrors the references, so the
+// emission paths and the assembly stage observe the same objects. The
+// lazy ensure_* helpers (array metadata, type-id constants, interface-id
+// constants, funval singletons) are PRE-TRIGGERED by the sweep in emission
+// order (function order x instruction order, mirroring emit_functions'
+// skip logic), so their append order — which the assembly stage output
+// depends on — is identical to what lazy emission used to produce; the
+// surviving emission-side calls hit the dedup and are no-ops.
+//
+// Layout closure: build_layout_tables (called from precollect, unchanged
+// timing) already builds EVERY layout — verified empirically (batch 1.1
+// recon): across the 565-case corpus and the 47k-line self-compile, zero
+// layouts are created after the build phase. The emission-side
+// ensure_gc_layout calls stay as idempotent lookups; with
+// EMPEROR_EMIT_PLAN_DEBUG=1 a post-plan creation is reported on stderr as
+// a plan-completeness violation.
+namespace emperor {
+
+class EmitPlan {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern).
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+    // True once precollect() finished — gates the plan-completeness
+    // sentinel (any lazily created layout/registered frozen flag after
+    // this point means the sweep missed a site).
+    built: mut bool = false;
+
+    // ---- Frozen booleans (decided in precollect, consumed by the
+    //      runtime-declaration assembly stage) ----
+    needs_setjmp: mut bool = false;
+    needs_string_adopt: mut bool = false;
+    needs_gc_promote: mut bool = false;
+    needs_array_ops: mut bool = false;
+    needs_array_create: mut bool = false;
+    needs_vtable_lookup: mut bool = false;
+    needs_isinstance: mut bool = false;
+    needs_check_class: mut bool = false;
+    needs_sched_run: mut bool = false;
+    needs_string_concat: mut bool = false;
+    needs_string_equal: mut bool = false;
+    needs_string_compare: mut bool = false;
+    needs_memset: mut bool = false;
+    needs_funval_alloc: mut bool = false;
+    has_boxing: mut bool = false;
+    has_main: mut bool = false;
+    // Set by the layout builder (a non-value class layout exists) and by
+    // the NEW sweep (heap allocation of a reference class).
+    has_iref_class: mut bool = false;
+
+    // ---- Registered booleans (written by the emission trunk, see the
+    //      header note) ----
+    needs_memcpy: mut bool = false;
+    needs_gc_pin_refmap: mut bool = false;
+    needs_int_to_string: mut bool = false;
+    needs_bool_to_string: mut bool = false;
+    needs_char_to_string: mut bool = false;
+    needs_double_to_string: mut bool = false;
+
+    // ---- Reference-bound table mirrors (same objects as the emitter
+    //      fields; the assembly stage reads through the plan) ----
+    class_layouts: mut _utils.List<ClassLayout> = new _utils.List<ClassLayout>();
+    enum_layouts: mut _utils.List<EnumLayout> = new _utils.List<EnumLayout>();
+    layout_done_order: mut _utils.List<string> = new _utils.List<string>();
+    string_lits: mut _utils.List<StringLitEntry> = new _utils.List<StringLitEntry>();
+    type_id_constants: mut _utils.List<TypeIdConstant> = new _utils.List<TypeIdConstant>();
+    array_meta_entries: mut _utils.List<ArrayMetaEntry> = new _utils.List<ArrayMetaEntry>();
+    emitted_interface_ids: mut _utils.List<string> = new _utils.List<string>();
+    extern_map: mut _utils.List<RegMapping> = new _utils.List<RegMapping>();
+    pending_iface_ids: mut StringBuilder = new StringBuilder();
+    pending_funvals: mut StringBuilder = new StringBuilder();
+
+    // ---- Canonical emission order (batch 1.2) ----
+    // The functions to emit, sorted by LLVM symbol name (stable; ties keep
+    // the original module order). Built by precollect BEFORE the sweep; both
+    // sweep_functions and LLVMEmitter.emit_functions traverse THIS list, so
+    // the pre-triggered ensure_* append orders (funvals, interface ids,
+    // type-id constants, array metadata) are the canonical order too, and
+    // every order-sensitive counter (tmp/cond/debug ids) is a function of the
+    // canonical order alone — the emitted .ll no longer depends on the
+    // compile path that produced the module (input file order, specialization
+    // discovery order).
+    emit_order: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+    // The single pre-emission sweep. Steps run in exactly the order the old
+    // lower() prologue used, so every append order the assembly stage
+    // depends on is preserved byte-for-byte.
+    fun precollect(mut this, module: IRModule, unit: BoundCompilationUnit) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        // 1. Extern face: runtime-extern -> C-runtime-symbol map, then the
+        //    bare libc extern classification (moved verbatim from lower()).
+        this.build_extern_face(em, module);
+        // 2. String table (unchanged timing: single sweep over every
+        //    function's CONST strings + global initializers).
+        if (em.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Collecting strings..."); }
+        em.globals.collect_strings(module);
+        // 2.5 Canonical emission order (batch 1.2): the emission list with
+        //     the OLD dedup/skip semantics (first-spelling dedup by LLVM
+        //     name + extern-without-body skip, exactly what emit_functions
+        //     used to do inline), then a stable merge sort by LLVM symbol
+        //     name. Only the extern face (step 1) is needed to compute
+        //     llvm_func_name keys.
+        this.build_emission_order(em, module);
+        // 2.6 String id global renumbering (batch 1.2): sort the collected
+        //     literals by CONTENT and rewrite ids to 0..k-1, so @str_<id>
+        //     values depend only on the set of literals, never on which
+        //     function was emitted first. Runs before any find_string_lit
+        //     consumer (all of them live in the emission trunk below).
+        this.renumber_string_ids(em);
+        // 3. Type-layout closure (unchanged timing: the unit def order).
+        //    MUST precede the signature table: ir_type_to_llvm degrades an
+        //    enum spelling to i64 when its layout is missing, and the
+        //    signatures feed every call-site coercion.
+        if (em.verbose >= 1) { __builtin.eprintln("[EmperorPenguin LLVM] Building layout tables..."); }
+        em.types.build_layout_tables(unit);
+        // 4. Function signature table for all functions BEFORE any body
+        //    emission (moved from emit_functions' head; pure table fill).
+        em.precompute_function_signatures(module);
+        // 5. Module-level: main synthesized / scheduler loop needed.
+        if (cast<i64>(module.entry_functions.size()) > 0 || cast<i64>(module.init_functions.size()) > 0) {
+            this.has_main = true;
+            if (em.suspend_mode) {
+                this.needs_sched_run = true;
+            }
+        }
+        // 6. Instruction sweep in emission order (mirrors emit_functions'
+        //    skip logic: name dedup + extern-without-body skip) — decides
+        //    the frozen booleans and pre-triggers the lazy ensure_* tables.
+        this.sweep_functions(em);
+        // 7. Bind the table mirrors + freeze.
+        this.class_layouts = em.class_layouts;
+        this.enum_layouts = em.enum_layouts;
+        this.layout_done_order = em.layout_done_order;
+        this.string_lits = em.string_lits;
+        this.type_id_constants = em.type_id_constants;
+        this.array_meta_entries = em.array_meta_entries;
+        this.emitted_interface_ids = em.emitted_interface_ids;
+        this.extern_map = em.extern_map;
+        this.pending_iface_ids = em.pending_iface_ids;
+        this.pending_funvals = em.pending_funvals;
+        this.built = true;
+    }
+
+    // ---- Step 1: extern face (moved verbatim from lower(); see the
+    //      original comments there for the two-pass rationale) ----
+
+    fun build_extern_face(mut this, em: mut LLVMEmitter, module: IRModule) {
+        em.extern_map = new _utils.List<RegMapping>();
+        em.bare_libc_externs = new _utils.List<string>();
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(module.functions.size())) {
+            let ef: IRFunction = module.functions.at(cast<u64>(ei)).some;
+            // Dyn-lib lib-export declares are penguin functions (bodies in a
+            // .penguin-lib), NOT C-runtime externs: skip them here so their symbol
+            // stays the plain mangled name (matching the lib's definition) instead
+            // of the _emperor_<tail> runtime name.
+            if (ef.is_extern && !ef.is_lib_export_decl) {
+                let ekey: string = em.globals.strip_global_prefix(ef.name);
+                if (em.string_starts_with(ekey, "__builtin.") || em.string_starts_with(ekey, "_utils.")) {
+                    // Key by the normalized tail so that ANY call-site form
+                    // resolves: builtin calls may use the short form ("println")
+                    // or the qualified form ("__builtin.println"), and both map
+                    // to the same tail via compute_extern_tail.
+                    let etail: string = em.globals.compute_extern_tail(ef.name);
+                    em.extern_map.push(new RegMapping(etail, "@_emperor_" + sanitize_name(etail)));
+                }
+                // Every OTHER extern — any namespace, std or user code — needs
+                // no map entry: llvm_func_name's fallthrough applies the
+                // UNIVERSAL rule @<sanitize(full dotted name)>, e.g.
+                // std.io.file_open -> @std_io_file_open, mylib.foo -> @mylib_foo,
+                // a global `extern fun abs` -> @abs (literal libc symbol).
+            }
+            ei = ei + 1;
+        }
+        // Second pass — classify the BARE libc externs (char* ABI, string
+        // args/returns marshaled at call sites). The IR carries builtin
+        // externs under BOTH spellings ("__builtin.println" from the stdlib
+        // declaration and the bare "println" mirroring the call-site form),
+        // so membership must be decided AFTER the map is complete: an extern
+        // whose tail resolves through extern_map is a runtime extern in
+        // either spelling, never a libc one.
+        ei = 0;
+        while (ei < cast<i64>(module.functions.size())) {
+            let ef: IRFunction = module.functions.at(cast<u64>(ei)).some;
+            if (ef.is_extern && !ef.is_lib_export_decl) {
+                let ekey: string = em.globals.strip_global_prefix(ef.name);
+                let etail: string = em.globals.compute_extern_tail(ef.name);
+                let mapped: mut bool = false;
+                let mi: mut i64 = 0;
+                while (mi < cast<i64>(em.extern_map.size())) {
+                    if (em.extern_map.at(cast<u64>(mi)).some.ir_name == etail) {
+                        mapped = true;
+                    }
+                    mi = mi + 1;
+                }
+                if (!mapped && string_find(ekey, ".") == -1) {
+                    em.bare_libc_externs.push(ekey);
+                }
+            }
+            ei = ei + 1;
+        }
+    }
+
+    // ---- Step 2.5: the canonical emission order ----
+
+    // Build plan.emit_order: the module's functions filtered with the exact
+    // dedup/skip semantics the emission loop used to apply inline (first
+    // spelling wins the dedup — both spellings of a builtin extern emit the
+    // same declare text; externs with no body are declarations only), then
+    // STABLE-sorted by LLVM symbol name. Every later order-dependent stage
+    // (the sweep below, emit_functions, and through them the tmp/cond/debug
+    // counters and the lazily-ensured tables) consumes THIS order.
+    fun build_emission_order(mut this, em: mut LLVMEmitter, module: IRModule) {
+        let emitted: mut _utils.List<string> = new _utils.List<string>();
+        let picked: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
+        let keys: mut _utils.List<string> = new _utils.List<string>();
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
+            // Dedup by first spelling — the legacy emit_functions semantics.
+            let fname: string = em.globals.llvm_func_name(func.name);
+            let already: mut bool = false;
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(emitted.size())) {
+                if (emitted.at(cast<u64>(ei)).some == fname) { already = true; }
+                ei = ei + 1;
+            }
+            if (already) { fi = fi + 1; continue; }
+            // The spelling is recorded BEFORE the body check — a skipped
+            // extern still wins the dedup for later spellings (legacy order).
+            emitted.push(fname);
+            // Skip truly extern functions (those with only ARG/ret/ret_void
+            // instructions).
+            if (func.is_extern) {
+                let has_body: mut bool = false;
+                let ii: mut i64 = 0;
+                while (ii < cast<i64>(func.instructions.size())) {
+                    let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+                    if (!(inst is IRInstruction.ret) && !(inst is IRInstruction.ret_void) && !(inst is IRInstruction.arg)) {
+                        has_body = true;
+                    }
+                    ii = ii + 1;
+                }
+                if (!has_body) {
+                    fi = fi + 1;
+                    continue;
+                }
+            }
+            picked.push(func);
+            keys.push(fname);
+            fi = fi + 1;
+        }
+        let idx: _utils.List<i64> = merge_sort_string_indices(keys);
+        this.emit_order = new _utils.List<IRFunction>();
+        let si: mut i64 = 0;
+        while (si < cast<i64>(idx.size())) {
+            this.emit_order.push(picked.at_unchecked(cast<u64>(idx.at_unchecked(cast<u64>(si)))));
+            si = si + 1;
+        }
+    }
+
+    // ---- Step 2.6: string id global renumbering ----
+
+    // Sort string_lits by literal CONTENT (values are unique — the collector
+    // dedups through string_lit_index) and rewrite the ids to 0..k-1 in that
+    // order. Invariants kept identical to collect_strings' own bookkeeping:
+    // entry.id == its index in the list, and string_lit_index maps value ->
+    // list index (find_string_lit reads through it). Consumers all resolve
+    // names through find_string_lit().global_name(), so no other site needs
+    // to change.
+    fun renumber_string_ids(mut this, em: mut LLVMEmitter) {
+        let n: i64 = cast<i64>(em.string_lits.size());
+        if (n <= 1) { return; }
+        let keys: mut _utils.List<string> = new _utils.List<string>();
+        let i: mut i64 = 0;
+        while (i < n) {
+            keys.push(em.string_lits.at_unchecked(cast<u64>(i)).value);
+            i = i + 1;
+        }
+        let idx: _utils.List<i64> = merge_sort_string_indices(keys);
+        let new_lits: mut _utils.List<StringLitEntry> = new _utils.List<StringLitEntry>();
+        let new_index: mut _utils.StrMap<i64> = new _utils.StrMap<i64>();
+        let j: mut i64 = 0;
+        while (j < n) {
+            let entry: StringLitEntry = em.string_lits.at_unchecked(cast<u64>(idx.at_unchecked(cast<u64>(j))));
+            entry.id = j;
+            new_lits.push(entry);
+            new_index.set(entry.value, j);
+            j = j + 1;
+        }
+        em.string_lits = new_lits;
+        em.string_lit_index = new_index;
+        em.next_str_id = n;
+    }
+
+    // ---- Step 6: the instruction sweep ----
+
+    fun sweep_functions(mut this, em: mut LLVMEmitter) {
+        // The dedup/skip + canonical sort live in build_emission_order; the
+        // sweep simply follows the plan (pre-trigger order == emission
+        // order, so ensure_* append orders are canonical).
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.emit_order.size())) {
+            this.sweep_instructions(em, this.emit_order.at_unchecked(cast<u64>(fi)));
+            fi = fi + 1;
+        }
+    }
+
+    fun sweep_instructions(mut this, em: mut LLVMEmitter, func: IRFunction) {
+        // Mirror the emission loop's dead-code handling: instructions after
+        // a block terminator (br/br_cond/ret/ret_void) up to the next label
+        // are never emitted, so their plan contributions must not fire
+        // either.
+        let block_terminated: mut bool = false;
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            let is_label: bool = inst is IRInstruction.label_inst;
+            if (is_label) {
+                block_terminated = false;
+            }
+            if (block_terminated == false) {
+                this.sweep_one_instruction(em, inst);
+            }
+            if (inst is IRInstruction.br || inst is IRInstruction.br_cond || inst is IRInstruction.ret || inst is IRInstruction.ret_void) {
+                block_terminated = true;
+            }
+            ii = ii + 1;
+        }
+    }
+
+    fun sweep_one_instruction(mut this, em: mut LLVMEmitter, inst: IRInstruction) {
+        if (inst is IRInstruction.const_inst) {
+            // Function-address constant: the funval singleton (thunk +
+            // constant global + __FunVal interface id) is synthesized by
+            // ensure_funval — pre-trigger it so the pending section and
+            // the funval-alloc declaration are planned.
+            if (inst.const_inst.result.get_ir_type() == "funptr") {
+                em.calls.ensure_funval(inst.const_inst.value);
+            }
+        }
+        if (inst is IRInstruction.call) {
+            let fn: string = inst.call.func_name;
+            if (fn == "__builtin.__sjlj_setjmp") {
+                this.needs_setjmp = true;
+            }
+            // Bound method reference creation (`__funval_bound.<fn>`
+            // pseudo-calls): the creator + metadata synthesis.
+            if (em.string_starts_with(fn, "__funval_bound.")) {
+                let pfx: i64 = string_length("__funval_bound.");
+                let target_fn: string = string_substring(fn, pfx, string_length(fn) - pfx);
+                em.calls.ensure_bound_funval(target_fn);
+            }
+            // A bare-libc extern returning a string adopt-copies the
+            // transient char* at the call site.
+            if (em.globals.is_bare_libc_extern(fn) && em.types.is_string_type(inst.call.ret_type)) {
+                this.needs_string_adopt = true;
+            }
+        }
+        if (inst is IRInstruction.call_void) {
+            let fn: string = inst.call_void.func_name;
+            if (fn == "_emperor_gc_promote") {
+                this.needs_gc_promote = true;
+            }
+            if (fn == "_emperor_array_fill" || fn == "_emperor_array_copy_range") {
+                this.needs_array_ops = true;
+            }
+        }
+        if (inst is IRInstruction.call_virt) {
+            this.needs_vtable_lookup = true;
+            em.calls.ensure_iface_id(inst.call_virt.interface_id);
+        }
+        if (inst is IRInstruction.call_indirect) {
+            this.needs_vtable_lookup = true;
+            // emit_call_indirect registers the __FunVal interface id
+            // unconditionally at its head — mirror it so the pending
+            // section order matches lazy emission.
+            em.calls.ensure_funval_iface_id();
+        }
+        if (inst is IRInstruction.array_new_zeroed) {
+            this.needs_array_create = true;
+            em.values.ensure_array_meta(inst.array_new_zeroed.elem_type);
+        }
+        if (inst is IRInstruction.array_get) {
+            em.values.ensure_array_meta(inst.array_get.ir_type);
+        }
+        if (inst is IRInstruction.array_set) {
+            em.values.ensure_array_meta(inst.array_set.value.get_ir_type());
+        }
+        if (inst is IRInstruction.isinstance) {
+            this.needs_isinstance = true;
+            let tid: string = inst.isinstance.type_id;
+            em.metadata.ensure_type_id_constant(tid);
+            if (!em.metadata.is_interface_type_id(tid)) {
+                this.needs_check_class = true;
+            }
+        }
+        if (inst is IRInstruction.box) {
+            this.has_boxing = true;
+        }
+        if (inst is IRInstruction.unbox) {
+            this.has_boxing = true;
+        }
+        if (inst is IRInstruction.binop) {
+            let op: string = inst.binop.op;
+            if (op == "add" && em.types.is_string_type(inst.binop.ir_type)) {
+                this.needs_string_concat = true;
+            }
+            if (em.instructions.is_comparison_binop(op)
+                && (em.types.is_string_type(inst.binop.left.get_ir_type())
+                    || em.types.is_string_type(inst.binop.right.get_ir_type()))) {
+                if (op == "eq" || op == "ne") {
+                    this.needs_string_equal = true;
+                } else {
+                    this.needs_string_compare = true;
+                }
+            }
+        }
+        if (inst is IRInstruction.new_inst) {
+            // Heap allocation path (allocate_class): a reference class
+            // gets _emperor_alloc_impl + llvm.memset zeroing.
+            let tname: string = em.globals.strip_global_prefix(inst.new_inst.type_name);
+            let found: Option<ClassLayout> = em.types.find_class_layout(tname);
+            if (found.is_some() && !found.some.is_value_type) {
+                this.needs_memset = true;
+                this.has_iref_class = true;
+            }
+        }
+    }
+}
+
+}

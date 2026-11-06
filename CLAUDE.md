@@ -299,16 +299,16 @@ Four more project files shape the build:
 
 `make bootstrap` keeps pass3 as the Full monolith (the first dyn-lib-capable compiler — pass2 comes from the ANTLR-safe stub project and cannot build libs). pass3 then builds the std dyn-lib (`pass4.d/libemperorpenguin-std.penguin-lib`, a FIXED input for both convergence rounds — pass5.d gets a byte-identical copy), and pass4/pass5 as lib+exe pairs in `build/bootstrap/pass4.d`/`build/bootstrap/pass5.d` (`build/bootstrap/pass4` is a symlink; convergence checks BOTH the exe and lib md5s; the pass5.d artifacts are KEPT so a repeat bootstrap re-verifies without recompiling). Every Makefile-driven compile passes its semantic flags explicitly (`--disable-coroutine`/`--disable-std`/`--enable-coroutine` + `--lib`), never relying on the `--enable-*` defaults — those exist for plain user invocations: `--enable-coroutine` and `--enable-std` default ON (`--disable-*` opts out); `--enable-std` probes `libemperorpenguin-std.penguin-lib` beside the compiler exe and silently does nothing when absent (bootstrap passes, the BabyPenguin VM, Windows monoliths). Building the compiler lib requires a JIT-capable compiler (build it with `-enable-meta`) — the compiler sources engage the meta engine during their own compilation.
 
-### Source Structure (~16,000 lines total)
+### Source Structure (~49,000 lines total)
 
 ```
 EmperorPenguin/src/
-  ast/           -- AST layer (Parser 1808 lines, Lexer 964 lines, AST 1210 lines, Token 170 lines, SourceLocation 19 lines)
-  bound/         -- Semantic analysis layer (SemanticModel core ~705 lines + one file per pass: SemanticBuildScopes ~1010, SemanticResolveTypes ~940, SemanticMonomorphize ~2120, SemanticBindBodies ~1230, SemanticBindExpressions ~2280, SemanticBindMetaCalls ~870, SemanticMetaRewrite ~790, SemanticInterfaces ~610, SemanticClassifyValueTypes ~480, SemanticValidateControlFlow ~300, SemanticBindSymbols ~160, SemanticConstructors ~150, SemanticShared ~190; plus Bound* data files)
-  ir/            -- IR generation layer (IRGenerator 1278 lines, IRInstruction 600 lines, IRBuilder 203 lines, ...)
-  llvm/          -- LLVM IR emission (LLVMEmitter 2553 lines)
-  project/       -- Project file parsing, glob resolution (Project.penguin 396 lines)
-main.penguin     -- Entry point (180 lines)
+  ast/           -- AST layer (Parser 3136 lines, AST 1878 lines, Lexer 1041 lines, Formatter 430 lines, Token 187 lines, SourceLocation 25 lines)
+  bound/         -- Semantic analysis layer, 36 files / 25,553 lines: SemanticModel core 1280 + one file per pass + the batch 0.2/0.3 per-concern split modules SemanticBindExpr{Literal,Member,Call,CastNew,Lambda,Coroutine,Generator,Ownership} and SemanticMonomorphize{Collect,Specialize,Specializing} + SemanticConcurrency (stealability analysis) + Bound* data files
+  ir/            -- IR generation layer (IRGenerator 2378 lines, IRInstruction 831 lines, IRBuilder 286 lines, ...)
+  llvm/          -- LLVM IR emission, 13 files / 8837 lines (batch 0.1 split): LLVMEmitter 1137 (driver, owns shared state + collaborator instances) + LLVMTypes 1099, LLVMGCScan 1182, LLVMObjects 950, LLVMCalls 911, LLVMInstructions 901, LLVMMetadata 687, LLVMDebug 539, LLVMGlobals 458, LLVMValues 411, LLVMUtil 241, LLVMData 240, LLVMCompiler 81
+  project/       -- Project file parsing, glob resolution (Project 462 lines, CompilerConfig 258 lines, DynlibStub 195 lines, ErrorCode 134 lines)
+main.penguin     -- Entry point (442 lines)
 ```
 
 ### Entry Point Flow (main.penguin)
@@ -337,20 +337,21 @@ The bound tree sits between AST and IR. Key files in `src/bound/`:
 | `BoundCompilationUnit.penguin`        | `SemanticError`, `BoundCompilationUnit` with definitions, global_scope, type_registry, errors                                                                                                                                                                                      |
 | `BoundTreePrinter.penguin`            | Debug printer for bound tree visualization                                                                                                                                                                                                                                         |
 | `EmperorPenguinCompiler.penguin`      | Top-level compiler entry: `compile_sources()` orchestrates the full pipeline                                                                                                                                                                                                       |
-| `SemanticModel.penguin`               | Shared core (~705 lines): model fields (registry/scope/errors/meta state), builtin registration, `bind()` orchestrating all passes, cross-pass `catch_up_def`, `report_*`, `already_processed`/`processed_beyond` guards, shared `resolve_type_specifier` family, `trace()` (-vvv) |
+| `SemanticModel.penguin`               | Shared core (1280 lines): model fields (registry/scope/errors/meta state), builtin registration, `bind()` orchestrating all passes, cross-pass `catch_up_def`, `report_*`, `already_processed`/`processed_beyond` guards, shared `resolve_type_specifier` family, `trace()` (-vvv) |
 | `SemanticShared.penguin`              | Free helpers + data classes: `FunctionInstantiation`, `SpecializingBlockInfo`, file-namespace naming (`file_ns_name`), def source-file dispatch (`set_def_source_file`/`ast_def_filename`), `top_level_def_scope`, `def_lookup_scope`                                              |
 | `SemanticMetaRewrite.penguin`         | `MetaRewriter` — pre-pass subsystem, single entry `run_prepass(unit)`: option store, `#define`/`#if`/`#while` splicing (def-level + stmt-level), `#fun`/`#class` collection, JIT `seed_meta_engine`                                                                                |
 | `SemanticBuildScopes.penguin`         | `BuildScopesPass` — pass 1 (`run(unit, result)`): bind each AST def into per-file/global scopes, `bind_definition` dispatcher + per-def binders, dyn-lib export marking, `#specializing` text helpers                                                                              |
 | `SemanticResolveTypes.penguin`        | `ResolveTypesPass` — pass 2: index-aligned AST/bound type resolution + `#template` value-param substitution                                                                                                                                                                        |
-| `SemanticMonomorphize.penguin`        | `MonomorphizePass` — pass 3: iterative generic specialization fixpoint, instantiation collection (types + functions, merged from the old file-tail split), name mangling, `#specializing` injection, injected-impl resolution                                                      |
+| `SemanticMonomorphize.penguin`        | `MonomorphizePass` — pass 3 driver (319 lines: run/new/`mangle_generic_name` + entry forwarders); the body lives in the batch 0.3 per-concern split modules `SemanticMonomorphizeCollect.penguin` (MonoCollect, 830 lines — instantiation collection), `SemanticMonomorphizeSpecialize.penguin` (MonoSpecialize, 1490 lines — the iterative generic specialization fixpoint), `SemanticMonomorphizeSpecializing.penguin` (MonoSpecializing, 657 lines — `#specializing` injection, injected-impl resolution)                                                      |
 | `SemanticBindSymbols.penguin`         | `BindSymbolsPass` — pass 4: parameter symbol binding                                                                                                                                                                                                                               |
 | `SemanticConstructors.penguin`        | `ConstructorsPass` — pass 5: default/explicit constructor generation                                                                                                                                                                                                               |
 | `SemanticInterfaces.penguin`          | `InterfacesPass` — pass 6: vtable building & inheritance merge, `impl for` processing                                                                                                                                                                                              |
 | `SemanticClassifyValueTypes.penguin`  | `ClassifyValueTypesPass` — pass 7: ICopy/IRef classification + interface-usage validation (two entries: `run` + `validate_interface_usage`)                                                                                                                                        |
 | `SemanticBindBodies.penguin`          | `BindBodiesPass` — pass 8a: pass entry `run(unit, result)` (current_unit lifecycle), `bind_body_for_def`/`_specialized_def`, `bind_statement` dispatch chain, try-bind statements                                                                                                  |
-| `SemanticBindExpressions.penguin`     | `BindExpressionsPass` — pass 8b: expression binding (literals/identifiers, binary/unary/logical, member access, function calls, try-bind/cast/new, control-flow expressions)                                                                                                       |
+| `SemanticBindExpressions.penguin`     | `BindExpressionsPass` — pass 8b driver (307 lines); the body lives in the batch 0.2 per-concern split modules `SemanticBindExpr{Literal,Member,Call,CastNew,Lambda,Coroutine,Generator,Ownership}.penguin` (classes BindExprLiteral/Member/Call/CastNew/Lambda/Coroutine/Generator/**Linear** — the Ownership FILE keeps its name, the class was renamed to dodge a `new`-guard substring false positive): expression binding (literals/identifiers, binary/unary/logical, member access, function calls, try-bind/cast/new, lambdas, coroutines, generators, control-flow expressions)                                                                                                       |
 | `SemanticBindMetaCalls.penguin`       | `BindMetaCallsPass` — pass 8c: `#fun` meta-call binding & JIT splicing, sizeof/address_of/load/store intrinsics, unique-name trampolines, template instantiation routing                                                                                                           |
 | `SemanticValidateControlFlow.penguin` | `ValidateControlFlowPass` — pass 9: return-path completeness, break/continue validation, return-type checks                                                                                                                                                                        |
+| `SemanticConcurrency.penguin`         | Confinement/stealability analysis (1269 lines, "pass 10 lite"): computes `Shareable(T)` (Sync/Imm/ValueShare) and judges every `async` spawn site; fills the stealable spawn-context registry the IR layer consults for `_co_spawn_entry_stealable`                                                              |
 
 Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-reference (MetaEngine.owner_model precedent, breaks the class-field default-construction cycle), single `run()` entry, per-def processors keep their original names for `catch_up_def` replay. `SemanticModel` holds all pass instances, wired in its constructor. Any new `src/bound/*.penguin` file must be added to BOTH `EmperorPenguinPass1.penguins` and `EmperorPenguinPass2.penguins` (and `EmperorPenguinLib.penguins` when it defines bound-tree code).
 
@@ -383,11 +384,13 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 
 ### LLVM Emission (`src/llvm/`)
 
-`LLVMEmitter.penguin` (2553 lines) — multi-pass LLVM IR text emitter:
+13 files / 8837 lines — split out of the old monolithic LLVMEmitter.penguin in batch 0.1. `LLVMEmitter.penguin` (1137 lines) is the driver: it keeps ALL shared state (needs_* maps, layout tables, sb buffers, memo hashes), owns the collaborator instances and runs the multi-pass LLVM IR text emission:
 1. **Pass 1**: Collect string literals as global constants
 2. **Pass 2**: Build class/enum layout tables for LLVM struct definitions
 3. **Pass 3**: Emit all functions, determine needed runtime declarations
 4. **Final**: Combine type definitions, globals, declarations, and functions
+
+Per-concern collaborator modules: `LLVMData` (240 — shared data classes: layouts, string-lit/register mappings, GC frame slots, sret-elision records), `LLVMTypes` (1099 — layout building, type mapping/sizing, IR predicates), `LLVMInstructions` (901 — per-instruction dispatch, scalar/aggregate emitters), `LLVMObjects` (950 — member access, NEW/NEW_ENUM, enum pattern ops, boxing/unboxing), `LLVMValues` (411 — entry allocas, temp names, value resolution/coercion, array metadata), `LLVMCalls` (911 — direct/void/indirect/virtual calls, argument coercion, funval singletons), `LLVMGCScan` (1182 — pre-emission scans: write chains, alias assigns, sret elision, mutable registers, frame-slot classification), `LLVMMetadata` (687 — type definitions, class/enum metadata globals, GC ref-map programs), `LLVMDebug` (539 — DWARF debug info), `LLVMGlobals` (458 — string literals, globals, extern declarations), `LLVMUtil` (241 — pure helpers), `LLVMCompiler` (81 — the IR-generation + lowering output pipeline entry `build_ll`).
 
 **Type mapping**:
 - Value types (ICopy) → stack-allocated LLVM structs (no metadata header)
@@ -421,7 +424,7 @@ Pass classes follow one pattern: `model: mut Option<SemanticModel>` back-referen
 
 ### Project Handling (`src/project/`)
 
-`Project.penguin` (396 lines) in `project` namespace:
+`Project.penguin` (462 lines) in `project` namespace:
 - `PenguinProject.load(path)`: Parse `.penguins` INI-style project files
 - `resolve_sources(project_dir)`: Expand glob patterns (`*`, `**`, `?`) to actual `.penguin` file paths
 - Helper functions: `string_ends_with`, `string_starts_with`, `string_trim`, `split_string`, `parse_string_array`, `path_combine`, `get_parent_dir`, `glob_match`, `expand_glob`, `collect_penguin_files`

@@ -10,12 +10,12 @@ Metaprogramming is implemented by the self-hosted EmperorPenguin compiler. The `
 
 ## Compile-Time Options and #if
 
-`#define("K","V")` records a key/value pair in the compiler's option store; `#defined("K")` tests it, `#option("K")` reads it. The command line `-DMode=debug` writes into the same store. `#if` / `#elif` / `#else` select between definitions at compile time — each branch is a braced block of definitions, the condition folds from literals, `#defined`, `#option` comparisons, and `!`/`&&`/`||`:
+`#define("K","V")` records a FILE-scoped define (from its line to the end of its file; redefining the same key by code in one file is an error); `#defined("K")` tests it, and a bare identifier in a condition reads its value. The command line `--define K=V` seeds every file's view. `#if` / `#elif` / `#else` select between definitions at compile time — each branch is a braced block of definitions, the condition folds from literals, `#defined`, bare define-name comparisons, and `!`/`&&`/`||`:
 
 ```penguin
 #define("Mode", "debug");
 
-#if (#option("Mode") == "debug") {
+#if (Mode == "debug") {
     fun log_enabled() -> bool { return true; }
 } #else {
     fun log_enabled() -> bool { return false; }
@@ -149,7 +149,7 @@ The standard library's JSON serialization (`#impl_json_serializable()` in `json.
 | Feature | BabyPenguin | EP Pass1 | EP Pass2/Pass3 / LSP |
 |---|---|---|---|
 | `#template` (type params) | parses & monomorphizes | parses & monomorphizes | full |
-| `#define` / `#defined` / `#option` | — | ✓ | ✓ |
+| `#define` / `#defined` | — | ✓ | ✓ |
 | `#if` / `#while` | — | ✓ | ✓ |
 | `#fun` JIT, `-> type`, reflection, value templates, `#specializing`, `#class`, `#compiler()`, `-> ast` | — | — | ✓ |
 

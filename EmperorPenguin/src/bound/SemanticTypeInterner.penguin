@@ -1,0 +1,209 @@
+// Batch 3.4 (roadmap item 1): the TypeInterner — the canonical type-interning
+// LAYER, string-key stage. This is groundwork for the batch-4 incremental
+// engine (redesign §4/§5 A3: "TypeInterner canonical 申请 — template-args 与
+// specialized-def 表示合到同一 slot"), delivered in the ZERO-BEHAVIOR form:
+// a pure query/statistics layer fed during GlobalIndex.rebuild. No resolve
+// path consults it yet; slot reuse (returning the canonical instance from
+// with_generic_args / ensure_specialized_type) is a later batch — the R2
+// representation (type_def = the specialized def, no generic_args) flows into
+// emit's type-reference order, so merging physical instances must not be done
+// casually (see the 3.4 recon notes).
+//
+// The canonical key constructor `type_canonical_key` mirrors BoundType.
+// is_same_type's EXACT unification rules:
+//
+//   * mutability is NOT part of identity (is_same_type never compares it);
+//   * a template+args representation (Foo<X>, type_def = the template,
+//     generic_args present) and its specialized def (Foo__X, type_def = the
+//     specialized class, no args) are the SAME instantiation — but ONLY for
+//     CLASS and ENUM: `_is_template_args_of` (BoundType.penguin) has no
+//     interface branch, so the two interface representations are DIFFERENT
+//     types to is_same_type and must NOT fold to one key. The unification
+//     criterion is `mangle_specialization(template.full_name, args) ==
+//     spec_def.name` — both sides canonically derive from the same mangle, so
+//     the key folds exactly the pairs is_same_type unifies;
+//   * function types compare their arg list pairwise + the async flag;
+//   * value args participate via serialize_bound_type_arg (int/bool/string/
+//     double/object tagged, injective).
+//
+// Self-check: interning a type whose key already exists but whose
+// is_same_type(existing, incoming) is FALSE is a BAD FOLD (the key would
+// wrongly merge distinct types). The counter `bad_folds` must stay 0 — the
+// "539 types fold without collision" acceptance of this batch (recon §4).
+//
+// ANTLR-safe compiler source (plain penguin; no meta, no nested namespaces).
+namespace emperor {
+
+// The canonical identity key of a BoundType (see the header comment for the
+// is_same_type alignment). Identifier-safe output; recursive on generic args.
+fun type_canonical_key(bt: BoundType) -> string {
+    if (bt.kind is TypeKind.PrimitiveKind) {
+        return "P:" + cast<string>(bt.primitive);
+    }
+    if (bt.kind is TypeKind.ErrorKind) {
+        // is_same_type: any two error types are the same type.
+        return "E";
+    }
+    if (bt.kind is TypeKind.ArrayKind) {
+        if (cast<i64>(bt.generic_args.size()) > 0) {
+            return "A:" + type_canonical_arg_key(bt.generic_args.at(cast<u64>(0)).some);
+        }
+        return "A:?";
+    }
+    if (bt.kind is TypeKind.FunctionKind) {
+        let sb: mut StringBuilder = new StringBuilder();
+        if (bt.is_async_function) { sb.append("F:a:"); } else { sb.append("F:s:"); }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(bt.generic_args.size())) {
+            sb.append(type_canonical_arg_key(bt.generic_args.at(cast<u64>(i)).some));
+            sb.append("/");
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+    if (bt.kind is TypeKind.TypeReferenceKind) {
+        if (cast<i64>(bt.generic_args.size()) > 0) {
+            return "R:" + type_canonical_arg_key(bt.generic_args.at(cast<u64>(0)).some);
+        }
+        return "R:?";
+    }
+    // Class / enum / interface: the unification-bearing kinds.
+    if (bt.type_definition.is_some()) {
+        let td: BoundDefinition = bt.type_definition.some;
+        if (td is BoundDefinition.class_def) {
+            let cls: BoundClassDefinition = td.class_def;
+            if (cls.is_specialized) { return "S:" + cls.name; }
+            if (cast<i64>(bt.generic_args.size()) > 0) { return "S:" + mangle_specialization(cls.full_name, bt.generic_args); }
+            return "N:" + cls.full_name;
+        }
+        if (td is BoundDefinition.enum_def) {
+            let e: BoundEnumDefinition = td.enum_def;
+            if (e.is_specialized) { return "S:" + e.name; }
+            if (cast<i64>(bt.generic_args.size()) > 0) { return "S:" + mangle_specialization(e.full_name, bt.generic_args); }
+            return "N:" + e.full_name;
+        }
+        if (td is BoundDefinition.interface_def) {
+            let iface: BoundInterfaceDefinition = td.interface_def;
+            // is_same_type does NOT unify the interface representations —
+            // keep the two spellings in separate key families (SI = the
+            // specialized def, TI = template+args).
+            if (iface.is_specialized) { return "SI:" + iface.name; }
+            if (cast<i64>(bt.generic_args.size()) > 0) { return "TI:" + mangle_specialization(iface.full_name, bt.generic_args); }
+            return "N:" + iface.full_name;
+        }
+        if (td is BoundDefinition.type_ref_def) {
+            return "N:" + td.type_ref_def.name;
+        }
+    }
+    // Degenerate shapes (no type_definition): two such types are is_same_type
+    // iff kind and args agree — display_name is a faithful key there.
+    return "D:" + bt.display_name();
+}
+
+// Canonical key of one generic argument (type args recurse; value args use
+// the mangle alphabet — injective across arg kinds).
+fun type_canonical_arg_key(arg: BoundTypeArg) -> string {
+    if (arg is BoundTypeArg.type_arg) {
+        return "T:" + type_canonical_key(arg.type_arg.bound_type);
+    }
+    if (arg is BoundTypeArg.value_arg) {
+        return "V:" + serialize_bound_type_arg(arg);
+    }
+    return "?";
+}
+
+class TypeInterner {
+    // key -> slot index (string-encoded; StrMap<string> per the compiler's
+    // parallel-list discipline). First registration wins, like the B1 dedup.
+    slot_of: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    // The representative instance of each slot + its key (ordered view for
+    // the dump; parallel lists).
+    slot_keys: mut _utils.List<string> = new _utils.List<string>();
+    slot_types: mut _utils.List<BoundType> = new _utils.List<BoundType>();
+    // O3-lite (def-level interner cache): "" while a slot was created by
+    // intern_replay (a cached contribution that carried no live BoundType —
+    // the placeholder representative is unread). The first REAL intern that
+    // hits such a slot adopts the incoming type as the representative
+    // instead of running the bad_folds check (the key equivalence was
+    // already checked when the cached contribution was first folded).
+    // Slots created by intern() itself are always "1" — the replay path is
+    // the only writer of "", so the full-compile behavior is unchanged.
+    slot_has_rep: mut _utils.List<string> = new _utils.List<string>();
+    // How many BoundType instances were interned in total (with repeats).
+    interned_total: mut i64 = 0;
+    // BAD FOLDS: a key collision where is_same_type(existing, incoming) is
+    // false — the key constructor would wrongly merge distinct types. Must
+    // stay 0 (batch acceptance); each occurrence is recorded for the dump.
+    bad_folds: mut i64 = 0;
+    bad_fold_notes: mut _utils.List<string> = new _utils.List<string>();
+
+    fun reset(mut this) {
+        this.slot_of = new _utils.StrMap<string>();
+        this.slot_keys = new _utils.List<string>();
+        this.slot_types = new _utils.List<BoundType>();
+        this.slot_has_rep = new _utils.List<string>();
+        this.interned_total = 0;
+        this.bad_folds = 0;
+        this.bad_fold_notes = new _utils.List<string>();
+    }
+
+    fun intern(mut this, bt: BoundType) {
+        if (bt.kind is TypeKind.ErrorKind) {
+            // Error types all fold to "E" by design — is_same_type agrees
+            // (any-error == any-error), so this is not a bad fold; skip the
+            // instance bookkeeping (error types carry no useful identity).
+            this.interned_total = this.interned_total + 1;
+            return;
+        }
+        let key: string = type_canonical_key(bt);
+        this.interned_total = this.interned_total + 1;
+        let existing: Option<string> = this.slot_of.get_opt(key);
+        if (existing.is_some()) {
+            let idx: i64 = string_to_int(existing.some);
+            // O3-lite: a replay-created placeholder slot adopts the first
+            // real instance as its representative (no bad_folds check —
+            // see slot_has_rep). Real slots (has_rep "1") check as before.
+            if (this.slot_has_rep.at(cast<u64>(idx)).some == "") {
+                this.slot_types.set(cast<u64>(idx), bt);
+                this.slot_has_rep.set(cast<u64>(idx), "1");
+                return;
+            }
+            let rep: BoundType = this.slot_types.at(cast<u64>(idx)).some;
+            if (!rep.is_same_type(bt)) {
+                this.bad_folds = this.bad_folds + 1;
+                if (cast<i64>(this.bad_fold_notes.size()) < 8) {
+                    this.bad_fold_notes.push(key + " :: '" + rep.display_name() + "' vs '" + bt.display_name() + "'");
+                }
+            }
+            return;
+        }
+        let n: i64 = cast<i64>(this.slot_keys.size());
+        this.slot_of.set(key, cast<string>(n));
+        this.slot_keys.push(key);
+        this.slot_types.push(bt);
+        this.slot_has_rep.push("1");
+    }
+
+    // O3-lite (def-level cache replay): fold one contribution given only its
+    // canonical key (no live BoundType). Counts toward interned_total and
+    // creates the slot when first seen — with a PLACEHOLDER representative
+    // (slot_has_rep ""; the first real intern adopts it — see intern).
+    // Error keys ("E") never create slots (mirrors intern's error branch).
+    fun intern_replay(mut this, key: string) {
+        this.interned_total = this.interned_total + 1;
+        if (key == "E") { return; }
+        let existing: Option<string> = this.slot_of.get_opt(key);
+        if (existing.is_some()) { return; }
+        let n: i64 = cast<i64>(this.slot_keys.size());
+        this.slot_of.set(key, cast<string>(n));
+        this.slot_keys.push(key);
+        this.slot_types.push(new BoundType());
+        this.slot_has_rep.push("");
+    }
+
+    fun slot_count(this) -> i64 {
+        return cast<i64>(this.slot_keys.size());
+    }
+}
+
+}

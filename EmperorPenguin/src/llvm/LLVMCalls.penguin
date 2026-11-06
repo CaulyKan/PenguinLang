@@ -1,0 +1,952 @@
+// Call-emission concern of the LLVM emitter (batch 0.1 split): direct/void/
+// indirect/virtual calls, argument coercion (byval/scalar marshaling),
+// function-value singletons and per-function signature summaries.
+namespace emperor {
+
+class LLVMCalls {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    fun emit_call(mut this, inst: IRCall) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_call(inst=" + inst.display() + ")");
+ }
+        em.instructions.emit_gc_poll();
+        let result_name: string = inst.result_value.display();
+        // try/catch landing pad: the marker call is INLINED as a direct _setjmp
+        // on the buffer (a real extern wrapper would setjmp in its own frame,
+        // and the later longjmp would land in a dead frame — undefined).
+        if (inst.func_name == "__builtin.__sjlj_setjmp") {
+            let jb_resolved: mut string = "undef";
+            if (cast<i64>(inst.args.size()) > 0) {
+                jb_resolved = em.values.resolve_value(inst.args.at(cast<u64>(0)).some);
+            }
+            // Always the two-argument form: _setjmp(jmp_buf, frame) with an
+            // explicit NULL frame — required by mingw-w64 x64, ignored by
+            // glibc (see the declare site); keeps the IR platform-independent.
+            em.instructions.emit_line("  " + result_name + " = call i32 @_setjmp(ptr " + jb_resolved + ", ptr null) #1");
+            em.values.register_llvm_type(result_name, "i32");
+            return;
+        }
+        // Bound method reference creation (`__funval_bound.<fn>` pseudo-calls
+        // emitted by IRGenerator for `x.m` in value position): allocate the
+        // { metadata, recv } callable object via the synthesized creator.
+        if (em.string_starts_with(inst.func_name, "__funval_bound.")) {
+            let pfx: i64 = string_length("__funval_bound.");
+            let target_fn: string = string_substring(inst.func_name, pfx, string_length(inst.func_name) - pfx);
+            let creator: string = this.ensure_bound_funval(target_fn);
+            let obj: string = em.values.next_tmp();
+            let rargs: string = this.emit_args(inst.args);
+            em.instructions.emit_line("  " + obj + " = call ptr " + creator + "(" + rargs + ")");
+            let bres: string = inst.result_value.display();
+            em.reg_map.push(new RegMapping(bres, obj));
+            em.values.register_llvm_type(bres, "ptr");
+            return;
+        }
+        let func_name: string = em.globals.llvm_func_name(inst.func_name);
+
+        // Check if callee returns an aggregate that uses sret (RVO)
+        let callee_sret_type: mut string = "";
+        if (em.types.needs_sret(inst.ret_type)) {
+            callee_sret_type = em.types.get_sret_llvm_type(inst.ret_type);
+        }
+
+        if (callee_sret_type != "") {
+            // Callee uses sret. If this CALL's result is an RVO-elision target
+            // (CALL immediately followed by ASSIGN into a register), write the
+            // return value directly into the destination's storage instead of
+            // allocating a separate buffer and copying. For a mutable destination
+            // this is mandatory: a separate ptr-sized buffer + store into an
+            // undersized alloca overflows the return-address slot (pass2 crash).
+            let elision: Option<SretElision> = em.gcscan.find_sret_elision(result_name);
+            if (elision.is_some()) {
+                let dest_reg: string = elision.some.dest_reg;
+                let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+                if (em.gcscan.is_mutable_reg(dest_reg)) {
+                    // RVO, mutable destination: the destination's alloca IS the
+                    // sret buffer — the callee writes the return value straight
+                    // into dest.addr. No separate buffer, no load/store copy.
+                    let alloca_name: string = em.values.get_alloca_name(dest_reg);
+                    if (string_length(args_str) > 0) {
+                        em.instructions.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + alloca_name + ", " + args_str + ")");
+                    } else {
+                        em.instructions.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + alloca_name + ")");
+                    }
+                    em.reg_map.push(new RegMapping(result_name, alloca_name));
+                    em.values.register_llvm_type(result_name, "ptr");
+                } else {
+                    // RVO, immutable destination: there is no alloca, so the sret
+                    // buffer is the value's home. We take over what emit_assign's
+                    // immutable branches would have done, so the following ASSIGN
+                    // can be elided. The representation depends on the type:
+                    //   - value-class ref (ref<T> -> ptr): alias dest to the sret
+                    //     buffer POINTER (member access geps through it), like the
+                    //     emit_assign "ptr" branch;
+                    //   - enum: load the struct once and alias dest to that value,
+                    //     like the emit_assign "%enum." branch.
+                    let sret_tmp: string = em.values.next_tmp();
+                    em.values.emit_entry_alloca(sret_tmp, callee_sret_type);
+                    if (string_length(args_str) > 0) {
+                        em.instructions.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")");
+                    } else {
+                        em.instructions.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ")");
+                    }
+                    em.reg_map.push(new RegMapping(result_name, sret_tmp));
+                    em.values.register_llvm_type(result_name, "ptr");
+                    em.values.register_llvm_type(sret_tmp, "ptr");
+                    let dest_llvm: string = em.types.ir_type_to_llvm(inst.ret_type);
+                    if (dest_llvm == "ptr") {
+                        // value-class ref: dest is the buffer pointer.
+                        em.reg_map.push(new RegMapping(dest_reg, sret_tmp));
+                        em.values.register_llvm_type(dest_reg, "ptr");
+                    } else {
+                        // enum (or other aggregate): dest is the loaded struct.
+                        let loaded: string = em.values.next_tmp();
+                        em.instructions.emit_line("  " + loaded + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+                        em.values.register_llvm_type(loaded, callee_sret_type);
+                        em.reg_map.push(new RegMapping(dest_reg, loaded));
+                        em.values.register_llvm_type(dest_reg, callee_sret_type);
+                    }
+                }
+                // The ASSIGN that consumes this CALL's result is now redundant.
+                em.elided_assigns.push(elision.some.assign_index);
+                return;
+            }
+            // No elision: alloca a fresh sret buffer in the caller, pass as first arg.
+            let sret_tmp: string = em.values.next_tmp();
+            em.values.emit_entry_alloca(sret_tmp, callee_sret_type);
+            let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+            if (string_length(args_str) > 0) {
+                em.instructions.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + args_str + ")");
+            } else {
+                em.instructions.emit_line("  call void " + func_name + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ")");
+            }
+            // Map result register to the sret alloca pointer
+            em.reg_map.push(new RegMapping(result_name, sret_tmp));
+            em.values.register_llvm_type(result_name, "ptr");
+            // Register the alloca slot name as a pointer too, so that when the
+            // result is later consumed as a value-type struct (e.g. stored into a
+            // field), coerce_operand's get_llvm_type can resolve it and emit the
+            // required ptr->struct load instead of using the slot pointer directly.
+            em.values.register_llvm_type(sret_tmp, "ptr");
+            // If the result register is mutable, the caller expects the value to
+            // live in its alloca slot. Copy the sret buffer into that slot so
+            // subsequent loads (via resolve_value's mutable path) see the struct.
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                let dst_alloca: string = em.values.get_alloca_name(result_name);
+                let loaded: string = em.values.next_tmp();
+                em.instructions.emit_line("  " + loaded + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+                em.instructions.emit_line("  store " + callee_sret_type + " " + loaded + ", ptr " + dst_alloca);
+            }
+        } else {
+            let ret_llvm: string = em.types.ir_type_to_llvm(inst.ret_type);
+            let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+            if (em.globals.is_bare_libc_extern(inst.func_name) && em.types.is_string_type(inst.ret_type)) {
+                // libc returns a transient char*: adopt-copy it into a fresh
+                // GC string so the value obeys the PenguinLang string ABI.
+                let raw: string = em.values.next_tmp();
+                em.instructions.emit_line("  " + raw + " = call " + ret_llvm + " " + func_name + "(" + args_str + ")");
+                let adopted: string = em.values.next_tmp();
+                em.instructions.emit_line("  " + adopted + " = call ptr @_emperor_string_adopt_cstring(ptr " + raw + ")");
+                // A GC-promoted register must receive the value in its SLOT
+                // (resolve_value loads from there) — the reg_map alias alone
+                // feeds only immutable registers.
+                if (em.gcscan.is_gc_only_reg(result_name)) {
+                    em.instructions.emit_line("  store ptr " + adopted + ", ptr " + em.values.get_alloca_name(result_name));
+                }
+                em.reg_map.push(new RegMapping(result_name, adopted));
+                em.values.register_llvm_type(result_name, "ptr");
+            } else {
+                em.instructions.emit_line("  " + result_name + " = call " + ret_llvm + " " + func_name + "(" + args_str + ")");
+                if (ret_llvm != "void") {
+                    em.values.register_llvm_type(result_name, ret_llvm);
+                }
+            }
+        }
+    }
+
+    fun emit_call_void(mut this, inst: IRCallVoid) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_call_void(inst=" + inst.display() + ")");
+ }
+        // Two-tier M2: the __gc_promote intrinsic lowers to this runtime
+        // call (its declaration is planned by the EmitPlan sweep).
+        // Native-array extern helpers (lowered from the __array_fill /
+        // __array_copy_range intrinsics). Fixed C ABI: the element VALUE is
+        // passed by address (any element type), so materialize a slot for it.
+        if (inst.func_name == "_emperor_array_fill") {
+            let arr: string = em.values.resolve_value(inst.args.at(cast<u64>(0)).some);
+            let val_ir: string = inst.args.at(cast<u64>(1)).some.get_ir_type();
+            let val_resolved: string = em.values.resolve_value(inst.args.at(cast<u64>(1)).some);
+            let val_slot: mut string = "";
+            if (em.types.value_class_struct_type(val_ir) != "") {
+                // Value-class element: the C helper memcpy's map-stride bytes
+                // out of the value slot — it needs the pointer to the struct
+                // DATA. A mutable reg's alloca holds that pointer (load it);
+                // an SSA value-class value already IS the pointer.
+                if (em.gcscan.is_mutable_reg(inst.args.at(cast<u64>(1)).some.display())) {
+                    val_slot = em.values.next_tmp();
+                    em.instructions.emit_line("  " + val_slot + " = load ptr, ptr " + em.values.get_alloca_name(inst.args.at(cast<u64>(1)).some.display()));
+                } else {
+                    val_slot = em.values.coerce_operand(val_resolved, "ptr");
+                }
+            } else {
+                let val_llvm: string = em.types.ir_type_to_llvm(val_ir);
+                let val_coerced: string = em.values.coerce_operand(val_resolved, val_llvm);
+                val_slot = em.values.materialize_value_slot(inst.args.at(cast<u64>(1)).some, val_coerced, val_llvm);
+            }
+            em.instructions.emit_line("  call void @_emperor_array_fill(ptr " + arr + ", ptr " + val_slot + ")");
+            return;
+        }
+        if (inst.func_name == "_emperor_array_copy_range") {
+            let dst: string = em.values.resolve_value(inst.args.at(cast<u64>(0)).some);
+            let src: string = em.values.resolve_value(inst.args.at(cast<u64>(1)).some);
+            let n: string = em.values.resolve_value(inst.args.at(cast<u64>(2)).some);
+            let n_i64: string = em.values.coerce_operand(n, "i64");
+            em.instructions.emit_line("  call void @_emperor_array_copy_range(ptr " + dst + ", ptr " + src + ", i64 " + n_i64 + ")");
+            return;
+        }
+        em.instructions.emit_gc_poll();
+        let args_str: string = this.emit_args_coerced(inst.func_name, inst.args);
+        let func_name: string = em.globals.llvm_func_name(inst.func_name);
+        em.instructions.emit_line("  call void " + func_name + "(" + args_str + ")");
+    }
+
+    // CALL_INDIRECT — call through a function-pointer VALUE (fun-typed fields).
+    // The callee operand is a live ptr register; no signature-based coercion is
+    // possible (the fat-pointer ABI has no call-site metadata), so arguments are
+    // emitted as-is.
+    // ---- Function values (fun<...>) ----
+    // A fun value is a callable OBJECT: one ptr to a constant (or GC) object
+    // whose metadata carries a "__FunVal" interface entry at slot 0; the slot
+    // method takes the object itself as argument 0 (same ABI as a `mut this`
+    // method), so every indirect call site prepends the object. For a
+    // top-level/static function reference the object is a per-function
+    // CONSTANT singleton — zero runtime allocation, stable identity (two
+    // references to the same function compare equal) — whose slot-0 entry is
+    // a thunk that drops the self argument and forwards to the function.
+    fun ensure_funval_iface_id(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (!list_contains(em.emitted_interface_ids, "__FunVal")) {
+            em.emitted_interface_ids.push("__FunVal");
+            em.pending_iface_ids.append("@.__FunVal_interface_id = private unnamed_addr constant [9 x i8] c\"__FunVal\\00\"\n");
+        }
+    }
+
+    // Interface-id constant registration (dedup), shared between CALL_VIRT
+    // emission and the EmitPlan sweep: both register in emission order, so
+    // the pending section is identical whether the plan pre-triggered it or
+    // the emitter reached the call site first.
+    fun ensure_iface_id(mut this, iface_id: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (!list_contains(em.emitted_interface_ids, iface_id)) {
+            em.emitted_interface_ids.push(iface_id);
+            let id_len: i64 = string_length(iface_id);
+            em.pending_iface_ids.append("@." + iface_id + "_interface_id = private unnamed_addr constant [" + cast<string>(id_len + 1) + " x i8] c\"" + iface_id + "\\00\"\n");
+        }
+    }
+
+    fun ensure_funval(mut this, fn_name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let key: string = sanitize_name(em.globals.strip_global_prefix(fn_name));
+        let obj_name: string = "@__funval_" + key + "_obj";
+        if (list_contains(em.emitted_funvals, key)) {
+            return obj_name;
+        }
+        em.emitted_funvals.push(key);
+        let fpt: Option<FuncParamTypes> = this.find_func_param_types(em.globals.strip_global_prefix(fn_name));
+        if (fpt.is_none()) {
+            __builtin.eprintln("error[E_INTERNAL]: function-value reference to unknown function: " + fn_name);
+            __builtin.exit(1);
+        }
+        let sig: FuncParamTypes = fpt.some;
+        // sig.first_param_is_this means an UNBOUND method reference (Temp.call):
+        // the thunk passes argument 0 through as the receiver (fwd_args includes
+        // ALL callee parameters, which for a method start with `this`). A static
+        // function's parameter list has no receiver, so the same code drops only
+        // the synthetic self argument.
+        // Build the thunk signature: (ptr %self, <callee params...>) -> callee ret.
+        let params_sig: mut string = "ptr %self";
+        let fwd_args: mut string = "";
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(sig.param_types.size())) {
+            let pname: string = "%a" + cast<string>(pi);
+            let ptype: string = sig.param_types.at(cast<u64>(pi)).some;
+            params_sig = params_sig + ", " + ptype + " " + pname;
+            if (string_length(fwd_args) > 0) { fwd_args = fwd_args + ", "; }
+            fwd_args = fwd_args + ptype + " " + pname;
+            pi = pi + 1;
+        }
+        let thunk: string = "@__funval_thunk_" + key;
+        let target: string = em.globals.llvm_func_name(fn_name);
+        let b: mut StringBuilder = new StringBuilder();
+        let sret_type: mut string = "";
+        if (em.types.needs_sret(sig.ret_ir_type)) {
+            sret_type = em.types.get_sret_llvm_type(sig.ret_ir_type);
+            // sret convention: the hidden return pointer is the thunk's FIRST
+            // parameter (before %self) and is forwarded verbatim.
+            b.append("define void " + thunk + "(ptr sret(" + sret_type + ") %agg, " + params_sig + ") {\n");
+            if (string_length(fwd_args) > 0) {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg, " + fwd_args + ")\n");
+            } else {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg)\n");
+            }
+            b.append("  ret void\n");
+            b.append("}\n");
+        } else {
+            let ret_llvm: string = em.types.ir_type_to_llvm(sig.ret_ir_type);
+            if (ret_llvm == "void") {
+                b.append("define void " + thunk + "(" + params_sig + ") {\n");
+                if (string_length(fwd_args) > 0) {
+                    b.append("  call void " + target + "(" + fwd_args + ")\n");
+                } else {
+                    b.append("  call void " + target + "()\n");
+                }
+                b.append("  ret void\n");
+                b.append("}\n");
+            } else {
+                b.append("define " + ret_llvm + " " + thunk + "(" + params_sig + ") {\n");
+                if (string_length(fwd_args) > 0) {
+                    b.append("  %r = call " + ret_llvm + " " + target + "(" + fwd_args + ")\n");
+                } else {
+                    b.append("  %r = call " + ret_llvm + " " + target + "()\n");
+                }
+                b.append("  ret " + ret_llvm + " %r\n");
+                b.append("}\n");
+            }
+        }
+        // Constant singleton: { metadata } — one word, the metadata pointer at
+        // offset 0, exactly like a no-field class instance. field_count=0 and
+        // interface_count=1 (the __FunVal entry with the thunk at slot 0).
+        this.ensure_funval_iface_id();
+        b.append("@__funval_" + key + "_vtable = private constant [1 x ptr] [ptr " + thunk + "]\n");
+        b.append("@__funval_" + key + "_iface_map = private constant [1 x { ptr, ptr }] [{ ptr, ptr } { ptr @.__FunVal_interface_id, ptr @__funval_" + key + "_vtable }]\n");
+        b.append("@.__funval_" + key + "_name = private unnamed_addr constant [" + cast<string>(string_length(key) + 1) + " x i8] c\"" + key + "\\00\"\n");
+        b.append("@__funval_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+        b.append("  ptr @.__funval_" + key + "_name,\n");
+        b.append("  i32 8,\n");
+        b.append("  i32 0,\n");
+        b.append("  ptr null,\n");
+        b.append("  ptr null,\n");
+        b.append("  ptr null,\n");
+        b.append("  i32 1,\n");
+        b.append("  ptr @__funval_" + key + "_iface_map,\n");
+        b.append("  ptr null\n");
+        b.append("}\n");
+        b.append(obj_name + " = private constant { ptr } { ptr @__funval_" + key + "_metadata }\n");
+        em.pending_funvals.append(b.to_string());
+        return obj_name;
+    }
+
+    // BOUND method reference (`x.call` in value position): the callable object
+    // is a 2-word GC allocation { metadata, recv }. The per-(class, method)
+    // constant metadata's __FunVal slot points at a forwarder that loads the
+    // receiver from offset 8 and calls the method with it as argument 0.
+    // Synthesizes (once per (class, method)) the creator function (allocates
+    // and stamps the object), the forwarder, and the metadata; returns the
+    // creator's symbol.
+    fun ensure_bound_funval(mut this, fn_name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let key: string = sanitize_name(em.globals.strip_global_prefix(fn_name));
+        let creator: string = "@__funval_boundmake_" + key;
+        if (list_contains(em.emitted_funvals, "bound." + key)) {
+            return creator;
+        }
+        em.emitted_funvals.push("bound." + key);
+        em.plan.needs_funval_alloc = true;
+        let fpt: Option<FuncParamTypes> = this.find_func_param_types(em.globals.strip_global_prefix(fn_name));
+        if (fpt.is_none()) {
+            __builtin.eprintln("error[E_INTERNAL]: bound function-value reference to unknown function: " + fn_name);
+            __builtin.exit(1);
+        }
+        let sig: FuncParamTypes = fpt.some;
+        if (!sig.first_param_is_this) {
+            __builtin.eprintln("error[E_INTERNAL]: bound function-value target is not a method: " + fn_name);
+            __builtin.exit(1);
+        }
+        if (cast<i64>(sig.param_types.size()) < 1 || sig.param_types.at(cast<u64>(0)).some != "ptr") {
+            __builtin.eprintln("error[E_INTERNAL]: bound method reference to a non-reference receiver is not supported: " + fn_name);
+            __builtin.exit(1);
+        }
+        // Forwarder: (ptr %self, <params[1..]>) -> ret; receiver = *(self+8).
+        let target: string = em.globals.llvm_func_name(fn_name);
+        let fwd: string = "@__funval_boundcall_" + key;
+        let params_sig: mut string = "ptr %self";
+        let fwd_rest: mut string = "";
+        let pi: mut i64 = 1;
+        while (pi < cast<i64>(sig.param_types.size())) {
+            let pname: string = "%a" + cast<string>(pi - 1);
+            let ptype: string = sig.param_types.at(cast<u64>(pi)).some;
+            params_sig = params_sig + ", " + ptype + " " + pname;
+            if (string_length(fwd_rest) > 0) { fwd_rest = fwd_rest + ", "; }
+            fwd_rest = fwd_rest + ptype + " " + pname;
+            pi = pi + 1;
+        }
+        let b: mut StringBuilder = new StringBuilder();
+        // Receiver lives in the object's single field at offset 8.
+        let recv_load: string = "  %recv_slot = getelementptr i8, ptr %self, i64 8\n  %recv = load ptr, ptr %recv_slot\n";
+        let sret_type: mut string = "";
+        if (em.types.needs_sret(sig.ret_ir_type)) {
+            sret_type = em.types.get_sret_llvm_type(sig.ret_ir_type);
+            b.append("define void " + fwd + "(ptr sret(" + sret_type + ") %agg, " + params_sig + ") {\n");
+            b.append(recv_load);
+            if (string_length(fwd_rest) > 0) {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg, ptr %recv, " + fwd_rest + ")\n");
+            } else {
+                b.append("  call void " + target + "(ptr sret(" + sret_type + ") %agg, ptr %recv)\n");
+            }
+            b.append("  ret void\n");
+            b.append("}\n");
+        } else {
+            let ret_llvm: string = em.types.ir_type_to_llvm(sig.ret_ir_type);
+            if (ret_llvm == "void") {
+                b.append("define void " + fwd + "(" + params_sig + ") {\n");
+                b.append(recv_load);
+                if (string_length(fwd_rest) > 0) {
+                    b.append("  call void " + target + "(ptr %recv, " + fwd_rest + ")\n");
+                } else {
+                    b.append("  call void " + target + "(ptr %recv)\n");
+                }
+                b.append("  ret void\n");
+                b.append("}\n");
+            } else {
+                b.append("define " + ret_llvm + " " + fwd + "(" + params_sig + ") {\n");
+                b.append(recv_load);
+                if (string_length(fwd_rest) > 0) {
+                    b.append("  %r = call " + ret_llvm + " " + target + "(ptr %recv, " + fwd_rest + ")\n");
+                } else {
+                    b.append("  %r = call " + ret_llvm + " " + target + "(ptr %recv)\n");
+                }
+                b.append("  ret " + ret_llvm + " %r\n");
+                b.append("}\n");
+            }
+        }
+        // Creator: allocate { metadata, recv } — 16 bytes, receiver at
+        // offset 8, GC-traced via the metadata's field arrays.
+        b.append("define ptr " + creator + "(ptr %recv) {\n");
+        b.append("  %obj = call ptr @_emperor_alloc_impl(i32 16)\n");
+        b.append("  store ptr @__funval_bound_" + key + "_metadata, ptr %obj\n");
+        b.append("  %slot = getelementptr i8, ptr %obj, i64 8\n");
+        b.append("  store ptr %recv, ptr %slot\n");
+        b.append("  ret ptr %obj\n");
+        b.append("}\n");
+        // Metadata: field_offsets=[8], field_is_ptr=[1] so the GC traces the
+        // captured receiver; refmap null = conservative scan of both words.
+        this.ensure_funval_iface_id();
+        b.append("@__funval_bound_" + key + "_vtable = private constant [1 x ptr] [ptr " + fwd + "]\n");
+        b.append("@__funval_bound_" + key + "_iface_map = private constant [1 x { ptr, ptr }] [{ ptr, ptr } { ptr @.__FunVal_interface_id, ptr @__funval_bound_" + key + "_vtable }]\n");
+        b.append("@.__funval_bound_" + key + "_name = private unnamed_addr constant [" + cast<string>(string_length(key) + 1) + " x i8] c\"" + key + "\\00\"\n");
+        b.append("@__funval_bound_" + key + "_field_offsets = private constant [1 x i32] [i32 8]\n");
+        b.append("@__funval_bound_" + key + "_field_is_ptr = private constant [1 x i32] [i32 1]\n");
+        b.append("@__funval_bound_" + key + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+        b.append("  ptr @.__funval_bound_" + key + "_name,\n");
+        b.append("  i32 16,\n");
+        b.append("  i32 1,\n");
+        b.append("  ptr @__funval_bound_" + key + "_field_offsets,\n");
+        b.append("  ptr @__funval_bound_" + key + "_field_is_ptr,\n");
+        b.append("  ptr null,\n");
+        b.append("  i32 1,\n");
+        b.append("  ptr @__funval_bound_" + key + "_iface_map,\n");
+        b.append("  ptr null\n");
+        b.append("}\n");
+        em.pending_funvals.append(b.to_string());
+        return creator;
+    }
+
+    fun emit_call_indirect(mut this, inst: IRCallIndirect) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_call_indirect(inst=" + inst.display() + ")");
+ }
+        em.instructions.emit_gc_poll();
+        this.ensure_funval_iface_id();
+        // The callee is a callable OBJECT (a fun value): resolve slot 0 of
+        // its __FunVal interface entry and call it with the object prepended
+        // as argument 0 — the uniform fun-value ABI.
+        let obj_resolved: string = em.values.resolve_value(inst.callee);
+        let fn_ptr: string = em.values.next_tmp();
+        em.instructions.emit_line("  " + fn_ptr + " = call ptr @_emperor_vtable_lookup(ptr " + obj_resolved + ", ptr @.__FunVal_interface_id, i32 0)");
+        let callee_sret_type: mut string = "";
+        if (em.types.needs_sret(inst.ret_type)) {
+            callee_sret_type = em.types.get_sret_llvm_type(inst.ret_type);
+        }
+        // The callee's thunk / closure __invoke is emitted with the same
+        // parameter rules as any function (value-class params are ptr-ABI,
+        // >16-byte enums byval) — use the virtual-call argument emitter, not
+        // the plain emit_args (which passes struct VALUES and produced
+        // "'%t' defined with type '%class.X' but expected 'ptr'" link errors
+        // on fun-value calls with value-class arguments).
+        let rest_args: string = this.emit_args_virt(inst.args);
+        if (callee_sret_type != "") {
+            let sret_tmp: string = em.values.next_tmp();
+            em.values.emit_entry_alloca(sret_tmp, callee_sret_type);
+            if (string_length(rest_args) > 0) {
+                em.instructions.emit_line("  call void " + fn_ptr + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", ptr " + obj_resolved + ", " + rest_args + ")");
+            } else {
+                em.instructions.emit_line("  call void " + fn_ptr + "(ptr sret(" + callee_sret_type + ") " + sret_tmp + ", ptr " + obj_resolved + ")");
+            }
+            let result_name: string = inst.result_value.display();
+            em.instructions.emit_line("  " + result_name + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+            em.values.register_llvm_type(result_name, callee_sret_type);
+            return;
+        }
+        if (inst.ret_type != "void") {
+            let result_name: string = inst.result_value.display();
+            let ret_llvm: string = em.types.ir_type_to_llvm(inst.ret_type);
+            if (string_length(rest_args) > 0) {
+                em.instructions.emit_line("  " + result_name + " = call " + ret_llvm + " " + fn_ptr + "(ptr " + obj_resolved + ", " + rest_args + ")");
+            } else {
+                em.instructions.emit_line("  " + result_name + " = call " + ret_llvm + " " + fn_ptr + "(ptr " + obj_resolved + ")");
+            }
+            em.values.register_llvm_type(result_name, ret_llvm);
+            return;
+        }
+        if (string_length(rest_args) > 0) {
+            em.instructions.emit_line("  call void " + fn_ptr + "(ptr " + obj_resolved + ", " + rest_args + ")");
+        } else {
+            em.instructions.emit_line("  call void " + fn_ptr + "(ptr " + obj_resolved + ")");
+        }
+    }
+
+    fun emit_call_virt(mut this, inst: IRCallVirt) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_call_virt");
+        em.instructions.emit_gc_poll();
+        let obj_resolved: string = em.values.resolve_value(inst.obj);
+        let result_name: string = inst.result_value.display();
+
+        // Check if callee returns an aggregate that uses sret (RVO),
+        // mirroring emit_call's sret logic for enum/struct returns.
+        let callee_sret_type: mut string = "";
+        if (em.types.needs_sret(inst.ret_type)) {
+            callee_sret_type = em.types.get_sret_llvm_type(inst.ret_type);
+        }
+
+        // Enums are now registered as ptr (like value classes), so obj_resolved
+        // is already a pointer — no need to materialize enum structs.
+
+        // 1. Look up function pointer via C runtime helper
+        let func_ptr_name: string = em.values.next_tmp();
+        // Ensure the interface ID string constant is emitted (the class/enum that
+        // implements this interface may not have its metadata emitted yet).
+        this.ensure_iface_id(inst.interface_id);
+        let iface_id_name: string = "@." + inst.interface_id + "_interface_id";
+        em.instructions.emit_line("  " + func_ptr_name + " = call ptr @_emperor_vtable_lookup(ptr " + obj_resolved + ", ptr " + iface_id_name + ", i32 " + cast<string>(inst.vtable_slot) + ")");
+
+        // 2. Build args string and sret buffer (if needed).
+        // Use if-expression value form (trailing expression, no `;`) — PenguinLang
+        // locals are not reassignable, and an if whose branches are statements is void.
+        let rest_args: string = this.emit_args_virt(inst.args);
+        let sret_tmp: string = if (callee_sret_type != "") {
+            let tmp: string = em.values.next_tmp();
+            em.values.emit_entry_alloca(tmp, callee_sret_type);
+            tmp
+        } else {
+            ""
+        };
+        let args_str: string = if (callee_sret_type != "") {
+            if (string_length(rest_args) > 0) {
+                "ptr sret(" + callee_sret_type + ") " + sret_tmp + ", " + rest_args
+            } else {
+                "ptr sret(" + callee_sret_type + ") " + sret_tmp
+            }
+        } else {
+            rest_args
+        };
+
+        // 3. Indirect call through function pointer
+        if (callee_sret_type != "") {
+            // sret: call void, then map result to sret buffer
+            em.instructions.emit_line("  call void " + func_ptr_name + "(" + args_str + ")");
+            em.reg_map.push(new RegMapping(result_name, sret_tmp));
+            em.values.register_llvm_type(result_name, "ptr");
+            em.values.register_llvm_type(sret_tmp, "ptr");
+            // If the result register is mutable, copy sret buffer into its alloca
+            if (em.gcscan.is_mutable_reg(result_name)) {
+                let dst_alloca: string = em.values.get_alloca_name(result_name);
+                let loaded: string = em.values.next_tmp();
+                em.instructions.emit_line("  " + loaded + " = load " + callee_sret_type + ", ptr " + sret_tmp);
+                em.instructions.emit_line("  store " + callee_sret_type + " " + loaded + ", ptr " + dst_alloca);
+            }
+        } else if (inst.ret_type != "void") {
+            let ret_llvm: string = em.types.ir_type_to_llvm(inst.ret_type);
+            em.instructions.emit_line("  " + result_name + " = call " + ret_llvm + " " + func_ptr_name + "(" + args_str + ")");
+            if (ret_llvm != "void") {
+                em.values.register_llvm_type(result_name, ret_llvm);
+            }
+        } else {
+            em.instructions.emit_line("  call void " + func_ptr_name + "(" + args_str + ")");
+        }
+    }
+
+    // Virtual-call argument emission: the callee is an interface method whose
+    // signature emit_function built with the SAME byval rule as any function —
+    // >16-byte aggregate parameters are `ptr byval(type)`. The plain emit_args
+    // passed the struct VALUE for such parameters (interface dispatch had
+    // simply never been exercised with an enum/value-class payload >16 bytes),
+    // so the callee dereferenced the struct's first field as a pointer and the
+    // payload arrived zeroed/garbage (e.g. ISink<Fifo>.write(enum-with-string)
+    // crashed in string_length on a bits-as-pointer string).
+    fun emit_args_virt(mut this, args: _utils.List<IRValue>) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_args_virt");
+        let sb2: mut StringBuilder = new StringBuilder();
+        let first: mut bool = true;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = em.values.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            if (arg_type == "void" || resolved == "unknown") {
+                i = i + 1;
+                continue;
+            }
+            if (!first) { sb2.append(", "); }
+            first = false;
+            let byval_type: string = this.resolve_byval_type(arg_type);
+            if (byval_type != "") {
+                let arg_ptr: string = em.objects.materialize_enum_ptr(resolved, byval_type);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
+            } else {
+                let llvm_type: string = em.types.ir_type_to_llvm(arg_type);
+                let actual_type: string = em.values.get_llvm_type(resolved);
+                // A raw i1 (icmp result — a comparison passed directly as a
+                // bool argument) crossing the i8 bool ABI: materialize with
+                // zext (coerce_arg's i1->i8, ComparisonAsBoolCallArg).
+                if (llvm_type == "i8" && actual_type == "i1") {
+                    let zext_tmp: string = em.values.next_tmp();
+                    em.instructions.emit_line("  " + zext_tmp + " = zext i1 " + resolved + " to i8");
+                    sb2.append("i8 " + zext_tmp);
+                    i = i + 1;
+                    continue;
+                }
+                if (actual_type == "ptr" && (em.string_starts_with(llvm_type, "%enum.") || em.string_starts_with(llvm_type, "%class."))) {
+                    let coerced: string = em.values.coerce_operand(resolved, llvm_type);
+                    sb2.append(llvm_type + " " + coerced);
+                } else {
+                    if (llvm_type == "ptr" && (em.string_starts_with(actual_type, "%class.") || em.string_starts_with(actual_type, "%enum."))) {
+                        // Value-class parameter (ref<X> -> ptr ABI, like any
+                        // emit_function callee) but the argument resolved to a
+                        // struct VALUE — pass a pointer to its storage, the
+                        // same struct_value_to_ptr rule as direct/ctor calls
+                        // (emit_args_coerced / emit_args_with_first). fun-value
+                        // indirect calls with a value-class argument produced
+                        // "ptr %struct-value" type errors before.
+                        let arg_ptr: string = em.objects.struct_value_to_ptr(arg, actual_type);
+                        sb2.append("ptr " + arg_ptr);
+                    } else {
+                        sb2.append(llvm_type + " " + resolved);
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    fun emit_args_with_first(mut this, args: _utils.List<IRValue>, first_arg: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_args_with_first(first_arg=" + cast<string>(first_arg) + ")");
+ }
+        let sb2: mut StringBuilder = new StringBuilder();
+        sb2.append(first_arg);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(i)).some;
+            // void-as-unit: drop void-typed arguments — the callee's signature
+            // elides the matching void parameter.
+            if (arg.get_ir_type() == "void") { i = i + 1; continue; }
+            sb2.append(", ");
+            let resolved: string = em.values.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            let llvm_type: string = em.types.ir_type_to_llvm(arg_type);
+            // For >16-byte aggregate constructor arguments, the callee declares the
+            // parameter as `ptr byval(type)` (emit_function), so the caller MUST pass a
+            // pointer (materialize the value into a temp alloca). Passing the struct value
+            // directly made the callee dereference the value's bits as a pointer — the
+            // pass2 BoundScope/Option corruption (parent field garbage, scope mis-offset).
+            let byval_type: string = this.resolve_byval_type(arg_type);
+            if (byval_type != "") {
+                let arg_ptr: string = em.objects.materialize_enum_ptr(resolved, byval_type);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
+            } else {
+                // Coerce ptr→struct for enum/value-class operands registered as ptr
+                let actual_type: string = em.values.get_llvm_type(resolved);
+                // A raw i1 (icmp result — a comparison passed directly as a
+                // bool ctor argument) crossing the i8 bool ABI: materialize
+                // with zext (coerce_arg's i1->i8, ComparisonAsBoolCallArg).
+                if (llvm_type == "i8" && actual_type == "i1") {
+                    let zext_tmp: string = em.values.next_tmp();
+                    em.instructions.emit_line("  " + zext_tmp + " = zext i1 " + resolved + " to i8");
+                    sb2.append("i8 " + zext_tmp);
+                    i = i + 1;
+                    continue;
+                }
+                if (actual_type == "ptr" && (em.string_starts_with(llvm_type, "%enum.") || em.string_starts_with(llvm_type, "%class."))) {
+                    let coerced: string = em.values.coerce_operand(resolved, llvm_type);
+                    sb2.append(llvm_type + " " + coerced);
+                } else {
+                    if (llvm_type == "ptr" && (em.string_starts_with(actual_type, "%class.") || em.string_starts_with(actual_type, "%enum."))) {
+                        // value-class ctor arg (ref<X> -> ptr) but resolved to a struct value:
+                        // the callee treats the ptr as &struct, so pass a pointer to the storage.
+                        let arg_ptr: string = em.objects.struct_value_to_ptr(arg, actual_type);
+                        sb2.append("ptr " + arg_ptr);
+                    } else {
+                        sb2.append(llvm_type + " " + resolved);
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    // --- Argument list emission ---
+
+    fun find_func_param_types(this, func_name: string) -> Option<FuncParamTypes> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_func_param_types(func_name=" + cast<string>(func_name) + ")");
+ }
+        // Memoized: value = index+1, 0 = confirmed miss (the table is filled
+        // once per unit, before emission, and frozen — misses stay misses).
+        // Consulted twice per call instruction (scan + emit), and the linear
+        // scan paid a string compare per entry.
+        let m: i64 = em.fpt_memo.get(func_name, -1);
+        if (m >= 0) {
+            if (m == 0) { return new Option<FuncParamTypes>.none(); }
+            return new Option<FuncParamTypes>.some(em.func_param_types.at(cast<u64>(m - 1)).some);
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.func_param_types.size())) {
+            let fpt: FuncParamTypes = em.func_param_types.at(cast<u64>(i)).some;
+            if (fpt.func_name == func_name) {
+                em.fpt_memo.set(func_name, i + 1);
+                return new Option<FuncParamTypes>.some(fpt);
+            }
+            i = i + 1;
+        }
+        em.fpt_memo.set(func_name, 0);
+        return new Option<FuncParamTypes>.none();
+    }
+
+    fun coerce_arg(mut this, resolved: string, arg_llvm_type: string, param_llvm_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter coerce_arg(resolved=" + cast<string>(resolved) + ", arg_llvm_type=" + cast<string>(arg_llvm_type) + ", param_llvm_type=" + cast<string>(param_llvm_type) + ")");
+ }
+        if (arg_llvm_type == param_llvm_type) { return resolved; }
+        // Boolean materialization: a comparison expression passed DIRECTLY as
+        // a bool argument resolves to its RAW i1 (the icmp result register),
+        // while bool's storage/ABI type is i8 — zero-extend at the call
+        // boundary (the same rule the `not` unaryop and bool stores already
+        // apply; a let-bound bool materializes via emit_assign's zext, which
+        // is why only direct call arguments used to hit the i1/i8 mismatch
+        // — ComparisonAsBoolCallArg).
+        if (arg_llvm_type == "i1" && param_llvm_type == "i8") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = zext i1 " + resolved + " to i8");
+            return tmp;
+        }
+        // Integer truncation: i64 -> i32, i64 -> i16, etc.
+        if (arg_llvm_type == "i64" && param_llvm_type == "i32") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = trunc i64 " + resolved + " to i32");
+            return tmp;
+        }
+        if (arg_llvm_type == "i64" && param_llvm_type == "i16") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = trunc i64 " + resolved + " to i16");
+            return tmp;
+        }
+        if (arg_llvm_type == "i64" && param_llvm_type == "i8") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = trunc i64 " + resolved + " to i8");
+            return tmp;
+        }
+        // Integer extension: i32 -> i64, etc.
+        if (arg_llvm_type == "i32" && param_llvm_type == "i64") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = sext i32 " + resolved + " to i64");
+            return tmp;
+        }
+        if (arg_llvm_type == "i16" && param_llvm_type == "i64") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = sext i16 " + resolved + " to i64");
+            return tmp;
+        }
+        if (arg_llvm_type == "i8" && param_llvm_type == "i64") {
+            let tmp: string = em.values.next_tmp();
+            em.instructions.emit_line("  " + tmp + " = sext i8 " + resolved + " to i64");
+            return tmp;
+        }
+        // Pointer → struct: when an enum or value-type class operand is registered
+        // as "ptr" (e.g. from emit_new_enum) but the callee expects the struct value
+        // directly via register (≤16-byte aggregate without byval), load the struct.
+        if (arg_llvm_type == "ptr" && em.string_starts_with(param_llvm_type, "%")) {
+            return em.values.coerce_operand(resolved, param_llvm_type);
+        }
+        return resolved;
+    }
+
+    // Determine the byval struct type for a call argument, if the argument's
+    // IR type is a >16-byte aggregate. Returns "" otherwise.
+    fun resolve_byval_type(this, arg_ir_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter resolve_byval_type(arg_ir_type=" + cast<string>(arg_ir_type) + ")");
+ }
+        let ir_llvm_type: string = em.types.ir_type_to_llvm(arg_ir_type);
+        if (em.types.llvm_type_size(ir_llvm_type) > 16) {
+            return ir_llvm_type;
+        }
+        return "";
+    }
+
+    // Determine the struct type for a call argument when the operand is registered
+    // as "ptr" but the callee expects the struct value (≤16-byte aggregate without
+    // byval). Returns "" if no coercion is needed.
+    fun resolve_arg_struct_type(this, arg_llvm_type: string, arg_ir_llvm_type: string, param_llvm_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter resolve_arg_struct_type(arg_llvm_type=" + cast<string>(arg_llvm_type) + ", arg_ir_llvm_type=" + cast<string>(arg_ir_llvm_type) + ", param_llvm_type=" + cast<string>(param_llvm_type) + ")");
+ }
+        if (arg_llvm_type == "ptr") {
+            if (em.string_starts_with(arg_ir_llvm_type, "%enum.")) { return arg_ir_llvm_type; }
+            if (em.string_starts_with(arg_ir_llvm_type, "%class.")) { return arg_ir_llvm_type; }
+            if (em.string_starts_with(param_llvm_type, "%enum.")) { return param_llvm_type; }
+            if (em.string_starts_with(param_llvm_type, "%class.")) { return param_llvm_type; }
+        }
+        return "";
+    }
+
+    fun emit_args_coerced(mut this, func_name: string, args: _utils.List<IRValue>) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_args_coerced(func_name=" + cast<string>(func_name) + ")");
+ }
+        let sb2: mut StringBuilder = new StringBuilder();
+        let fpt: Option<FuncParamTypes> = this.find_func_param_types(func_name);
+        let first: mut bool = true;
+        // void-as-unit slot bookkeeping: the callee's param table (fpt) holds
+        // one entry per EMITTED (non-elided) parameter — void-typed
+        // parameters are elided from the LLVM signature (emit_function) and
+        // skipped by precompute_function_signatures. The table index is
+        // therefore NOT the args index: a defensively-skipped void argument
+        // consumes no slot. pidx counts EMITTED arguments only.
+        let pidx: mut i64 = 0;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(i)).some;
+            let arg_ir_type: string = arg.get_ir_type();
+            let resolved: string = em.values.resolve_value(arg);
+            // Skip void/unknown arguments only if there is no registered LLVM type
+            // (e.g. enum payload access may have void IR type but ptr LLVM type).
+            if (arg_ir_type == "void" || resolved == "unknown") {
+                if (em.values.get_llvm_type(resolved) == "" || em.values.get_llvm_type(resolved) == "void") {
+                    i = i + 1;
+                    continue;
+                }
+            }
+            if (!first) { sb2.append(", "); }
+            first = false;
+            // Prefer registered LLVM type over IR type (handles enum payload correctly)
+            let registered_type: string = em.values.get_llvm_type(resolved);
+            let arg_struct_type: string = em.types.ir_type_to_llvm(arg_ir_type);
+            let arg_llvm_type: mut string = arg_struct_type;
+            if (registered_type != "") {
+                arg_llvm_type = registered_type;
+            }
+            let param_llvm_type: mut string = arg_llvm_type;
+            if (fpt.is_some()) {
+                if (pidx < cast<i64>(fpt.some.param_types.size())) {
+                    param_llvm_type = fpt.some.param_types.at(cast<u64>(pidx)).some;
+                }
+            }
+            let final_resolved: string = this.coerce_arg(resolved, arg_llvm_type, param_llvm_type);
+            // Bare libc extern (char* ABI): a string argument crosses as its
+            // DATA pointer — +16 skips the metaptr/length header
+            // (emperor_string.h). Heap strings and literals alike.
+            if (em.globals.is_bare_libc_extern(func_name) && em.types.is_string_type(arg_ir_type)) {
+                let data_ptr: string = em.values.next_tmp();
+                em.instructions.emit_line("  " + data_ptr + " = getelementptr i8, ptr " + final_resolved + ", i64 16");
+                sb2.append("ptr " + data_ptr);
+                pidx = pidx + 1;
+                i = i + 1;
+                continue;
+            }
+            // For >16-byte aggregate parameters (byval), pass a pointer.
+            // Use the IR-derived type (not the registered type, which may be "ptr"
+            // for sret/byval operands) to match the callee's emit_function decision.
+            let byval_type: string = this.resolve_byval_type(arg_ir_type);
+            if (byval_type != "") {
+                let arg_ptr: string = em.objects.materialize_enum_ptr(final_resolved, byval_type);
+                sb2.append("ptr byval(" + byval_type + ") " + arg_ptr);
+            } else {
+                // For ≤16-byte aggregates (enums, value classes), the callee expects
+                // the struct value by register. precompute_function_signatures (Phase 3.0)
+                // populated func_param_types for every function, so param_llvm_type is the
+                // callee's true declared type — use coerce_operand to handle ptr→struct
+                // conversion when needed (e.g. from emit_new_enum registered as ptr).
+                let coerced_type: string = param_llvm_type;
+                let actual_reg_type: string = em.values.get_llvm_type(final_resolved);
+                if (em.string_starts_with(coerced_type, "%enum.") || em.string_starts_with(coerced_type, "%class.")) {
+                    if (actual_reg_type == "ptr" || actual_reg_type != coerced_type) {
+                        let coerced: string = em.values.coerce_operand(final_resolved, coerced_type);
+                        sb2.append(coerced_type + " " + coerced);
+                    } else {
+                        sb2.append(coerced_type + " " + final_resolved);
+                    }
+                } else {
+                    if (coerced_type == "ptr" && (em.string_starts_with(actual_reg_type, "%class.") || em.string_starts_with(actual_reg_type, "%enum."))) {
+                        // Parameter is a pointer (value classes map to ref<X> -> ptr) but
+                        // the argument resolved to a struct VALUE (mutable/immutable reg
+                        // holding the struct). The callee treats the ptr as &struct for GEP
+                        // member access, so pass a pointer to the struct's storage.
+                        let arg_ptr: string = em.objects.struct_value_to_ptr(arg, actual_reg_type);
+                        sb2.append("ptr " + arg_ptr);
+                    } else {
+                        sb2.append(param_llvm_type + " " + final_resolved);
+                    }
+                }
+            }
+            pidx = pidx + 1;
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+
+    fun emit_args(mut this, args: _utils.List<IRValue>) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_args");
+        let sb2: mut StringBuilder = new StringBuilder();
+        let first: mut bool = true;
+        let i: mut i64 = 0;
+        while (i < cast<i64>(args.size())) {
+            let arg: IRValue = args.at(cast<u64>(i)).some;
+            let resolved: string = em.values.resolve_value(arg);
+            let arg_type: string = arg.get_ir_type();
+            // Skip void/unknown arguments
+            if (arg_type == "void" || resolved == "unknown") {
+                i = i + 1;
+                continue;
+            }
+            if (!first) { sb2.append(", "); }
+            first = false;
+            let llvm_type: string = em.types.ir_type_to_llvm(arg_type);
+            // Coerce ptr→struct for enum/value-class operands registered as ptr
+            let actual_type: string = em.values.get_llvm_type(resolved);
+            if (actual_type == "ptr" && (em.string_starts_with(llvm_type, "%enum.") || em.string_starts_with(llvm_type, "%class."))) {
+                let coerced: string = em.values.coerce_operand(resolved, llvm_type);
+                sb2.append(llvm_type + " " + coerced);
+            } else {
+                sb2.append(llvm_type + " " + resolved);
+            }
+            i = i + 1;
+        }
+        return sb2.to_string();
+    }
+}
+
+}

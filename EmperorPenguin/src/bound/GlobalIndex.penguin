@@ -1,0 +1,1343 @@
+// Batch 3.1 (pipeline A/B re-order, roadmap 3.1): the GlobalIndex — the
+// global merge-layer reverse index over a finished compilation. Five tables
+// (symbols / types / instances / ifaces / users) + the file list + the
+// per-file and global fingerprints, rebuilt ONCE at the end of
+// SemanticModel.bind() (single wiring point, add-only — nothing in the
+// existing pipeline consumes this yet; it is the reconciliation base for
+// batches 3.2-3.4 and the invalidation layer of batch 4).
+//
+// Schema (all tables StrMap<string>, values are compact "a|b|c" encodings —
+// identifiers cannot contain '|', so the encoding is injective for names;
+// owner_file is the only field where an exotic path could interfere, which
+// the dump renders verbatim anyway):
+//   symbols   full_name            -> "kind|owner_file"
+//                                       kind: var|fun|type|enum_member|namespace
+//   types     type full_name       -> "kind|owner_file|specialized|name"
+//                                       kind: primitive|class|enum|interface
+//   instances instance full_name   -> "kind|template_file|def_name|site"
+//                                       kind: class|enum|interface|fun
+//                                       template_file = the TEMPLATE's file
+//                                       (the B1 target attribution; unchanged
+//                                       derivation — ast_source / bare-name
+//                                       fallback)
+//                                       site = the B1 request-site record
+//                                       (batch 3.2: "kind|site" from
+//                                       MonomorphizePass.b1_adjudicated —
+//                                       which request path adjudicated the
+//                                       instance: fixpoint-type/fixpoint-func/
+//                                       call-*/new/member-*/coroutine-ensure/
+//                                       generator-ensure/intrinsic/meta-type/
+//                                       resolve-cascade/nested-sig/
+//                                       late-complete/sig-enum; "" for
+//                                       libmeta pre-specialized instances
+//                                       that never pass through B1)
+//   ifaces    "iface |> for_type"  -> "owner_file|origin"
+//             plus flat row lists (append order = deterministic) — the map
+//             is the dedup/lookup view, the rows are the ordered view the
+//             fingerprint consumes. origin: body|impl_for|iface|primitive.
+//             Edges living only on a SPECIALIZATION (injected by
+//             #specializing / box forwarding) are registered with the
+//             template file as owner (roadmap ③: they belong to the
+//             template file's fingerprint surface).
+//   users     target full_name     -> "\n"-joined set of referencing files,
+//                                       first-seen order, deduped. Collected
+//                                       during pass 8 body binding only
+//                                       (index_note_user drops empty-file
+//                                       appends — signature-level and
+//                                       speculative-window resolutions are
+//                                       batch 3.4/A3 territory).
+//
+// Fingerprints (exports U impl edges, per redesign §4 + roadmap batch 3):
+//   per file  = fold(defining-surface def full names of that file, def-walk
+//                    order) then fold(impl-edge hashes of that file, row
+//                    order). The defining surface of a file = every def it
+//                    OWNS (top-level defs + namespace-member defs),
+//                    EXCLUDING specializations (they live in the instances
+//                    table — re-derived, not exported) and spliced meta
+//                    defs. Name-level granularity by design for 3.1.
+//   primitive = one GLOBAL component: the fold of the model's
+//               primitive_impl_* parallel tables (impl IHash for i64 has no
+//               file attribution — a global edge), NOT part of any per-file
+//               hash.
+//   global    = fold(per-file hashes in file order) ^ primitive component;
+//               fingerprint(defines_hash) re-folds with the reserved
+//               batch-4 defines parameter (0 = not in the key yet).
+//
+// Determinism: every input sequence is iterated in an order that is a pure
+// function of the input (file order -> def order for defs; scope-tree
+// registration order for symbols; append order for users/impl rows), so
+// the same sources + flags produce byte-identical tables and identical
+// fingerprints — the property the smoke test locks in.
+//
+// ANTLR-safe subset (compiled into the compiler at pass1): plain penguin,
+// no meta, flat namespace, StrMap<string>/List<string> only.
+
+namespace emperor {
+
+// One djb2 string-fold step over the same masked arithmetic StrMap.hash
+// uses (30-bit, overflow-free) — identical inputs fold identically on every
+// compiler in the bootstrap chain.
+fun _gi_step(h: i64, s: string) -> i64 {
+    let v: mut i64 = h;
+    let n: i64 = string_length(s);
+    let i: mut i64 = 0;
+    while (i < n) {
+        v = (__builtin.lshift(v, 5) + v + string_char_code_at(s, i)) & 1073741823;
+        i = i + 1;
+    }
+    return v;
+}
+
+// Last dot-separated segment of a (possibly qualified) name.
+fun _gi_last_seg(s: string) -> string {
+    let last_dot: mut i64 = -1;
+    let i: mut i64 = 0;
+    while (i < string_length(s)) {
+        if (string_char_at(s, i) == ".") { last_dot = i; }
+        i = i + 1;
+    }
+    if (last_dot < 0) { return s; }
+    return string_substring(s, last_dot + 1, string_length(s) - last_dot - 1);
+}
+
+// ── O3-lite helpers ──────────────────────────────────────────────────────
+
+// Append one value to a "\n"-joined bucket (first value stored bare).
+fun gi_bucket_add(bucket: mut _utils.StrMap<string>, file: string, value: string) {
+    let v: string = bucket.get(file, "");
+    if (string_length(v) == 0) {
+        bucket.set(file, value);
+    } else {
+        bucket.set(file, v + "\n" + value);
+    }
+}
+
+// Touch a file in the dedup'd touched list (first-seen order).
+fun gi_touch(touched: mut _utils.List<string>, file: string) {
+    let i: mut i64 = 0;
+    while (i < cast<i64>(touched.size())) {
+        if (touched.at(cast<u64>(i)).some == file) { return; }
+        i = i + 1;
+    }
+    touched.push(file);
+}
+
+// Stable MERGE sort of a string list (ascending) into a FRESH list —
+// the dump's canonical row order (independent of map insertion history,
+// so an incrementally-maintained table and a full rebuild render
+// byte-identically; the historical insertion order was never a consumed
+// contract — see optimize5-progress.md's ruling). Bottom-up (no
+// recursion): O(n log n) — the EP-scale dump sorts ~4.3k rows, which an
+// insertion sort could not survive on the interpreted VM.
+fun _gi_sorted(list: _utils.List<string>) -> _utils.List<string> {
+    let n: i64 = cast<i64>(list.size());
+    let src: mut _utils.List<string> = new _utils.List<string>();
+    let ci: mut i64 = 0;
+    while (ci < n) {
+        src.push(list.at(cast<u64>(ci)).some);
+        ci = ci + 1;
+    }
+    let width: mut i64 = 1;
+    while (width < n) {
+        let dst: mut _utils.List<string> = new _utils.List<string>();
+        let base: mut i64 = 0;
+        while (base < n) {
+            // merge [base, base+width) with [base+width, min(base+2w, n))
+            let l: mut i64 = base;
+            let r: mut i64 = base + width;
+            let le: i64 = base + width;
+            let re: mut i64 = base + width * 2;
+            if (re > n) { re = n; }
+            while (l < le || r < re) {
+                let take_left: bool = l < le && (r >= re || src.at(cast<u64>(l)).some <= src.at(cast<u64>(r)).some);
+                if (take_left) {
+                    dst.push(src.at(cast<u64>(l)).some);
+                    l = l + 1;
+                } else {
+                    dst.push(src.at(cast<u64>(r)).some);
+                    r = r + 1;
+                }
+            }
+            base = base + width * 2;
+        }
+        src = dst;
+        width = width * 2;
+    }
+    return src;
+}
+
+class GlobalIndex {
+    // ── The five tables ──────────────────────────────────────────────────
+    symbols: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    types: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    instances: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    ifaces: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    users: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+
+    // ── impl-edge flat rows (ordered view; map above is the lookup view) ──
+    ifaces_iface: mut _utils.List<string> = new _utils.List<string>();
+    ifaces_for: mut _utils.List<string> = new _utils.List<string>();
+    ifaces_file: mut _utils.List<string> = new _utils.List<string>();
+    ifaces_origin: mut _utils.List<string> = new _utils.List<string>();
+    ifaces_hash: mut _utils.List<i64> = new _utils.List<i64>();
+
+    // ── files + fingerprints ─────────────────────────────────────────────
+    files: mut _utils.List<string> = new _utils.List<string>();
+    file_prints: mut _utils.List<i64> = new _utils.List<i64>();
+    primitive_impl_fp: mut i64 = 0;
+    global_fp: mut i64 = 0;
+    // defines fingerprint reserved slot (batch 4 FileSnapshot cache key).
+    defines_fp: mut i64 = 0;
+
+    // ── Batch 4.2: the users replay ledger copy ──────────────────────────
+    // The pre-fold pending list, copied aside right before the rebuild
+    // consumes it (the fold destroys the per-file collection ORDER, which
+    // the incremental session's users replay needs verbatim). Pure copy —
+    // written once per rebuild, read only by the session layer; the full
+    // compile path never touches it.
+    last_pending_target: mut _utils.List<string> = new _utils.List<string>();
+    last_pending_file: mut _utils.List<string> = new _utils.List<string>();
+
+    // ── Batch 3.4: the TypeInterner canonical view ───────────────────────
+    // Fed during rebuild (step 11): every type-shaped surface of every def
+    // (field/param/return/payload/impl-edge/interface-inheritance types) is
+    // interned by type_canonical_key — the template+args and specialized-def
+    // representations of one instantiation fold to one slot (class/enum only;
+    // is_same_type does not unify interfaces). Pure statistics/query layer:
+    // nothing consults it (slot reuse is a later batch); the bad_folds counter
+    // is the self-check that the key constructor never merges types
+    // is_same_type distinguishes.
+    interner: mut TypeInterner = new TypeInterner();
+
+    // ── rebuild scratch (reset per rebuild; private shape) ───────────────
+    def_file_map: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    bare_def_file: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    ns_file_map: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    ast_if_iface: mut _utils.List<string> = new _utils.List<string>();
+    ast_if_for: mut _utils.List<string> = new _utils.List<string>();
+    ast_if_file: mut _utils.List<string> = new _utils.List<string>();
+    exp_files: mut _utils.List<string> = new _utils.List<string>();
+    exp_names: mut _utils.List<string> = new _utils.List<string>();
+
+    // ── O3-lite: the fast-lane incremental rebuild state ─────────────────
+    // Kept in step with the tables by rebuild_incremental (the fast lane's
+    // step-5 entry). Every FULL rebuild() invalidates it (inc_valid=false);
+    // the next incremental round derives fresh state from the tables. See
+    // the rebuild_incremental header for the equivalence argument.
+    // false after every full rebuild; set true by derive_incremental_state.
+    inc_valid: mut bool = false;
+    // the definitions index the tables already cover ([inc_known_tail,
+    // size()) is un-walked append territory — monotonic on eviction-free
+    // rounds, the only kind that reaches the incremental path).
+    inc_known_tail: mut i64 = 0;
+    // per-file fingerprint buckets: file -> "\n"-joined export names
+    // (def-walk order) / "\n"-joined "iface |> for#hash" impl rows (row
+    // order). A file's fingerprint folds ONLY its own rows in relative
+    // order, so the bucket reproduces rebuild step 9's value exactly while
+    // touching one file instead of files x rows.
+    inc_exp_bucket: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    inc_if_bucket: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    // O3-lite interner def-level cache: the def's POSITION in
+    // result.definitions (string-encoded) -> the "\n"-joined canonical
+    // keys of its whole contribution (subtree included), in fold order.
+    // "" (or absent) = fold fresh. KEY IS THE INDEX, NOT the full name:
+    // top-level defs with EQUAL full names exist (each file's own
+    // `namespace app` def is a separate top-level def with the same
+    // "<global>.app" name — name-keying made the second one replay the
+    // first one's contribution and silently drop its own). The index is
+    // stable across eviction-free rounds (definitions is append-only
+    // there — the eviction path invalidates wholesale via inc_valid).
+    // Invalidated per-position for dirty segments by the session.
+    interner_cache: mut _utils.StrMap<string> = new _utils.StrMap<string>();
+    // recording state for the fresh-fold path (gi_intern taps intern_def_types)
+    intern_recording: mut bool = false;
+    intern_recorded: mut _utils.List<string> = new _utils.List<string>();
+    // this incremental round's new instances as (full_name, template_file)
+    // pairs — the session appends them to the owner snapshot's
+    // instances_owned (a clean file's owned set can still grow: its
+    // templates' specializations are driven by DIRTY bodies).
+    inc_new_instances: mut _utils.List<string> = new _utils.List<string>();
+    inc_new_instance_files: mut _utils.List<string> = new _utils.List<string>();
+
+    // The def's OWN file: ast_source carries the template AST for
+    // specializations (same file as the template — the B1 target).
+    fun def_own_file(this, ast_source: Option<Definition>, fallback: string) -> string {
+        if (ast_source.is_some()) {
+            let f: string = ast_def_filename(ast_source.some);
+            if (string_length(f) > 0) { return f; }
+        }
+        return fallback;
+    }
+
+    // Specializations carry the TEMPLATE's ast (same file); when the
+    // carried file is empty, un-mangle the template bare name and consult
+    // the bare-name -> file map collected over non-specialized defs.
+    fun template_file_for(this, carried: string, mangled_name: string, model: SemanticModel) -> string {
+        if (string_length(carried) > 0) { return carried; }
+        let tmpl: string = model.iface_layout_pass.extract_template_name(mangled_name);
+        if (string_length(tmpl) > 0) {
+            let hit: Option<string> = this.bare_def_file.get_opt(tmpl);
+            if (hit.is_some()) { return hit.some; }
+        }
+        return "";
+    }
+
+    // File of an AST-declared top-level `impl I for C`, matched by the
+    // simple (iface, for) name pair against the pre-collected AST rows.
+    fun match_ast_impl_for_file(this, iface_display: string, for_display: string) -> string {
+        let iseg: string = _gi_last_seg(iface_display);
+        let fseg: string = _gi_last_seg(for_display);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(this.ast_if_iface.size())) {
+            if (_gi_last_seg(this.ast_if_iface.at(cast<u64>(i)).some) == iseg
+                && _gi_last_seg(this.ast_if_for.at(cast<u64>(i)).some) == fseg) {
+                return this.ast_if_file.at(cast<u64>(i)).some;
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+
+    // Register one impl edge (dedup key "iface |> for_type", first-wins for
+    // the map; rows always append — the fingerprint consumes rows). The
+    // edge hash covers iface + for_type + method names (NOT the origin:
+    // the same edge spelled as a body impl or an impl-for is one surface).
+    fun add_iface_edge(mut this, iface: string, for_type: string, owner_file: string, origin: string, methods: _utils.List<BoundDefinition>) {
+        let h: mut i64 = _gi_step(_gi_step(5381, iface), for_type);
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(methods.size())) {
+            h = _gi_step(h, methods.at(cast<u64>(mi)).some.get_name());
+            mi = mi + 1;
+        }
+        this.ifaces_iface.push(iface);
+        this.ifaces_for.push(for_type);
+        this.ifaces_file.push(owner_file);
+        this.ifaces_origin.push(origin);
+        this.ifaces_hash.push(h);
+        let key: string = iface + " |> " + for_type;
+        if (this.ifaces.get_opt(key).is_none()) {
+            this.ifaces.set(key, owner_file + "|" + origin);
+        }
+    }
+
+    // Request-site of a specialization from the B1 adjudication record
+    // (batch 3.2). Empty when the instance never passed through B1 (libmeta
+    // direct injection of pre-specialized defs) — rendered as the empty
+    // 4th column. NOTE: the record VALUE is "kind|site"; the site is the
+    // tail after the first '|'.
+    fun instance_site(this, model: SemanticModel, full_name: string) -> string {
+        let rec: Option<string> = model.monomorphize_pass.b1_adjudicated.get_opt(full_name);
+        if (rec.is_none()) { return ""; }
+        let r: string = rec.some;
+        let bar: i64 = string_find(r, "|");
+        if (bar < 0) { return r; }
+        return string_substring(r, bar + 1, string_length(r) - bar - 1);
+    }
+
+    // Defining-surface + instance + impl-edge collection over one bound def
+    // (recursive through namespace children and class/enum/interface
+    // member lists). file = the def's own source file (ast_source),
+    // inherited by nested defs.
+    fun walk_def(mut this, def: BoundDefinition, file: string, model: SemanticModel) {
+        if (def is BoundDefinition.function_def) {
+            let fd: BoundFunctionDefinition = def.function_def;
+            let ffile: string = this.def_own_file(fd.ast_source, file);
+            if (string_length(fd.full_name) > 0) {
+                this.def_file_map.set(fd.full_name, ffile);
+                if (!fd.is_specialized) {
+                    this.exp_files.push(ffile);
+                    this.exp_names.push(fd.full_name);
+                }
+            }
+            if (!fd.is_specialized && string_length(fd.name) > 0) {
+                if (this.bare_def_file.get_opt(fd.name).is_none()) {
+                    this.bare_def_file.set(fd.name, ffile);
+                }
+            }
+            if (fd.is_specialized) {
+                this.instances.set(fd.full_name, "fun|" + ffile + "|" + fd.name + "|" + this.instance_site(model, fd.full_name));
+            }
+            return;
+        }
+        if (def is BoundDefinition.class_def) {
+            let cd: BoundClassDefinition = def.class_def;
+            let cfile: string = this.def_own_file(cd.ast_source, file);
+            if (string_length(cd.full_name) > 0) {
+                this.def_file_map.set(cd.full_name, cfile);
+            }
+            if (string_length(cd.name) > 0) {
+                // specialized type symbols register in <global> by mangled
+                // name (see specialize_class_def) — alias the def-file map
+                // so the scope walk can attribute them
+                this.def_file_map.set("<global>." + cd.name, cfile);
+            }
+            if (!cd.is_specialized && string_length(cd.name) > 0) {
+                if (this.bare_def_file.get_opt(cd.name).is_none()) {
+                    this.bare_def_file.set(cd.name, cfile);
+                }
+            }
+            if (cd.is_specialized) {
+                let tf: string = this.template_file_for(cfile, cd.name, model);
+                this.instances.set(cd.full_name, "class|" + tf + "|" + cd.name + "|" + this.instance_site(model, cd.full_name));
+                this.types.set(cd.full_name, "class|" + tf + "|1|" + cd.name);
+                // impl edges living on the specialization (#specializing /
+                // box forwarding) belong to the TEMPLATE file's surface
+                let si: mut i64 = 0;
+                while (si < cast<i64>(cd.interface_impls.size())) {
+                    let sd: BoundDefinition = cd.interface_impls.at(cast<u64>(si)).some;
+                    if (sd is BoundDefinition.impl_def) {
+                        let simp: BoundInterfaceImplementation = sd.impl_def;
+                        // body impls carry no implementing_type (it stays
+                        // the void default) — the target IS the owner
+                        this.add_iface_edge(simp.interface_type.display_name(), cd.name, tf, "body", simp.methods);
+                    }
+                    si = si + 1;
+                }
+                return;
+            }
+            if (!cd.is_specialized) {
+                this.exp_files.push(cfile);
+                this.exp_names.push(cd.full_name);
+                this.types.set(cd.full_name, "class|" + cfile + "|0|" + cd.name);
+            }
+            // body impl edges: impl I { ... } inside the class
+            let ii: mut i64 = 0;
+            while (ii < cast<i64>(cd.interface_impls.size())) {
+                let id: BoundDefinition = cd.interface_impls.at(cast<u64>(ii)).some;
+                if (id is BoundDefinition.impl_def) {
+                    let implb: BoundInterfaceImplementation = id.impl_def;
+                    // body impls: the target is the owning class itself
+                    this.add_iface_edge(implb.interface_type.display_name(), cd.full_name, cfile, "body", implb.methods);
+                }
+                ii = ii + 1;
+            }
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cd.methods.size())) {
+                this.walk_def(cd.methods.at(cast<u64>(mi)).some, cfile, model);
+                mi = mi + 1;
+            }
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(cd.constructors.size())) {
+                this.walk_def(cd.constructors.at(cast<u64>(ci)).some, cfile, model);
+                ci = ci + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.enum_def) {
+            let ed: BoundEnumDefinition = def.enum_def;
+            let efile: string = this.def_own_file(ed.ast_source, file);
+            if (string_length(ed.full_name) > 0) {
+                this.def_file_map.set(ed.full_name, efile);
+            }
+            if (string_length(ed.name) > 0) {
+                this.def_file_map.set("<global>." + ed.name, efile);
+            }
+            if (!ed.is_specialized && string_length(ed.name) > 0) {
+                if (this.bare_def_file.get_opt(ed.name).is_none()) {
+                    this.bare_def_file.set(ed.name, efile);
+                }
+            }
+            if (ed.is_specialized) {
+                let tf2: string = this.template_file_for(efile, ed.name, model);
+                this.instances.set(ed.full_name, "enum|" + tf2 + "|" + ed.name + "|" + this.instance_site(model, ed.full_name));
+                this.types.set(ed.full_name, "enum|" + tf2 + "|1|" + ed.name);
+                let se: mut i64 = 0;
+                while (se < cast<i64>(ed.interface_impls.size())) {
+                    let sde: BoundDefinition = ed.interface_impls.at(cast<u64>(se)).some;
+                    if (sde is BoundDefinition.impl_def) {
+                        let simpe: BoundInterfaceImplementation = sde.impl_def;
+                        this.add_iface_edge(simpe.interface_type.display_name(), ed.name, tf2, "body", simpe.methods);
+                    }
+                    se = se + 1;
+                }
+                return;
+            }
+            this.exp_files.push(efile);
+            this.exp_names.push(ed.full_name);
+            this.types.set(ed.full_name, "enum|" + efile + "|0|" + ed.name);
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(ed.interface_impls.size())) {
+                let id2: BoundDefinition = ed.interface_impls.at(cast<u64>(ei)).some;
+                if (id2 is BoundDefinition.impl_def) {
+                    let impl2: BoundInterfaceImplementation = id2.impl_def;
+                    // body impls: the target is the owning enum itself
+                    this.add_iface_edge(impl2.interface_type.display_name(), ed.full_name, efile, "body", impl2.methods);
+                }
+                ei = ei + 1;
+            }
+            let em: mut i64 = 0;
+            while (em < cast<i64>(ed.methods.size())) {
+                this.walk_def(ed.methods.at(cast<u64>(em)).some, efile, model);
+                em = em + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.interface_def) {
+            let idf: BoundInterfaceDefinition = def.interface_def;
+            let ifile: string = this.def_own_file(idf.ast_source, file);
+            if (string_length(idf.full_name) > 0) {
+                this.def_file_map.set(idf.full_name, ifile);
+            }
+            if (string_length(idf.name) > 0) {
+                this.def_file_map.set("<global>." + idf.name, ifile);
+            }
+            if (!idf.is_specialized && string_length(idf.name) > 0) {
+                if (this.bare_def_file.get_opt(idf.name).is_none()) {
+                    this.bare_def_file.set(idf.name, ifile);
+                }
+            }
+            if (idf.is_specialized) {
+                let tf3: string = this.template_file_for(ifile, idf.name, model);
+                this.instances.set(idf.full_name, "interface|" + tf3 + "|" + idf.name + "|" + this.instance_site(model, idf.full_name));
+                this.types.set(idf.full_name, "interface|" + tf3 + "|1|" + idf.name);
+                return;
+            }
+            this.exp_files.push(ifile);
+            this.exp_names.push(idf.full_name);
+            this.types.set(idf.full_name, "interface|" + ifile + "|0|" + idf.name);
+            // nested impls = interface-inheritance edges (iface -> iface)
+            let ii2: mut i64 = 0;
+            while (ii2 < cast<i64>(idf.interface_impls.size())) {
+                let id3: BoundDefinition = idf.interface_impls.at(cast<u64>(ii2)).some;
+                if (id3 is BoundDefinition.impl_def) {
+                    let impl3: BoundInterfaceImplementation = id3.impl_def;
+                    this.add_iface_edge(impl3.interface_type.display_name(), idf.full_name, ifile, "iface", impl3.methods);
+                }
+                ii2 = ii2 + 1;
+            }
+            let im: mut i64 = 0;
+            while (im < cast<i64>(idf.methods.size())) {
+                this.walk_def(idf.methods.at(cast<u64>(im)).some, ifile, model);
+                im = im + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let nd: BoundNamespaceDefinition = def.namespace_def;
+            // namespaces carry no ast_source (they merge across files by
+            // name); children attribute through their OWN ast_source, the
+            // inherited file is only the fallback
+            let nfile: string = file;
+            if (string_length(nd.full_name) > 0) {
+                this.def_file_map.set(nd.full_name, nfile);
+                this.exp_files.push(nfile);
+                this.exp_names.push(nd.full_name);
+            }
+            let ni: mut i64 = 0;
+            while (ni < cast<i64>(nd.children.size())) {
+                this.walk_def(nd.children.at(cast<u64>(ni)).some, nfile, model);
+                ni = ni + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.impl_for_def) {
+            let ifd: BoundInterfaceForImplementation = def.impl_for_def;
+            // no ast_source on bound impl-for defs: match against the
+            // AST's impl-for defs by the simple (iface, for) name pair
+            let efile2: string = this.match_ast_impl_for_file(ifd.interface_type.display_name(), ifd.for_type.display_name());
+            this.add_iface_edge(ifd.interface_type.display_name(), ifd.for_type.display_name(), efile2, "impl_for", ifd.methods);
+            let fm: mut i64 = 0;
+            while (fm < cast<i64>(ifd.methods.size())) {
+                this.walk_def(ifd.methods.at(cast<u64>(fm)).some, efile2, model);
+                fm = fm + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.global_var_def) {
+            let gd: BoundGlobalVariableDefinition = def.global_var_def;
+            let gfile: string = this.def_own_file(gd.ast_source, file);
+            if (string_length(gd.full_name) > 0) {
+                this.def_file_map.set(gd.full_name, gfile);
+                this.exp_files.push(gfile);
+                this.exp_names.push(gd.full_name);
+            }
+            return;
+        }
+        if (def is BoundDefinition.type_ref_def) {
+            let tr: BoundTypeReferenceDefinition = def.type_ref_def;
+            this.exp_files.push(file);
+            this.exp_names.push("<type>" + tr.name);
+            return;
+        }
+        // initial_routine / class_field / meta defs: no global-surface row
+        // (initials and fields belong to their enclosing def's row; meta
+        // defs are prepass-internal).
+    }
+
+    // ── symbols: scope-tree walk (global + namespaces; class scopes hang
+    // off type symbols, not off the scope tree) ──────────────────────────
+    fun walk_scope(mut this, scope: BoundScope) {
+        // file attribution hint: this scope's own file namespace
+        let hint: string = this.ns_file_map.get(scope.name, "");
+        let si: mut i64 = 0;
+        while (si < cast<i64>(scope.symbols.size())) {
+            this.register_symbol(scope.symbols.at(cast<u64>(si)).some, hint);
+            si = si + 1;
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(scope.children.size())) {
+            this.walk_scope(scope.children.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+    }
+
+    fun register_symbol(mut this, sym: BoundSymbol, hint: string) {
+        let kind: mut string = "";
+        if (sym is BoundSymbol.variable) {
+            if (sym.variable.variable_kind is VariableSymbolKind.Local) { return; }
+            if (sym.variable.variable_kind is VariableSymbolKind.Param) { return; }
+            if (sym.variable.variable_kind is VariableSymbolKind.Temp) { return; }
+            kind = "var";
+        }
+        if (sym is BoundSymbol.function_sym) { kind = "fun"; }
+        if (sym is BoundSymbol.enum_member) { kind = "enum_member"; }
+        if (sym is BoundSymbol.namespace_sym) { kind = "namespace"; }
+        if (sym is BoundSymbol.type_sym) {
+            // skip generic-param dummy type syms (T placeholders): their
+            // "defs" are empty shells, not durable global symbols
+            let tsym: BoundTypeSymbol = sym.type_sym;
+            if (tsym.type_definition.is_some()) {
+                let td: BoundDefinition = tsym.type_definition.some;
+                if (td is BoundDefinition.class_def) {
+                    let cd: BoundClassDefinition = td.class_def;
+                    if (cd.type_symbol.is_none() && cd.scope.is_none()
+                        && cast<i64>(cd.methods.size()) == 0 && cast<i64>(cd.fields.size()) == 0
+                        && cast<i64>(cd.constructors.size()) == 0 && cast<i64>(cd.interface_impls.size()) == 0
+                        && cast<i64>(cd.generic_params.size()) == 0) {
+                        return;
+                    }
+                }
+            }
+            kind = "type";
+        }
+        if (string_length(kind) == 0) { return; }
+        let full: string = sym.get_full_name();
+        if (string_length(full) == 0) { return; }
+        let owner: string = this.def_file_map.get(full, hint);
+        if (this.symbols.get_opt(full).is_none()) {
+            this.symbols.set(full, kind + "|" + owner);
+        }
+    }
+
+    // ── the single rebuild entry (called once from bind() end) ──────────
+    fun rebuild(mut this, model: mut SemanticModel, result: BoundCompilationUnit) {
+        // 0. reset (full-rebuild semantics: 3.1 rebuilds the whole index
+        // per bind; incremental merges are batch 3.2+).
+        this.symbols = new _utils.StrMap<string>();
+        this.types = new _utils.StrMap<string>();
+        this.instances = new _utils.StrMap<string>();
+        this.ifaces = new _utils.StrMap<string>();
+        this.users = new _utils.StrMap<string>();
+        this.ifaces_iface = new _utils.List<string>();
+        this.ifaces_for = new _utils.List<string>();
+        this.ifaces_file = new _utils.List<string>();
+        this.ifaces_origin = new _utils.List<string>();
+        this.ifaces_hash = new _utils.List<i64>();
+        this.files = new _utils.List<string>();
+        this.file_prints = new _utils.List<i64>();
+        this.def_file_map = new _utils.StrMap<string>();
+        this.bare_def_file = new _utils.StrMap<string>();
+        this.ns_file_map = new _utils.StrMap<string>();
+        this.ast_if_iface = new _utils.List<string>();
+        this.ast_if_for = new _utils.List<string>();
+        this.ast_if_file = new _utils.List<string>();
+        this.exp_files = new _utils.List<string>();
+        this.exp_names = new _utils.List<string>();
+        this.primitive_impl_fp = 0;
+        this.global_fp = 0;
+        this.defines_fp = 0;
+        // O3-lite: a full rebuild reshapes the tree under the incremental
+        // state — the next incremental round must re-derive (see
+        // derive_incremental_state).
+        this.inc_valid = false;
+
+        // 1. files (input order, deduped; compile_sources fills the list)
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(model.index_input_files.size())) {
+            let f: string = model.index_input_files.at(cast<u64>(fi)).some;
+            let dup: mut bool = false;
+            let dj: mut i64 = 0;
+            while (dj < cast<i64>(this.files.size())) {
+                if (this.files.at(cast<u64>(dj)).some == f) { dup = true; }
+                dj = dj + 1;
+            }
+            if (!dup) { this.files.push(f); }
+            fi = fi + 1;
+        }
+        // file-namespace decode map (_ns_<stem>_<hash> -> file)
+        let fk: mut i64 = 0;
+        while (fk < cast<i64>(this.files.size())) {
+            this.ns_file_map.set(file_ns_name(this.files.at(cast<u64>(fk)).some), this.files.at(cast<u64>(fk)).some);
+            fk = fk + 1;
+        }
+
+        // 2. AST impl-for rows (file attribution source for bound impl-for)
+        let ai: mut i64 = 0;
+        while (ai < cast<i64>(model.ast_definitions.size())) {
+            let adef: Definition = model.ast_definitions.at(cast<u64>(ai)).some;
+            if (adef is Definition.impl_for_def) {
+                this.ast_if_iface.push(adef.impl_for_def.type_name);
+                this.ast_if_for.push(adef.impl_for_def.for_type_name);
+                this.ast_if_file.push(ast_def_filename(adef));
+            }
+            ai = ai + 1;
+        }
+
+        // 3. def walk (types / instances / impl rows / export surface)
+        let di: mut i64 = 0;
+        while (di < cast<i64>(result.definitions.size())) {
+            this.walk_def(result.definitions.at(cast<u64>(di)).some, "", model);
+            di = di + 1;
+        }
+
+        // 4. primitive impl edges (the GLOBAL fingerprint component)
+        let pi: mut i64 = 0;
+        while (pi < cast<i64>(model.primitive_impl_for_type.size())) {
+            let piface: string = model.primitive_impl_iface.at(cast<u64>(pi)).some;
+            let pfor: string = model.primitive_impl_for_type.at(cast<u64>(pi)).some;
+            let pmeth: string = model.primitive_impl_method_name.at(cast<u64>(pi)).some;
+            let ph: i64 = _gi_step(_gi_step(_gi_step(5381, piface), pfor), pmeth);
+            this.ifaces_iface.push(piface);
+            this.ifaces_for.push(pfor);
+            this.ifaces_file.push("");
+            this.ifaces_origin.push("primitive");
+            this.ifaces_hash.push(ph);
+            let pkey: string = piface + " |> " + pfor;
+            if (this.ifaces.get_opt(pkey).is_none()) {
+                this.ifaces.set(pkey, "|primitive");
+            }
+            pi = pi + 1;
+        }
+
+        // 5. registry primitives into the types table (fixed enumeration —
+        // the registry's primitive fields are compiler state, not defs)
+        this.types.set("bool", "primitive|<compiler>|0|bool");
+        this.types.set("i8", "primitive|<compiler>|0|i8");
+        this.types.set("i16", "primitive|<compiler>|0|i16");
+        this.types.set("i32", "primitive|<compiler>|0|i32");
+        this.types.set("i64", "primitive|<compiler>|0|i64");
+        this.types.set("u8", "primitive|<compiler>|0|u8");
+        this.types.set("u16", "primitive|<compiler>|0|u16");
+        this.types.set("u32", "primitive|<compiler>|0|u32");
+        this.types.set("u64", "primitive|<compiler>|0|u64");
+        this.types.set("float", "primitive|<compiler>|0|float");
+        this.types.set("double", "primitive|<compiler>|0|double");
+        this.types.set("char", "primitive|<compiler>|0|char");
+        this.types.set("string", "primitive|<compiler>|0|string");
+        this.types.set("void", "primitive|<compiler>|0|void");
+
+        // 6. symbols: scope-tree walk
+        this.walk_scope(result.global_scope);
+
+        // 7. users: fold the pending append list (deterministic: append
+        // order, first-seen file order per target, deduped)
+        this.fold_pending_users(model);
+        // pending consumed (fresh collection next bind — full-rebuild model);
+        // batch 4.2: the ORDER is copied aside first (the session's users
+        // replay ledger — pure copy, no behavior change). O3-lite: moved
+        // into fold_pending_users (shared verbatim with the incremental
+        // rebuild — same code, same order, zero behavior change).
+        this.consume_pending_ledger(model);
+
+        // 8. primitive-impl global component
+        let ph2: mut i64 = 5381;
+        let pj: mut i64 = 0;
+        while (pj < cast<i64>(this.ifaces_hash.size())) {
+            if (this.ifaces_origin.at(cast<u64>(pj)).some == "primitive") {
+                ph2 = (ph2 * 33 + this.ifaces_hash.at(cast<u64>(pj)).some) & 1073741823;
+            }
+            pj = pj + 1;
+        }
+        this.primitive_impl_fp = ph2;
+
+        // 9. per-file fingerprints (exports U impl edges)
+        let fi2: mut i64 = 0;
+        while (fi2 < cast<i64>(this.files.size())) {
+            let fname: string = this.files.at(cast<u64>(fi2)).some;
+            let h: mut i64 = 5381;
+            let ei: mut i64 = 0;
+            while (ei < cast<i64>(this.exp_names.size())) {
+                if (this.exp_files.at(cast<u64>(ei)).some == fname) {
+                    h = _gi_step(h, this.exp_names.at(cast<u64>(ei)).some);
+                }
+                ei = ei + 1;
+            }
+            let ii3: mut i64 = 0;
+            while (ii3 < cast<i64>(this.ifaces_iface.size())) {
+                if (this.ifaces_origin.at(cast<u64>(ii3)).some != "primitive"
+                    && this.ifaces_file.at(cast<u64>(ii3)).some == fname) {
+                    h = (h * 33 + this.ifaces_hash.at(cast<u64>(ii3)).some) & 1073741823;
+                }
+                ii3 = ii3 + 1;
+            }
+            this.file_prints.push(h);
+            fi2 = fi2 + 1;
+        }
+
+        // 10. global fingerprint (defines slot reserved: 0 for now)
+        this.global_fp = this.fingerprint(0);
+
+        // 11. TypeInterner canonical view (batch 3.4): intern every def's
+        // type surfaces. Runs LAST (pure post-pass over the finished tree —
+        // zero effect on the tables/fingerprints above).
+        this.interner.reset();
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(result.definitions.size())) {
+            this.intern_def_types(result.definitions.at(cast<u64>(ti)).some);
+            ti = ti + 1;
+        }
+        // O3-lite: the tables now cover exactly [0, definitions.size()) —
+        // the incremental path's append boundary (recorded here, where
+        // tables and tree are in sync; derive_incremental_state does NOT
+        // re-derive it so a post-rebuild round's new defs stay visible to
+        // the differential walk).
+        this.inc_known_tail = cast<i64>(result.definitions.size());
+    }
+
+    // ── O3-lite shared step 7: the users fold (verbatim extract of the old
+    // rebuild body — same code, same order; the incremental rebuild reuses
+    // it because replay_users already restored the full pending order). ──
+    fun fold_pending_users(mut this, model: SemanticModel) {
+        let ui: mut i64 = 0;
+        while (ui < cast<i64>(model.users_pending_target.size())) {
+            let target: string = model.users_pending_target.at(cast<u64>(ui)).some;
+            let ufile: string = model.users_pending_file.at(cast<u64>(ui)).some;
+            if (string_length(target) > 0 && string_length(ufile) > 0) {
+                let existing: string = this.users.get(target, "");
+                if (string_length(existing) == 0) {
+                    this.users.set(target, ufile);
+                } else {
+                    let probe: string = "\n" + existing + "\n";
+                    let want: string = "\n" + ufile + "\n";
+                    if (string_find(probe, want) < 0) {
+                        this.users.set(target, existing + "\n" + ufile);
+                    }
+                }
+            }
+            ui = ui + 1;
+        }
+    }
+
+    // The users table is append-only per (target, file) pair, so an
+    // incremental round CANNOT reuse a previous fold's users value: the
+    // dirty files' ledger lines may have dropped targets. The incremental
+    // path therefore resets users before fold_pending_users (rebuild()
+    // resets it wholesale in step 0 and folds the same way).
+    fun fold_users_incremental(mut this, model: SemanticModel) {
+        this.users = new _utils.StrMap<string>();
+        this.fold_pending_users(model);
+    }
+
+    // Step 7's tail: copy the pre-fold pending ORDER aside (the session's
+    // replay ledger) and consume the pending lists. Verbatim extract.
+    fun consume_pending_ledger(mut this, model: SemanticModel) {
+        this.last_pending_target = new _utils.List<string>();
+        this.last_pending_file = new _utils.List<string>();
+        let lp: mut i64 = 0;
+        while (lp < cast<i64>(model.users_pending_target.size())) {
+            this.last_pending_target.push(model.users_pending_target.at(cast<u64>(lp)).some);
+            this.last_pending_file.push(model.users_pending_file.at(cast<u64>(lp)).some);
+            lp = lp + 1;
+        }
+        model.users_pending_target = new _utils.List<string>();
+        model.users_pending_file = new _utils.List<string>();
+    }
+
+    // ── O3-lite: the interner recording tap ──────────────────────────────
+    // intern_def_types routes every intern through this wrapper so a
+    // fresh-folded def's contribution keys can be captured for the def-level
+    // cache. Recording is OFF by default (the full-rebuild path pays one
+    // extra bool check per intern, nothing else).
+    fun gi_intern(mut this, bt: BoundType) {
+        if (this.intern_recording) {
+            this.intern_recorded.push(type_canonical_key(bt));
+        }
+        this.interner.intern(bt);
+    }
+
+    // ── O3-lite: derive fresh incremental state from the current tables ──
+    // Runs on the first incremental round after any full rebuild (and after
+    // construction). Pure derivation — the tables do not move. The append
+    // boundary (inc_known_tail) is NOT derived here: rebuild() records it
+    // (the tables and the tree were in sync at that moment); deriving it
+    // from the CURRENT tree would swallow this round's new append-zone defs
+    // (they appeared after the last full rebuild, the tables do not cover
+    // them yet — they are exactly what the differential walk must pick up).
+    fun derive_incremental_state(mut this) {
+        this.inc_exp_bucket = new _utils.StrMap<string>();
+        this.inc_if_bucket = new _utils.StrMap<string>();
+        let ei: mut i64 = 0;
+        while (ei < cast<i64>(this.exp_names.size())) {
+            let f: string = this.exp_files.at(cast<u64>(ei)).some;
+            if (string_length(f) > 0) {
+                gi_bucket_add(this.inc_exp_bucket, f, this.exp_names.at(cast<u64>(ei)).some);
+            }
+            ei = ei + 1;
+        }
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(this.ifaces_iface.size())) {
+            let f2: string = this.ifaces_file.at(cast<u64>(ii)).some;
+            if (string_length(f2) > 0 && this.ifaces_origin.at(cast<u64>(ii)).some != "primitive") {
+                let row: string = this.ifaces_iface.at(cast<u64>(ii)).some + " |> " + this.ifaces_for.at(cast<u64>(ii)).some
+                    + "#" + cast<string>(this.ifaces_hash.at(cast<u64>(ii)).some);
+                gi_bucket_add(this.inc_if_bucket, f2, row);
+            }
+            ii = ii + 1;
+        }
+        this.interner_cache = new _utils.StrMap<string>();
+        this.inc_valid = true;
+    }
+
+    // ── O3-lite: the fast lane's incremental rebuild ─────────────────────
+    //
+    // EQUIVALENCE ARGUMENT (see optimize5-progress.md): the fast lane's
+    // fingerprint gate freezes every changed file's symbolic surface, so
+    // walk_def's products for the DIRTY segments are unchanged by the pass
+    // 4-9 replay — the five tables, the impl rows and the per-file
+    // fingerprints move ONLY through the append zone (new specializations /
+    // re-synthesized classes) and the evictions. Eviction-carrying rounds
+    // NEVER reach this entry (the session falls back to the full rebuild:
+    // StrMap has no remove, and a full rebuild is the correctness net), so
+    // this path only ever ADDS rows. Files list, ns_file_map, ast_if_*,
+    // bare_def_file, def_file_map-of-original-defs, primitive impl edges
+    // and primitive_impl_fp are all fast-lane invariants (unchanged inputs
+    // or signature-frozen surfaces) and are not touched. symbols is
+    // re-walked in full (the scope tree has no per-file boundaries; new
+    // specializations' symbols are picked up for free). users is re-folded
+    // from the replayed pending ledger (a dirty file may have dropped
+    // targets, so the previous value cannot be reused). The interner is
+    // rebuilt over the def order with the def-level cache (clean defs
+    // replay their recorded keys, dirty/new defs fold fresh).
+    //
+    // dirty_positions: the result.definitions indices of the changed
+    // files' TOP-LEVEL defs (the interner cache positions to invalidate —
+    // their bodies were re-bound, so their type-surface contributions
+    // may have moved).
+    fun rebuild_incremental(mut this, model: mut SemanticModel, unit: CompilationUnit, result: BoundCompilationUnit, dirty_positions: _utils.List<i64>) {
+        if (!this.inc_valid) {
+            this.derive_incremental_state();
+        }
+        this.inc_new_instances = new _utils.List<string>();
+        this.inc_new_instance_files = new _utils.List<string>();
+        // 1. append-zone differential walk. Eviction-free rounds are
+        // append-only (the only definitions.remove sites are the two
+        // eviction paths the session gates on), so [inc_known_tail, size())
+        // is exactly this round's new territory.
+        let append_from: i64 = this.inc_known_tail;
+        let rows_before: i64 = cast<i64>(this.ifaces_iface.size());
+        let exp_before: i64 = cast<i64>(this.exp_names.size());
+        let di: mut i64 = append_from;
+        while (di < cast<i64>(result.definitions.size())) {
+            let def: BoundDefinition = result.definitions.at(cast<u64>(di)).some;
+            this.walk_def(def, "", model);
+            di = di + 1;
+        }
+        this.inc_known_tail = cast<i64>(result.definitions.size());
+        // 2. bucket updates from the new rows + the touched-file set
+        let touched: mut _utils.List<string> = new _utils.List<string>();
+        let ri: mut i64 = rows_before;
+        while (ri < cast<i64>(this.ifaces_iface.size())) {
+            let f: string = this.ifaces_file.at(cast<u64>(ri)).some;
+            if (string_length(f) > 0 && this.ifaces_origin.at(cast<u64>(ri)).some != "primitive") {
+                let row: string = this.ifaces_iface.at(cast<u64>(ri)).some + " |> " + this.ifaces_for.at(cast<u64>(ri)).some
+                    + "#" + cast<string>(this.ifaces_hash.at(cast<u64>(ri)).some);
+                gi_bucket_add(this.inc_if_bucket, f, row);
+                gi_touch(touched, f);
+            }
+            ri = ri + 1;
+        }
+        let ei: mut i64 = exp_before;
+        while (ei < cast<i64>(this.exp_names.size())) {
+            let f2: string = this.exp_files.at(cast<u64>(ei)).some;
+            if (string_length(f2) > 0) {
+                gi_bucket_add(this.inc_exp_bucket, f2, this.exp_names.at(cast<u64>(ei)).some);
+                gi_touch(touched, f2);
+            }
+            ei = ei + 1;
+        }
+        // the walk's new instance rows -> the owner-snapshot feed (only
+        // rows this round ADDED: [instances-before .. now] is not knowable
+        // cheaply per key, so collect from the walked defs' own names —
+        // walk_def already set the instances rows; re-identify owners by
+        // the row values the tables now carry for the walked defs)
+        let wi: mut i64 = append_from;
+        while (wi < cast<i64>(result.definitions.size())) {
+            let def2: BoundDefinition = result.definitions.at(cast<u64>(wi)).some;
+            let iname: string = bound_def_full_name(def2);
+            if (string_length(iname) > 0) {
+                let rec: string = this.instances.get(iname, "");
+                if (string_length(rec) > 0) {
+                    let tf: string = index_value_col(rec, 1);
+                    if (string_length(tf) > 0) {
+                        this.inc_new_instances.push(iname);
+                        this.inc_new_instance_files.push(tf);
+                    }
+                }
+            }
+            wi = wi + 1;
+        }
+        // 3. per-file fingerprints of the touched files (bucket folds —
+        // identical values to rebuild step 9's per-file filter: a file's
+        // fold only consumes its own rows in relative order)
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(touched.size())) {
+            let fname: string = touched.at(cast<u64>(ti)).some;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(this.files.size())) {
+                if (this.files.at(cast<u64>(fi)).some == fname) {
+                    this.file_prints.set(cast<u64>(fi), this.file_fp_from_buckets(fname));
+                    fi = cast<i64>(this.files.size());
+                }
+                fi = fi + 1;
+            }
+            ti = ti + 1;
+        }
+        // 4. global fingerprint (defines slot keeps its current value — a
+        // defines change never reaches the fast lane)
+        this.global_fp = this.fingerprint(this.defines_fp);
+        // 5. symbols: full scope re-walk (new specializations register
+        // scope symbols the incremental walk does not see)
+        this.symbols = new _utils.StrMap<string>();
+        this.walk_scope(result.global_scope);
+        // 6. users: re-fold from the replayed pending ledger
+        this.fold_users_incremental(model);
+        this.consume_pending_ledger(model);
+        // 7. interner: def-order rebuild with the def-level cache. The
+        // dirty segments' positions are invalidated first (their bodies
+        // were re-bound — type-surface contributions may have moved).
+        this.interner.reset();
+        {
+            let di2: mut i64 = 0;
+            while (di2 < cast<i64>(dirty_positions.size())) {
+                this.interner_cache.set(cast<string>(dirty_positions.at(cast<u64>(di2)).some), "");
+                di2 = di2 + 1;
+            }
+        }
+        let ti2: mut i64 = 0;
+        while (ti2 < cast<i64>(result.definitions.size())) {
+            this.intern_def_types_cached(result.definitions.at(cast<u64>(ti2)).some, ti2);
+            ti2 = ti2 + 1;
+        }
+    }
+
+    // One file's fingerprint from its buckets (mirrors rebuild step 9's
+    // fold exactly: exports first in def-walk order, then non-primitive
+    // impl rows in row order).
+    fun file_fp_from_buckets(this, fname: string) -> i64 {
+        let h: mut i64 = 5381;
+        let names: _utils.List<string> = session_split_lines(this.inc_exp_bucket.get(fname, ""));
+        let ni: mut i64 = 0;
+        while (ni < cast<i64>(names.size())) {
+            h = _gi_step(h, names.at(cast<u64>(ni)).some);
+            ni = ni + 1;
+        }
+        let rows: _utils.List<string> = session_split_lines(this.inc_if_bucket.get(fname, ""));
+        let ri: mut i64 = 0;
+        while (ri < cast<i64>(rows.size())) {
+            let row: string = rows.at(cast<u64>(ri)).some;
+            let bar: i64 = string_find(row, "#");
+            if (bar >= 0) {
+                h = (h * 33 + __builtin.string_to_int(string_substring(row, bar + 1, string_length(row) - bar - 1))) & 1073741823;
+            }
+            ri = ri + 1;
+        }
+        return h;
+    }
+
+    // intern_def_types with the def-level cache at the TOP-LEVEL def
+    // granularity (namespace/class subtrees cache as one unit — the fast
+    // lane swaps whole file segments, so a clean top-level def's subtree
+    // is untouched). `pos` = the def's result.definitions index (the
+    // cache key — see interner_cache; stable on eviction-free rounds).
+    fun intern_def_types_cached(mut this, def: BoundDefinition, pos: i64) {
+        let ck: string = cast<string>(pos);
+        let cached: string = this.interner_cache.get(ck, "");
+        if (string_length(cached) > 0) {
+            let keys: _utils.List<string> = session_split_lines(cached);
+            let ki: mut i64 = 0;
+            while (ki < cast<i64>(keys.size())) {
+                this.interner.intern_replay(keys.at(cast<u64>(ki)).some);
+                ki = ki + 1;
+            }
+            return;
+        }
+        // fresh fold with recording, then fill the cache
+        this.intern_recording = true;
+        this.intern_recorded = new _utils.List<string>();
+        this.intern_def_types(def);
+        this.intern_recording = false;
+        let sb: mut StringBuilder = new StringBuilder();
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(this.intern_recorded.size())) {
+            if (ci > 0) { sb.append("\n"); }
+            sb.append(this.intern_recorded.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+        this.interner_cache.set(ck, sb.to_string());
+    }
+
+    // The type surfaces of one def, interned (see the interner field comment;
+    // mirrors the A4 collection surface so the fold statistics describe the
+    // same type population the fixpoint adjudicates).
+    fun intern_def_types(mut this, def: BoundDefinition) {
+        if (def is BoundDefinition.function_def) {
+            let fd: BoundFunctionDefinition = def.function_def;
+            this.gi_intern(fd.return_type);
+            let pi: mut i64 = 0;
+            while (pi < cast<i64>(fd.parameters.size())) {
+                this.gi_intern(fd.parameters.at(cast<u64>(pi)).some.bound_type);
+                pi = pi + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.class_def) {
+            let cd: BoundClassDefinition = def.class_def;
+            let fi: mut i64 = 0;
+            while (fi < cast<i64>(cd.fields.size())) {
+                let fld: BoundDefinition = cd.fields.at(cast<u64>(fi)).some;
+                if (fld is BoundDefinition.class_field) {
+                    this.gi_intern(fld.class_field.bound_type);
+                }
+                fi = fi + 1;
+            }
+            this.intern_impl_types(cd.interface_impls);
+            let mi: mut i64 = 0;
+            while (mi < cast<i64>(cd.methods.size())) {
+                this.intern_def_types(cd.methods.at(cast<u64>(mi)).some);
+                mi = mi + 1;
+            }
+            let ci: mut i64 = 0;
+            while (ci < cast<i64>(cd.constructors.size())) {
+                this.intern_def_types(cd.constructors.at(cast<u64>(ci)).some);
+                ci = ci + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.enum_def) {
+            let ed: BoundEnumDefinition = def.enum_def;
+            let mi2: mut i64 = 0;
+            while (mi2 < cast<i64>(ed.members.size())) {
+                this.gi_intern(ed.members.at(cast<u64>(mi2)).some.member_type);
+                mi2 = mi2 + 1;
+            }
+            this.intern_impl_types(ed.interface_impls);
+            let em: mut i64 = 0;
+            while (em < cast<i64>(ed.methods.size())) {
+                this.intern_def_types(ed.methods.at(cast<u64>(em)).some);
+                em = em + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.interface_def) {
+            let idf: BoundInterfaceDefinition = def.interface_def;
+            this.intern_impl_types(idf.interface_impls);
+            let im: mut i64 = 0;
+            while (im < cast<i64>(idf.methods.size())) {
+                this.intern_def_types(idf.methods.at(cast<u64>(im)).some);
+                im = im + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let nd: BoundNamespaceDefinition = def.namespace_def;
+            let ni: mut i64 = 0;
+            while (ni < cast<i64>(nd.children.size())) {
+                this.intern_def_types(nd.children.at(cast<u64>(ni)).some);
+                ni = ni + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.impl_for_def) {
+            let ifd: BoundInterfaceForImplementation = def.impl_for_def;
+            this.gi_intern(ifd.interface_type);
+            this.gi_intern(ifd.for_type);
+            let fm: mut i64 = 0;
+            while (fm < cast<i64>(ifd.methods.size())) {
+                this.intern_def_types(ifd.methods.at(cast<u64>(fm)).some);
+                fm = fm + 1;
+            }
+            return;
+        }
+        if (def is BoundDefinition.global_var_def) {
+            this.gi_intern(def.global_var_def.bound_type);
+            return;
+        }
+        if (def is BoundDefinition.initial_routine) {
+            // The routine's bound block scope: let-declared locals carry the
+            // body's type annotations (same surface the A4 scope walk covers).
+            let ini: BoundInitialRoutineDefinition = def.initial_routine;
+            if (ini.scope.is_some()) {
+                this.intern_scope_types(ini.scope.some);
+            }
+            return;
+        }
+    }
+
+    fun intern_impl_types(mut this, impls: _utils.List<BoundDefinition>) {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(impls.size())) {
+            let d: BoundDefinition = impls.at(cast<u64>(i)).some;
+            if (d is BoundDefinition.impl_def) {
+                this.gi_intern(d.impl_def.interface_type);
+            }
+            i = i + 1;
+        }
+    }
+
+    fun intern_scope_types(mut this, scope: BoundScope) {
+        let si: mut i64 = 0;
+        while (si < cast<i64>(scope.symbols.size())) {
+            let sym: BoundSymbol = scope.symbols.at(cast<u64>(si)).some;
+            if (sym is BoundSymbol.variable) {
+                this.gi_intern(sym.variable.bound_type);
+            }
+            si = si + 1;
+        }
+        let ci: mut i64 = 0;
+        while (ci < cast<i64>(scope.children.size())) {
+            this.intern_scope_types(scope.children.at(cast<u64>(ci)).some);
+            ci = ci + 1;
+        }
+    }
+
+    // The global fingerprint with the RESERVED defines parameter folded in
+    // (batch 4 FileSnapshot cache key: hash(text) ^ fingerprint ^ defines).
+    fun fingerprint(this, defines_hash: i64) -> i64 {
+        let h: mut i64 = 5381;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(this.file_prints.size())) {
+            h = (h * 33 + this.file_prints.at(cast<u64>(fi)).some) & 1073741823;
+            fi = fi + 1;
+        }
+        h = (h * 33 + this.primitive_impl_fp) & 1073741823;
+        h = (h * 33 + defines_hash) & 1073741823;
+        return h;
+    }
+
+    // "\n"-joined file set -> "a, b, c" for the dump (val is never empty
+    // here — users only stores targets with at least one file). O3-lite:
+    // the file set renders SORTED — a set has no order, and the fold's
+    // first-seen order is a function of the pending stream's history
+    // (which interleaves pass-3 catch-up records differently on the fast
+    // lane), so sorted rendering is what makes the dump comparable.
+    fun flat_users(this, val: string) -> string {
+        let parts: _utils.List<string> = session_split_lines(val);
+        let sorted: _utils.List<string> = _gi_sorted(parts);
+        let sb: mut StringBuilder = new StringBuilder();
+        let i: mut i64 = 0;
+        while (i < cast<i64>(sorted.size())) {
+            if (i > 0) { sb.append(", "); }
+            sb.append(sorted.at(cast<u64>(i)).some);
+            i = i + 1;
+        }
+        return sb.to_string();
+    }
+
+    // ── the reconciliation dump (--dump-index) ───────────────────────────
+    fun render_summary(this) -> string {
+        let sb: mut StringBuilder = new StringBuilder();
+        sb.append("[GlobalIndex] files=" + cast<string>(this.files.size()));
+        sb.append(" symbols=" + cast<string>(this.symbols.size()));
+        sb.append(" types=" + cast<string>(this.types.size()));
+        sb.append(" instances=" + cast<string>(this.instances.size()));
+        sb.append(" iface_edges=" + cast<string>(cast<i64>(this.ifaces_iface.size())));
+        sb.append(" users=" + cast<string>(this.users.size()));
+        sb.append("\n");
+        // Batch 3.4: the TypeInterner canonical fold statistics (query layer
+        // only — see the interner field comment). bad_folds must be 0: a
+        // non-zero value means type_canonical_key merged types is_same_type
+        // distinguishes (key-constructor defect or an exotic representation
+        // the rules do not cover).
+        sb.append("[GlobalIndex] interner_slots=" + cast<string>(this.interner.slot_count())
+            + " interned=" + cast<string>(this.interner.interned_total)
+            + " bad_folds=" + cast<string>(this.interner.bad_folds));
+        sb.append("\n");
+        let bi: mut i64 = 0;
+        while (bi < cast<i64>(this.interner.bad_fold_notes.size())) {
+            sb.append("[GlobalIndex:interner-bad] " + this.interner.bad_fold_notes.at(cast<u64>(bi)).some + "\n");
+            bi = bi + 1;
+        }
+        // O3-lite: the interned slot keys (sorted — the reconciliation face
+        // for the def-level cache: a missing or extra slot between a full
+        // and an incremental run shows up here as a one-line diff)
+        {
+            let slots: _utils.List<string> = _gi_sorted(this.interner.slot_keys);
+            let ski: mut i64 = 0;
+            while (ski < cast<i64>(slots.size())) {
+                sb.append("[GlobalIndex:interner-slot] " + slots.at(cast<u64>(ski)).some + "\n");
+                ski = ski + 1;
+            }
+        }
+        sb.append("[GlobalIndex] fingerprint(global, defines=0)=" + cast<string>(this.global_fp));
+        sb.append(" primitive_impl=" + cast<string>(this.primitive_impl_fp));
+        sb.append("\n");
+        let pf: mut i64 = 0;
+        while (pf < cast<i64>(this.files.size())) {
+            sb.append("[GlobalIndex] file[" + cast<string>(pf) + "] " + this.files.at(cast<u64>(pf)).some + " fp=" + cast<string>(this.file_prints.at(cast<u64>(pf)).some) + "\n");
+            pf = pf + 1;
+        }
+        // O3-lite: the table sections render in SORTED key order (stable
+        // insertion sort — see _gi_sorted) instead of map insertion order.
+        // Rationale (optimize5-progress.md): an incrementally-maintained
+        // table and a full rebuild hold the same CONTENT but different
+        // insertion histories; sorted rendering makes the two dumps
+        // byte-comparable (the acceptance face of the incremental rebuild)
+        // and deterministic regardless of map internals. The files/fp
+        // lines above keep their natural (input) order.
+        sb.append("[GlobalIndex:symbols]\n");
+        let sk: _utils.List<string> = _gi_sorted(this.symbols.keys());
+        let si: mut i64 = 0;
+        while (si < cast<i64>(sk.size())) {
+            let k: string = sk.at(cast<u64>(si)).some;
+            sb.append("  " + k + " => " + this.symbols.get(k, "") + "\n");
+            si = si + 1;
+        }
+        sb.append("[GlobalIndex:types]\n");
+        let tk: _utils.List<string> = _gi_sorted(this.types.keys());
+        let ti: mut i64 = 0;
+        while (ti < cast<i64>(tk.size())) {
+            let k2: string = tk.at(cast<u64>(ti)).some;
+            sb.append("  " + k2 + " => " + this.types.get(k2, "") + "\n");
+            ti = ti + 1;
+        }
+        sb.append("[GlobalIndex:instances]\n");
+        let ik: _utils.List<string> = _gi_sorted(this.instances.keys());
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(ik.size())) {
+            let k3: string = ik.at(cast<u64>(ii)).some;
+            sb.append("  " + k3 + " => " + this.instances.get(k3, "") + "\n");
+            ii = ii + 1;
+        }
+        sb.append("[GlobalIndex:ifaces]\n");
+        {
+            // render each row, then sort the rendered lines (stable —
+            // duplicate edges keep their relative order)
+            let rows: mut _utils.List<string> = new _utils.List<string>();
+            let ij: mut i64 = 0;
+            while (ij < cast<i64>(this.ifaces_iface.size())) {
+                rows.push(this.ifaces_iface.at(cast<u64>(ij)).some + " |> " + this.ifaces_for.at(cast<u64>(ij)).some
+                    + " => " + this.ifaces_file.at(cast<u64>(ij)).some + "|" + this.ifaces_origin.at(cast<u64>(ij)).some
+                    + "|h" + cast<string>(this.ifaces_hash.at(cast<u64>(ij)).some) + "\n");
+                ij = ij + 1;
+            }
+            let sorted_rows: _utils.List<string> = _gi_sorted(rows);
+            let ri: mut i64 = 0;
+            while (ri < cast<i64>(sorted_rows.size())) {
+                sb.append("  " + sorted_rows.at(cast<u64>(ri)).some);
+                ri = ri + 1;
+            }
+        }
+        sb.append("[GlobalIndex:users]\n");
+        let uk: _utils.List<string> = _gi_sorted(this.users.keys());
+        let uj: mut i64 = 0;
+        while (uj < cast<i64>(uk.size())) {
+            let k4: string = uk.at(cast<u64>(uj)).some;
+            sb.append("  " + k4 + " <= " + this.flat_users(this.users.get(k4, "")) + "\n");
+            uj = uj + 1;
+        }
+        sb.append("[GlobalIndex:end]\n");
+        return sb.to_string();
+    }
+}
+
+}

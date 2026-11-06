@@ -5,34 +5,59 @@
 //    out_exit control into the outbound hub — frame order guarantees the
 //    shutdown response (and everything else queued) reaches the wire before
 //    StdioStream calls exit(code) — then the loop retires.
-//  - docs: routing by textDocument.uri. didOpen dynamically instantiates a
-//    LspCompilationUnit (module-as-actor: runtime `new`, its initial spawns
-//    with it) and registers the unit's results output port into the
-//    JsonOutputParser fan-in via its attach() façade; everything else is
-//    forwarded to the owning unit's cmds Fifo (1:N routing on the inbound
-//    side, N:1 merge on the outbound fan-in — the dynamic-wiring half of
-//    the design's static/dynamic topology split).
+//  - docs: routing by textDocument.uri into the SINGLE compile actor
+//    (batch 4.4): didOpen/didChange/didClose update the open-document
+//    registry and push an LspCompileMsg onto the actor's reqs Fifo (the
+//    actor folds same-uri bursts, serializes every incremental transaction
+//    and answers the navigation queries); everything the actor produces —
+//    responses and publishDiagnostics — flows through its OWN output port,
+//    attached into JsonOutputParser's fan-in once at construction. LspMain
+//    itself only answers lifecycle requests and protocol errors for
+//    documents that are not open (queries on closed documents never reach
+//    the actor).
 //
 // Session responses flow through this module's OWN output port (connected
 // statically to JsonOutputParser.inputs in LspWiring) — no ISink anywhere.
 namespace lsp {
+
+// The LspMain-side open-document record (registry): the routing path plus
+// the document's CURRENT editor text, updated on didOpen/didChange. Only
+// LspMain reads and writes it (each kick carries a copy as its payload —
+// the compile actor never reaches back into this map).
+class LspDocState {
+    path: string = "";
+    text: mut string = "";
+
+    fun new(mut this, path: string, text: string) {
+        this.path = path;
+        this.text = text;
+    }
+}
 
 class LspMain {
     input session : string;
     input docs : string;
     output responses : LspOutMsg;
 
-    // Outbound fan-in module reference (used only for attach() at didOpen —
-    // the runtime-wiring seam; see JsonOutputParser).
+    // Outbound fan-in module reference (used only for the one-time attach()
+    // of the compile actor's output port at construction — see
+    // JsonOutputParser).
     out: mut JsonOutputParser;
-    units: mut std.HashMap<string, LspCompilationUnit> = new std.HashMap<string, LspCompilationUnit>();
+    // The single compile actor: every incremental transaction and query is
+    // serialized inside it (batch 4.4 redesign §9 topology).
+    compiler: mut LspCompileActor;
+    // Open-document registry: uri → path + current editor text (the text
+    // also rides each LspCompileMsg — the actor never reads this map).
+    doc_states: mut std.HashMap<string, LspDocState> = new std.HashMap<string, LspDocState>();
     shutdown_seen: mut bool = false;
     // Workspace routing config (.magellanic.config at the initialize rootUri;
     // loaded once at initialize, unloaded-empty before it — see LspConfig).
     config: mut LspWorkspaceConfig = new LspWorkspaceConfig();
 
-    fun new(mut this, out: mut JsonOutputParser) {
+    fun new(mut this, out: mut JsonOutputParser, compiler: mut LspCompileActor) {
         this.out = out;
+        this.compiler = compiler;
+        this.out.attach(cast<mut __builtin.ISource<LspOutMsg>>(compiler.events));
     }
 
     fun respond_result(mut this, msg: LspMessage, result_json: string) {
@@ -45,16 +70,29 @@ class LspMain {
         this.responses.write(new LspOutMsg.out_error(error_for(msg, code, message)));
     }
 
-    // Path → in-memory text of every opened document — the snapshot handed
-    // to each unit so project-mode recompiles analyze sibling documents'
-    // EDITOR text (LspCompilationUnit never reaches back into LspMain).
-    fun build_doc_texts(mut this) -> mut std.HashMap<string, string> {
-        let m: mut std.HashMap<string, string> = new std.HashMap<string, string>();
-        for (let k in this.units.iter_keys()) {
-            let u: LspCompilationUnit = this.units.get(k).some;
-            m.put(u.path, u.text);
-        }
-        return m;
+    // Push one request into the compile actor's Fifo.
+    fun kick(mut this, kind: i64, msg: LspMessage, uri: string, path: string, text: string) {
+        let m: mut LspCompileMsg = new LspCompileMsg();
+        m.kind = kind;
+        m.uri = uri;
+        m.path = path;
+        m.text = text;
+        m.msg = msg;
+        m.config = this.config;
+        this.compiler.reqs.write(m);
+    }
+
+    // Push a lifecycle request (initialize/shutdown/exit/unknown session
+    // method): the compile actor answers it strictly behind every pending
+    // transaction and query — the whole outbound stream stays totally
+    // ordered (a shutdown response can never overtake an earlier query's).
+    fun kick_lifecycle(mut this, msg: LspMessage, exit_code: i64) {
+        let m: mut LspCompileMsg = new LspCompileMsg();
+        m.kind = 3;
+        m.msg = msg;
+        m.exit_code = exit_code;
+        m.config = this.config;
+        this.compiler.reqs.write(m);
     }
 
     initial {
@@ -67,23 +105,25 @@ class LspMain {
                 // them). The config load reads <rootUri>/.magellanic.config
                 // once; a missing file is an empty loaded config.
                 this.config = load_workspace_config(extract_root_uri(msg.params_json));
-                this.respond_result(msg, initialize_result_json());
+                this.kick_lifecycle(msg, 0);
             } else if (msg.method == "initialized") {
                 // Notification; nothing to do.
             } else if (msg.method == "shutdown") {
                 this.shutdown_seen = true;
-                this.respond_result(msg, "null");
+                this.kick_lifecycle(msg, 0);
             } else if (msg.method == "exit") {
                 // LSP spec: 0 after shutdown, 1 otherwise. The control flows
-                // through the hub so pending frames flush first.
+                // through the actor's port into the hub, so pending frames
+                // (including any queued responses) flush before StdioStream
+                // calls exit(code) — then this loop retires.
                 if (this.shutdown_seen) {
-                    this.responses.write(new LspOutMsg.out_exit(0));
+                    this.kick_lifecycle(msg, 0);
                 } else {
-                    this.responses.write(new LspOutMsg.out_exit(1));
+                    this.kick_lifecycle(msg, 1);
                 }
                 break;
             } else if (msg.has_id) {
-                this.respond_error(msg, JSONRPC_METHOD_NOT_FOUND, "method not found: " + msg.method);
+                this.kick_lifecycle(msg, 0);
             }
         }
     }
@@ -97,37 +137,42 @@ class LspMain {
                 continue;
             }
             if (msg.method == "textDocument/didOpen") {
-                if (this.units.get(uri).is_none()) {
+                if (this.doc_states.get(uri).is_none()) {
                     let p: std.JsonValue = std.parse_json(msg.params_json);
                     let td: __builtin.Option<std.JsonValue> = p.get("textDocument");
                     let text: mut string = "";
                     if (td.is_some()) {
                         text = json_get_string(td.some, "text");
                     }
-                    let unit: mut LspCompilationUnit = new LspCompilationUnit(uri, text, this.build_doc_texts(), this.config);
-                    this.units.put(uri, unit);
-                    this.out.attach(cast<mut __builtin.ISource<LspOutMsg>>(unit.results));
+                    let path: string = uri_to_path(uri);
+                    this.doc_states.put(uri, new LspDocState(path, text));
+                    this.kick(0, msg, uri, path, text);
                 }
             } else if (msg.method == "textDocument/didClose") {
-                // Retire the unit: forward the close so its loop drains and
-                // breaks, then DROP the map entry — a later didOpen of the
-                // same uri must create a fresh unit (the retired unit's loop
-                // is dead; routing traffic into its cmds Fifo would silently
-                // black-hole every request).
-                let u: __builtin.Option<LspCompilationUnit> = this.units.get(uri);
-                if (u.is_some()) {
-                    u.some.cmds.write(msg);
-                    this.units.remove(uri);
+                // Retire the document: the registry entry drops now (later
+                // traffic for this uri is rejected here), and the compile
+                // actor folds the CLOSE (single-file sessions die; project
+                // sessions fall the file back to its on-disk text).
+                let st: __builtin.Option<LspDocState> = this.doc_states.get(uri);
+                if (!st.is_none()) {
+                    this.doc_states.remove(uri);
+                    this.kick(1, msg, uri, st.some.path, "");
+                }
+            } else if (msg.method == "textDocument/didChange") {
+                let st: __builtin.Option<LspDocState> = this.doc_states.get(uri);
+                if (!st.is_none()) {
+                    let t: string = extract_change_text(msg.params_json);
+                    if (string_length(t) > 0) {
+                        st.some.text = t;
+                        this.kick(0, msg, uri, st.some.path, t);
+                    }
                 }
             } else {
-                let u: __builtin.Option<LspCompilationUnit> = this.units.get(uri);
-                if (u.is_some()) {
-                    // Refresh the sibling-text snapshot before a recompile
-                    // (queries never read it).
-                    if (msg.method == "textDocument/didChange") {
-                        u.some.open_texts = this.build_doc_texts();
-                    }
-                    u.some.cmds.write(msg);
+                // Navigation queries: routed into the compile actor (it
+                // answers strictly after the edits that preceded them).
+                let st: __builtin.Option<LspDocState> = this.doc_states.get(uri);
+                if (!st.is_none()) {
+                    this.kick(2, msg, uri, st.some.path, st.some.text);
                 } else if (msg.has_id) {
                     this.respond_error(msg, JSONRPC_INVALID_PARAMS, "document not open: " + uri);
                 }

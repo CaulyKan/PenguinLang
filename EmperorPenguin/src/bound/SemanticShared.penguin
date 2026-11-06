@@ -77,6 +77,58 @@ fun file_ns_name(filename: string) -> string {
     return "_ns_" + stem + "_" + cast<string>(_file_ns_hash(filename));
 }
 
+// ── Batch 3.4: file-qualified synthetic names (invalidation class ⑤) ──
+//
+// The synthetic-name counters (__lambda_ / __SpawnCtx_ / __SpawnFut_ /
+// __GenCtx_ / __construct_ / __net_ / __conn_wire_ / __conn_relay_) number
+// synthesized definitions PER FILE and embed the owning file's namespace tag
+// IN THE NAME (__lambda__ns_<stem>_<hash>_<n>). Two properties follow:
+//   * no cross-file collision even in SHARED scopes — synthesized ctx/lambda
+//     classes bind into the site's nearest namespace-or-global scope, which
+//     explicit namespaces merge ACROSS files (the batch-1.3 per-file-counter
+//     regression: same-numbered __SpawnCtx_1 classes in one shared namespace
+//     scope, the loser silently dropped); the embedded tag makes every name
+//     globally unique regardless of the registration scope;
+//   * incremental safety (the actual goal, roadmap 4.3): editing file B never
+//     re-numbers file A's synthetic names — the counters are keyed by the
+//     file tag, and the tag is a pure function of the file's path.
+// The COUNTER key and the NAME tag are the same string, so a bucket's n-th
+// name is stable. Callers pick the owning file from a reliable context: the
+// body-binding file for pass-8 synthesis (index_current_file), the PARENT
+// def's source file for pass-1 desugar synthesis (desugared defs carry no
+// source_file of their own — the batch-1.3 defect A).
+fun synth_name_file_tag(file: string) -> string {
+    let raw: mut string = file_ns_name(file);
+    if (string_length(file) == 0) { raw = "_ns__anon"; }
+    // Sanitize to the identifier alphabet [A-Za-z0-9_]: the tag lands inside
+    // EMITTED symbol names, and some virtual filenames are not
+    // identifier-safe — the MetaEngine compiles its unit-B sources under
+    // "<unit_b>" / "<meta_externs>" spellings, whose angle brackets would
+    // corrupt the LLVM global names (parseIR rejects them) the moment a
+    // lambda/spawn is synthesized inside a #fun body.
+    let sb: mut StringBuilder = new StringBuilder();
+    let i: mut i64 = 0;
+    while (i < string_length(raw)) {
+        let c: i64 = string_char_code(string_char_at(raw, i));
+        let ok: bool = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95;
+        if (ok) {
+            sb.append(string_char_at(raw, i));
+        } else {
+            sb.append("_");
+        }
+        i = i + 1;
+    }
+    return sb.to_string();
+}
+
+// Per-file synthetic counter step: returns this file's next number.
+fun next_synth_counter(counters: mut _utils.StrMap<i64>, file: string) -> i64 {
+    let key: string = synth_name_file_tag(file);
+    let n: i64 = counters.get(key, 0);
+    counters.set(key, n + 1);
+    return n;
+}
+
 // The source filename a top-level ast def came from (each parse sets location
 // from token locations, which carry the lexer's filename). Unknown shapes
 // fall back to "" which maps to one stable anonymous namespace.
@@ -164,13 +216,38 @@ fun top_level_def_scope(def: Definition, global_scope: mut BoundScope) -> mut Bo
     return global_scope.add_or_merge_namespace(file_ns_name(fname));
 }
 
+// Batch 3.3a: the source FILE a bound def belongs to, via its carried
+// ast_source (set by BuildScopes for AST defs and by the specialize_* creators
+// for specialized defs — a specialization belongs to its TEMPLATE's file).
+// Container/synthetic shapes without an ast_source return "" — callers that
+// group defs into file segments treat "" as "inherit the current segment"
+// (same-file defs are contiguous in result.definitions, so an ast_source-less
+// def never sits at a real file boundary except when it opens the walk).
+fun bound_def_source_file(def: BoundDefinition) -> string {
+    if (def is BoundDefinition.function_def) {
+        if (def.function_def.ast_source.is_some()) { return ast_def_filename(def.function_def.ast_source.some); }
+    }
+    if (def is BoundDefinition.class_def) {
+        if (def.class_def.ast_source.is_some()) { return ast_def_filename(def.class_def.ast_source.some); }
+    }
+    if (def is BoundDefinition.enum_def) {
+        if (def.enum_def.ast_source.is_some()) { return ast_def_filename(def.enum_def.ast_source.some); }
+    }
+    if (def is BoundDefinition.interface_def) {
+        if (def.interface_def.ast_source.is_some()) { return ast_def_filename(def.interface_def.ast_source.some); }
+    }
+    if (def is BoundDefinition.global_var_def) {
+        if (def.global_var_def.ast_source.is_some()) { return ast_def_filename(def.global_var_def.ast_source.some); }
+    }
+    return "";
+}
+
 // The ENCLOSING scope of a bound def (the scope its name is registered in):
 // the def's own scope's parent for class/enum/interface/function/initial
 // defs, the namespace's own scope for namespaces, the variable symbol's
 // enclosing scope for globals; fallback is the global scope. Used where a
 // pass iterates bound defs and needs the def's lookup context.
-fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {    if (def is BoundDefinition.class_def) {
-        if (def.class_def.scope.is_some() && def.class_def.scope.some.parent.is_some()) {
+fun def_lookup_scope(def: BoundDefinition, global_scope: mut BoundScope) -> mut BoundScope {    if (def is BoundDefinition.class_def) {        if (def.class_def.scope.is_some() && def.class_def.scope.some.parent.is_some()) {
             return def.class_def.scope.some.parent.some;
         }
     }
@@ -265,6 +342,30 @@ fun bound_type_is_template_param(bt: BoundType) -> bool {
         }
     }
     return false;
+}
+
+// True when a `new` expression's dotted type_name denotes the builtin
+// linear wrapper `__builtin.Ownership` — i.e. its LAST dotted segment is
+// EXACTLY "Ownership" (the parser stores only the dotted base name in
+// type_name; generic args are parsed separately and never appear there, so
+// `<...>` stripping is unnecessary). A substring test
+// (string_find(t, "Ownership") >= 0) used to false-positive on ANY user
+// class whose name merely contains the substring (OwnershipRegistry,
+// BindExprOwnership — MtOwnershipSubstringClassNameFalsePositive): their
+// single-argument constructors were wrongly gated by the §9.2 freshness
+// rule (and, in the use audit, wrongly recognized as the wrap itself).
+fun new_type_is_builtin_ownership(type_name: string) -> bool {
+    if (type_name == "Ownership") {
+        return true;
+    }
+    // <ns...>.Ownership — segment-boundary match: the type name must END
+    // with ".Ownership" (a longer last segment, e.g. "OwnershipRegistry"
+    // or "MyOwnership", does not match).
+    let suffix: string = ".Ownership";
+    let n: i64 = string_length(type_name);
+    let m: i64 = string_length(suffix);
+    if (n <= m) { return false; }
+    return string_substring(type_name, n - m, m) == suffix;
 }
 
 }

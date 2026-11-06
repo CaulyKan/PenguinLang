@@ -433,6 +433,8 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 // Module function
                                 var callee = Global.IRModule?.FindFunction(ci.FuncName);
+                                if (callee != null && callee.IsExtern)
+                                    throw UnimplementedExternError(ci.FuncName);
                                 if (callee != null)
                                 {
                                     var calleeCC = FindCodeContainer(ci.FuncName);
@@ -494,6 +496,8 @@ namespace BabyPenguin.VirtualMachine
                             if (!found)
                             {
                                 var callee = Global.IRModule?.FindFunction(ci.FuncName);
+                                if (callee != null && callee.IsExtern)
+                                    throw UnimplementedExternError(ci.FuncName);
                                 if (callee != null)
                                 {
                                     var calleeCC = FindCodeContainer(ci.FuncName);
@@ -653,6 +657,8 @@ namespace BabyPenguin.VirtualMachine
                                     break;
                                 }
                                 // Module function - run with yield propagation
+                                if (Global.IRModule?.FindFunction(funcName)?.IsExtern == true)
+                                    throw UnimplementedExternError(funcName);
                                 var calleeCC = FindCodeContainer(funcName);
                                 if (calleeCC != null)
                                 {
@@ -722,6 +728,8 @@ namespace BabyPenguin.VirtualMachine
                                 if (found)
                                     break;
                                 // Module function - run with yield propagation
+                                if (Global.IRModule?.FindFunction(funcName)?.IsExtern == true)
+                                    throw UnimplementedExternError(funcName);
                                 var calleeCC = FindCodeContainer(funcName);
                                 if (calleeCC != null)
                                 {
@@ -1042,6 +1050,8 @@ namespace BabyPenguin.VirtualMachine
                                 // Module function - call directly (no yield)
                                 var callee = Global.IRModule?.FindFunction(ci.FuncName)
                                     ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
+                                if (callee.IsExtern)
+                                    throw UnimplementedExternError(ci.FuncName);
                                 var calleeCC = FindCodeContainer(ci.FuncName);
                                 var childFrame = new RuntimeFrame(calleeCC, Global, args, this);
                                 var retVal = childFrame.RunDirect();
@@ -1065,6 +1075,8 @@ namespace BabyPenguin.VirtualMachine
                             {
                                 var callee = Global.IRModule?.FindFunction(ci.FuncName)
                                     ?? throw new BabyPenguinRuntimeException($"Function '{ci.FuncName}' not found", code: ErrorCode.E_RUNTIME_LOOKUP);
+                                if (callee.IsExtern)
+                                    throw UnimplementedExternError(ci.FuncName);
                                 var calleeCC = FindCodeContainer(ci.FuncName);
                                 var childFrame = new RuntimeFrame(calleeCC, Global, args, this);
                                 childFrame.RunDirect();
@@ -1173,6 +1185,8 @@ namespace BabyPenguin.VirtualMachine
                                     break;
                                 }
                                 var calleeCC = FindCodeContainer(funcName);
+                                if (Global.IRModule?.FindFunction(funcName)?.IsExtern == true)
+                                    throw UnimplementedExternError(funcName);
                                 if (calleeCC != null)
                                 {
                                     var childFrame = new RuntimeFrame(calleeCC, Global, fullArgs, this);
@@ -1203,6 +1217,8 @@ namespace BabyPenguin.VirtualMachine
                                 if (found)
                                     break;
                                 var calleeCC = FindCodeContainer(funcName);
+                                if (Global.IRModule?.FindFunction(funcName)?.IsExtern == true)
+                                    throw UnimplementedExternError(funcName);
                                 if (calleeCC != null)
                                 {
                                     var childFrame = new RuntimeFrame(calleeCC, Global, fullArgs, this);
@@ -1427,6 +1443,20 @@ namespace BabyPenguin.VirtualMachine
         }
 
         // === Extern function bridge ===
+
+        /// <summary>
+        /// A called extern that has no C# implementation in this VM. The
+        /// extern's IR entry is an empty-body stub — calling it used to
+        /// return silently with the result register never stored, and the
+        /// resulting NotInitializedRuntimeValue(void) propagated into
+        /// arbitrary downstream operations (handover bug #8: MetaEngine.init's
+        /// `this.jit_ctx == 0` crashed with E_RUNTIME_INVALID_OP; the same
+        /// hole could mis-evaluate any program calling a native-only extern,
+        /// e.g. `#fun` meta calls on the pass1 backend). Fail loudly instead:
+        /// externs bind to native code in EmperorPenguin (pass2+) only.
+        /// </summary>
+        private static BabyPenguinRuntimeException UnimplementedExternError(string funcName)
+            => new($"extern function '{funcName}' is declared but has no implementation in the BabyPenguin VM (externs bind to native code in EmperorPenguin Pass2/Pass3 only)", code: ErrorCode.E_RUNTIME_LOOKUP);
 
         private (IRuntimeValue? Value, bool Exited)? TryCallExternFunction(string funcName, List<IRuntimeValue> args, string retType)
         {

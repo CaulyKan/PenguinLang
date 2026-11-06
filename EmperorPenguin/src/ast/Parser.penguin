@@ -561,6 +561,13 @@ fun _mark_ast_exported(def: Definition) {
         // On success populates id_expr.value_generic_args and returns true; on any
         // failure restores the stream and returns false.
         fun try_parse_value_generic_args(this, id_expr: IdentifierExpression) -> bool {
+            return this.try_parse_value_generic_args_into(id_expr.value_generic_args);
+        }
+
+        // The shared body of the value-generic backtracking (also used by the
+        // postfix member-access arm for QUALIFIED value-template calls,
+        // ns.f<4>() — MetaTemplateValueQualifiedCall). Assumes peek is '<'.
+        fun try_parse_value_generic_args_into(this, args: mut _utils.List<Expression>) -> bool {
             let saved_pos: i64 = this.stream.pos;
             this.stream.advance(); // consume '<'
             if (this.stream.peek_type() is TokenType.Greater) {
@@ -568,11 +575,11 @@ fun _mark_ast_exported(def: Definition) {
                 this.stream.pos = saved_pos;
                 return false;
             }
-            let args: mut _utils.List<Expression> = new _utils.List<Expression>();
+            let parsed: mut _utils.List<Expression> = new _utils.List<Expression>();
             let ok: mut bool = true;
             while (true) {
                 let arg: Expression = this.parse_additiveExpression();
-                args.push(arg);
+                parsed.push(arg);
                 if (this.stream.peek_type() is TokenType.Comma) {
                     this.stream.advance();
                     if (this.stream.peek_type() is TokenType.Greater) { break; }
@@ -593,7 +600,12 @@ fun _mark_ast_exported(def: Definition) {
                     next.token_type is TokenType.Semicolon || next.token_type is TokenType.Comma ||
                     next.token_type is TokenType.LBrace || next.token_type is TokenType.RBrace ||
                     next.token_type is TokenType.Greater || next.token_type is TokenType.EOF) {
-                    id_expr.value_generic_args = args;
+                    // append the parsed args into the caller-provided list
+                    let pi: mut i64 = 0;
+                    while (pi < cast<i64>(parsed.size())) {
+                        args.push(parsed.at(cast<u64>(pi)).some);
+                        pi = pi + 1;
+                    }
                     return true;
                 }
                 ok = false;
@@ -698,6 +710,14 @@ fun _mark_ast_exported(def: Definition) {
                     }
                 } else {
                     this.stream.pos = saved_pos;
+                }
+                // Type-generic args did not apply (a VALUE arg like ns.f<4>()
+                // never parses as a type name) — restore left the '<' in place;
+                // try value-expression generic args so the qualified form of a
+                // value-template call survives into the AST instead of being
+                // mis-parsed as a `<` comparison (MetaTemplateValueQualifiedCall).
+                if (this.stream.peek_type() is TokenType.Less) {
+                    this.try_parse_value_generic_args_into(ma_expr.value_generic_args);
                 }
             }
             results.push(new Expression.member_access(ma_expr));
@@ -1646,6 +1666,17 @@ fun _mark_ast_exported(def: Definition) {
                     node.members.push(this.parse_portDeclaration());
                 } else if (next.token_type is TokenType.Impl) {
                     node.members.push(this.parse_interfaceImplementation());
+                } else if (next.token_type is TokenType.Let) {
+                    // `let v : mut i64;` field form: the leading `let` is
+                    // accepted and SKIPPED (the reference grammar rejects it
+                    // outright; EP leniently takes the declaration). Without
+                    // this branch the `let` KEYWORD token became the FIELD
+                    // NAME (a phantom untyped field "let" that the type
+                    // resolver used to silently void-drop, masking the real
+                    // field's declaration) while the actual name landed in a
+                    // SECOND field parsed from the remainder.
+                    this.stream.advance();
+                    node.members.push(this.parse_classDeclaration());
                 } else {
                     node.members.push(this.parse_classDeclaration());
                 }

@@ -1,0 +1,1105 @@
+// Type-layout concern of the LLVM emitter (batch 0.1 split): class/enum layout
+// building (recursive, lazily ensured), LLVM type mapping/sizing/alignment and
+// the IR-spelling predicates (is_string_type/is_ref_type/...).
+namespace emperor {
+
+class LLVMTypes {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    // An LLVM type is an aggregate (struct/enum by-value) — dbg.value cannot take these as a
+    // first-class value operand (LLVM nulls them on upgrade). Such vars are reached via dbg.declare instead.
+    fun is_aggregate_llvm_type(this, llvm_type: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_aggregate_llvm_type(llvm_type=" + cast<string>(llvm_type) + ")");
+ }
+        if (em.string_starts_with(llvm_type, "%class.")) { return true; }
+        if (em.string_starts_with(llvm_type, "%enum.")) { return true; }
+        if (em.string_starts_with(llvm_type, "%struct.")) { return true; }
+        return false;
+    }
+
+    // --- Layout building ---
+
+    // On-demand recursive layout building. Enum payloads may be value-type
+    // classes and class fields may be enums (or classes declared later in the
+    // unit), so layouts are built lazily and mutually recursively: resolving a
+    // field/payload type ENSURES the referenced layout exists first. A layout
+    // re-entered while still building means an infinite value-type layout
+    // (e.g. `impl IValueType class Node { next: Option<Node>; }`) — reported
+    // as E_SIZE_CYCLE instead of recursing forever or silently sizing the
+    // payload as a pointer.
+    fun build_layout_tables(mut this, unit: BoundCompilationUnit) {
+        _utils.trace_enter("Enter build_layout_tables");
+        let di: mut i64 = 0;
+        while (di < cast<i64>(unit.definitions.size())) {
+            let def: BoundDefinition = unit.definitions.at(cast<u64>(di)).some;
+            this.build_layouts_for_def(def);
+            di = di + 1;
+        }
+    }
+
+    fun build_layouts_for_def(mut this, def: BoundDefinition) {
+        if (def is BoundDefinition.enum_def) {
+            if (cast<i64>(def.enum_def.generic_params.size()) == 0) {
+                this.ensure_enum_layout(def.enum_def);
+            }
+        }
+        if (def is BoundDefinition.class_def) {
+            if (!def.class_def.is_generic_template) {
+                this.ensure_class_layout(def.class_def);
+            }
+        }
+        if (def is BoundDefinition.namespace_def) {
+            let ns: BoundNamespaceDefinition = def.namespace_def;
+            let i: mut i64 = 0;
+            while (i < cast<i64>(ns.children.size())) {
+                this.build_layouts_for_def(ns.children.at(cast<u64>(i)).some);
+                i = i + 1;
+            }
+        }
+    }
+
+    // Report a value-type layout size cycle and abort (the emitter has no
+    // source-location error channel — mirrors the E_INTERNAL pattern above).
+    fun size_cycle_error(this, type_name: string) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let chain: mut string = "";
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.building_stack.size())) {
+            if (string_length(chain) > 0) { chain = chain + " -> "; }
+            chain = chain + em.building_stack.at(cast<u64>(i)).some;
+            i = i + 1;
+        }
+        if (string_length(chain) > 0) { chain = chain + " -> "; }
+        chain = chain + type_name;
+        __builtin.eprintln("error[E_SIZE_CYCLE]: Cannot compute size of '" + type_name + "': the value-type layout recursively contains itself (" + chain + ")");
+        __builtin.exit(1);
+    }
+
+    fun ensure_class_layout(mut this, cls: BoundClassDefinition) -> Option<ClassLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter ensure_class_layout");
+        // Layout name must match the IR type references (`ref<X>`): a SPECIALIZED
+        // def's name IS the mangle (short prefix), so use it directly; a template
+        // def uses the global-prefix-stripped full name.
+        let layout_name: mut string = em.globals.strip_global_prefix(cls.full_name);
+        if (cls.is_specialized) { layout_name = cls.name; }
+        let existing: Option<ClassLayout> = this.find_class_layout(layout_name);
+        if (existing.is_some()) {
+            if (existing.some.is_building) { this.size_cycle_error(existing.some.type_name); }
+            return existing;
+        }
+        let is_value: bool = this.effective_class_value(cls);
+        // Both ICopy and IRef classes have metadata pointers
+        let has_metadata: bool = true;
+        if (!is_value) {
+            em.plan.has_iref_class = true;
+        }
+        let layout: mut ClassLayout = new ClassLayout(layout_name, is_value, has_metadata);
+        layout.is_building = true;
+        if (em.plan.built && _utils.getenv("EMPEROR_EMIT_PLAN_DEBUG") != "") {
+            __builtin.eprintln("[EMIT_PLAN_DEBUG] class layout created AFTER the plan sweep: " + layout_name);
+        }
+        em.class_layouts.push(layout);
+        // A new layout invalidates memoized misses (find_class_layout may
+        // have cached "not found" for this name before creation).
+        em.fcl_memo = new _utils.StrMap<i64>();
+        em.building_stack.push(layout_name);
+
+        let offset: mut i64 = 0;
+        if (has_metadata) {
+            offset = 8;
+        }
+        let field_idx: mut i64 = 1;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(cls.fields.size())) {
+            let fdef: BoundDefinition = cls.fields.at(cast<u64>(fi)).some;
+            if (fdef is BoundDefinition.class_field) {
+                let cf: BoundClassFieldDefinition = fdef.class_field;
+                let field_llvm_type: string = this.field_type_to_llvm(cf.bound_type);
+                // void-as-unit: a void-typed field (a `T` field with T=void)
+                // has no storage — skip it from the layout entirely. Its
+                // reads/writes never reach the emitter (IRGenerator drops
+                // them), and a "void" member would make the LLVM struct type
+                // invalid.
+                if (field_llvm_type == "void") { fi = fi + 1; continue; }
+                let field_size: i64 = this.llvm_type_size(field_llvm_type);
+                let field_align: i64 = this.llvm_type_align(field_llvm_type);
+                let aligned_offset: i64 = this.align_up(offset, field_align);
+                let fl: mut FieldLayout = new FieldLayout(cf.name, field_llvm_type, aligned_offset, field_idx);
+                fl.bound_type = new Option<BoundType>.some(cf.bound_type);
+                layout.fields.push(fl);
+                offset = aligned_offset + field_size;
+                field_idx = field_idx + 1;
+            }
+            fi = fi + 1;
+        }
+        layout.sizeof_object = this.align_up(offset, 8);
+
+        // Collect vtable info from class's implemented interfaces
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(cls.vtables.size())) {
+            let vtable: BoundVTable = cls.vtables.at(cast<u64>(vi)).some;
+            let iface_name: string = em.metadata.interface_map_name(vtable.interface_type);
+            let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
+            let si: mut i64 = 0;
+            while (si < cast<i64>(vtable.slots.size())) {
+                let slot: BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                if (slot.implementation_method.is_some()) {
+                    let func_name: string = em.globals.llvm_func_name(slot.implementation_method.some.full_name);
+                    iface_vtable.method_ptrs.push(func_name);
+                }
+                si = si + 1;
+            }
+            layout.interface_vtables.push(iface_vtable);
+            vi = vi + 1;
+        }
+
+        // fun-value closure class (lambda desugar): append the .__FunVal entry
+        // — slot 0 is __call — so indirect calls resolve the callable through
+        // _emperor_vtable_lookup(obj, ".__FunVal", 0) exactly like the
+        // emitter-synthesized funval singletons and bound-method invokers.
+        if (cls.is_funval) {
+            let call_name: mut string = "";
+            let cmi: mut i64 = 0;
+            while (cmi < cast<i64>(cls.methods.size())) {
+                let md: BoundDefinition = cls.methods.at(cast<u64>(cmi)).some;
+                if (md is BoundDefinition.function_def) {
+                    if (md.function_def.name == "__call") {
+                        call_name = em.globals.llvm_func_name(md.function_def.full_name);
+                    }
+                }
+                cmi = cmi + 1;
+            }
+            if (string_length(call_name) > 0) {
+                let funval_vt: mut InterfaceVTable = new InterfaceVTable("__FunVal");
+                funval_vt.method_ptrs.push(call_name);
+                layout.interface_vtables.push(funval_vt);
+            } else {
+                __builtin.eprintln("error[E_INTERNAL]: funval class without __call: " + cls.full_name);
+                __builtin.exit(1);
+            }
+        }
+
+        layout.is_building = false;
+        em.building_stack.pop();
+        em.layout_done_order.push(layout.llvm_struct_type);
+        return new Option<ClassLayout>.some(layout);
+    }
+
+    fun ensure_enum_layout(mut this, enum_def: BoundEnumDefinition) -> Option<EnumLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter ensure_enum_layout");
+        // Layout name must match IR type references (`enum<X>`); specialized
+        // defs use their mangle name directly (short prefix).
+        let layout_name: mut string = em.globals.strip_global_prefix(enum_def.full_name);
+        if (enum_def.is_specialized) { layout_name = enum_def.name; }
+        let existing: Option<EnumLayout> = this.find_enum_layout(layout_name);
+        if (existing.is_some()) {
+            if (existing.some.is_building) { this.size_cycle_error(existing.some.type_name); }
+            return existing;
+        }
+        let layout: mut EnumLayout = new EnumLayout(layout_name);
+        layout.is_building = true;
+        if (em.plan.built && _utils.getenv("EMPEROR_EMIT_PLAN_DEBUG") != "") {
+            __builtin.eprintln("[EMIT_PLAN_DEBUG] enum layout created AFTER the plan sweep: " + layout_name);
+        }
+        em.enum_layouts.push(layout);
+        // A new layout invalidates memoized misses (find_enum_layout may
+        // have cached "not found" for this name before creation).
+        em.fel_memo = new _utils.StrMap<i64>();
+        em.building_stack.push(layout_name);
+        let has_payload: mut bool = false;
+        let payload_type: mut string = "";
+
+        let mi: mut i64 = 0;
+        while (mi < cast<i64>(enum_def.members.size())) {
+            let member: BoundEnumMemberDefinition = enum_def.members.at(cast<u64>(mi)).some;
+            let mt: BoundType = member.member_type;
+            let is_void: bool = mt.kind is TypeKind.PrimitiveKind
+                && mt.primitive is PrimitiveType.VoidType;
+            // Tag-only sentinel: member_type == the enum's own type (set by
+            // resolve_enum_types). Compare by def full_name — display_name()
+            // is mutability-prefixed, so a `mut`-typed field of the same enum
+            // would not match and the sentinel would nest the enum in itself.
+            let is_self_enum: mut bool = false;
+            if (mt.kind is TypeKind.EnumKind && mt.type_definition.is_some()
+                && mt.type_definition.some is BoundDefinition.enum_def) {
+                is_self_enum = enum_def.full_name == mt.type_definition.some.enum_def.full_name;
+            }
+            if (is_void || is_self_enum) {
+                let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, "");
+                layout.variants.push(variant);
+            } else {
+                let member_llvm_type: string = this.field_type_to_llvm(mt);
+                let variant: EnumVariantLayout = new EnumVariantLayout(member.name, member.value, member_llvm_type);
+                variant.payload_bound_type = new Option<BoundType>.some(mt);
+                layout.variants.push(variant);
+                has_payload = true;
+                if (payload_type == "" || this.llvm_type_size(member_llvm_type) > this.llvm_type_size(payload_type)) {
+                    payload_type = member_llvm_type;
+                }
+            }
+            mi = mi + 1;
+        }
+
+        layout.has_payload = has_payload;
+        layout.payload_llvm_type = payload_type;
+
+        // Collect vtable info from enum's implemented interfaces
+        let vi: mut i64 = 0;
+        while (vi < cast<i64>(enum_def.vtables.size())) {
+            let vtable: BoundVTable = enum_def.vtables.at(cast<u64>(vi)).some;
+            let iface_name: string = em.metadata.interface_map_name(vtable.interface_type);
+            let iface_vtable: mut InterfaceVTable = new InterfaceVTable(iface_name);
+            let si: mut i64 = 0;
+            while (si < cast<i64>(vtable.slots.size())) {
+                let slot: BoundVTableSlot = vtable.slots.at(cast<u64>(si)).some;
+                if (slot.implementation_method.is_some()) {
+                    let func_name: string = em.globals.llvm_func_name(slot.implementation_method.some.full_name);
+                    iface_vtable.method_ptrs.push(func_name);
+                }
+                si = si + 1;
+            }
+            layout.interface_vtables.push(iface_vtable);
+            vi = vi + 1;
+        }
+
+        layout.is_building = false;
+        em.building_stack.pop();
+        em.layout_done_order.push(layout.llvm_struct_type);
+        return new Option<EnumLayout>.some(layout);
+    }
+
+    // Map a field/enum-payload BoundType to its LLVM type DURING layout
+    // building: composite types first ENSURE the referenced layout exists
+    // (recursively), so a value-type class payload/field nests inline instead
+    // of silently degrading to "ptr" when its layout has not been built yet.
+    // Outside layout building use bound_type_to_llvm_type (query-only).
+    fun field_type_to_llvm(mut this, bt: BoundType) -> string {
+        // Storage layout is MUTABILITY-INDEPENDENT (mut is a compile-time
+        // permission only): a value-class field/payload nests the struct
+        // INLINE whether bound mut or immutable; reference classes and
+        // strings are pointers either way. Copies happen at the value-model
+        // boundaries (emit_assign / emit_rdmbr / emit_rdenum / emit_arg);
+        // chain writes and method receivers address the slot directly via the
+        // write-chain pre-scan (scan_write_chains).
+        if (bt.kind is TypeKind.ClassKind) {
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = bt.type_definition.some.class_def;
+                if (cls.is_generic_template && cast<i64>(bt.generic_args.size()) > 0) {
+                    // Unspecialized reference (template def + generic args):
+                    // resolve the specialized def via the unified mangle.
+                    let spec_cls: Option<BoundClassDefinition> = this.lookup_specialized_class(this.resolve_type_layout_name(bt));
+                    if (spec_cls.is_some()) {
+                        return this.class_def_field_llvm(spec_cls.some);
+                    }
+                    return "ptr";
+                }
+                return this.class_def_field_llvm(cls);
+            }
+            return "ptr";
+        }
+        if (bt.kind is TypeKind.EnumKind) {
+            // An inline enum payload that transitively contains the owning
+            // structure is an infinite value layout — reported as
+            // E_SIZE_CYCLE by the layout builder; use a reference class or
+            // Box<T> for deliberate indirection.
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.enum_def) {
+                let e: BoundEnumDefinition = bt.type_definition.some.enum_def;
+                if (cast<i64>(e.generic_params.size()) > 0 && cast<i64>(bt.generic_args.size()) > 0) {
+                    let spec_e: Option<BoundEnumDefinition> = this.lookup_specialized_enum(this.resolve_type_layout_name(bt));
+                    if (spec_e.is_some()) {
+                        return this.enum_def_field_llvm(spec_e.some);
+                    }
+                    return "i64";
+                }
+                return this.enum_def_field_llvm(e);
+            }
+            return "i64";
+        }
+        return this.bound_type_to_llvm_type(bt);
+    }
+
+    fun class_def_field_llvm(mut this, cls: BoundClassDefinition) -> string {
+        if (cls.is_generic_template) { return "ptr"; }
+        // A REFERENCE class field is a pointer — type it WITHOUT ensuring the
+        // class layout: a ref class may legally contain itself through an enum
+        // payload (linked list), and re-entering its in-progress layout would
+        // falsely report a size cycle. Only INLINE (value-type) nesting needs
+        // the layout, and that is where a cycle is genuinely infinite.
+        if (!this.effective_class_value(cls)) { return "ptr"; }
+        let ensured: Option<ClassLayout> = this.ensure_class_layout(cls);
+        if (ensured.is_some()) {
+            if (ensured.some.is_value_type) {
+                return ensured.some.llvm_struct_type;
+            }
+            return "ptr";
+        }
+        return "ptr";
+    }
+
+    // The value/ref classification of a class def as the EMITTER must see it.
+    // Some specialization paths hand the emitter a DUPLICATE bound def (same
+    // full_name, full fields, but never walked by the classification pass, so
+    // is_value_class is none). Resolve the classification through the unit tree
+    // def registered under the same name before falling back to value (the
+    // historical default).
+    fun effective_class_value(this, cls: BoundClassDefinition) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (cls.is_value_class.is_some()) { return cls.is_value_class.some; }
+        if (em.current_unit.is_some()) {
+            let found: Option<bool> = this.find_classified_value_in_unit(em.current_unit.some.definitions, cls);
+            if (found.is_some()) {
+                return found.some;
+            }
+        }
+        return true;
+    }
+
+    // A same-named def that pass 7 actually classified (duplicates created by
+    // on-demand specialization paths can carry is_value_class none while the
+    // canonical def in the tree is classified). Prefer any classified def over
+    // defaulting an unclassified duplicate to value — the two readers
+    // (byte_size via the def, this fallback) must agree or List slot strides
+    // diverge from the emitted struct layouts (buffer overflow).
+    // A SPECIALIZED def is identified by its mangled NAME (full_name still
+    // names the template), so match those by name.
+    fun find_classified_value_in_unit(this, defs: _utils.List<BoundDefinition>, cls: BoundClassDefinition) -> Option<bool> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                let d: BoundClassDefinition = def.class_def;
+                let matches: bool = if (cls.is_specialized) {
+                    d.is_specialized && d.name == cls.name
+                } else {
+                    d.full_name == cls.full_name
+                };
+                if (matches && d.is_value_class.is_some()) {
+                    return new Option<bool>.some(d.is_value_class.some);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let nested: Option<bool> = this.find_classified_value_in_unit(def.namespace_def.children, cls);
+                if (nested.is_some()) { return nested; }
+            }
+            i = i + 1;
+        }
+        return new Option<bool>.none();
+    }
+
+    fun find_class_def_in_unit(this, defs: _utils.List<BoundDefinition>, full_name: string) -> Option<BoundClassDefinition> {
+        let i: mut i64 = 0;
+        while (i < cast<i64>(defs.size())) {
+            let def: BoundDefinition = defs.at(cast<u64>(i)).some;
+            if (def is BoundDefinition.class_def) {
+                if (def.class_def.full_name == full_name) {
+                    return new Option<BoundClassDefinition>.some(def.class_def);
+                }
+            }
+            if (def is BoundDefinition.namespace_def) {
+                let nested: Option<BoundClassDefinition> = this.find_class_def_in_unit(def.namespace_def.children, full_name);
+                if (nested.is_some()) { return nested; }
+            }
+            i = i + 1;
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    fun enum_def_field_llvm(mut this, e: BoundEnumDefinition) -> string {
+        if (cast<i64>(e.generic_params.size()) == 0) {
+            let ensured: Option<EnumLayout> = this.ensure_enum_layout(e);
+            if (ensured.is_some()) {
+                return ensured.some.llvm_struct_type;
+            }
+        }
+        __builtin.eprintln("error[E_INTERNAL]: Enum layout not found in field_type_to_llvm"); __builtin.exit(1);
+        return "i64";
+    }
+
+    // Resolve a specialized class def by its layout name (the unified mangle)
+    // via the compilation unit's global scope.
+    fun lookup_specialized_class(this, layout_name: string) -> Option<BoundClassDefinition> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (em.current_unit.is_none()) { return new Option<BoundClassDefinition>.none(); }
+        let sym: Option<BoundSymbol> = em.current_unit.some.global_scope.lookup_type_in_scope(layout_name);
+        if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym.some.type_sym.bound_type;
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.class_def) {
+                return new Option<BoundClassDefinition>.some(bt.type_definition.some.class_def);
+            }
+        }
+        return new Option<BoundClassDefinition>.none();
+    }
+
+    // Resolve a specialized enum def by its layout name (the unified mangle)
+    // via the compilation unit's global scope.
+    fun lookup_specialized_enum(this, layout_name: string) -> Option<BoundEnumDefinition> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (em.current_unit.is_none()) { return new Option<BoundEnumDefinition>.none(); }
+        let sym: Option<BoundSymbol> = em.current_unit.some.global_scope.lookup_type_in_scope(layout_name);
+        if (sym.is_some() && sym.some is BoundSymbol.type_sym) {
+            let bt: BoundType = sym.some.type_sym.bound_type;
+            if (bt.type_definition.is_some() && bt.type_definition.some is BoundDefinition.enum_def) {
+                return new Option<BoundEnumDefinition>.some(bt.type_definition.some.enum_def);
+            }
+        }
+        return new Option<BoundEnumDefinition>.none();
+    }
+
+    fun find_class_layout(this, type_name: string) -> Option<ClassLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_class_layout(type_name=" + cast<string>(type_name) + ")");
+ }
+        // Memoized: value = index+1, 0 = confirmed miss, -1 = never queried.
+        // Cleared wholesale by ensure_class_layout when a layout is CREATED —
+        // a miss memoized before the layout existed must not survive it.
+        let m: i64 = em.fcl_memo.get(type_name, -1);
+        if (m >= 0) {
+            if (m == 0) { return new Option<ClassLayout>.none(); }
+            return new Option<ClassLayout>.some(em.class_layouts.at(cast<u64>(m - 1)).some);
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.class_layouts.size())) {
+            let layout: ClassLayout = em.class_layouts.at(cast<u64>(i)).some;
+            if (layout.type_name == type_name) {
+                em.fcl_memo.set(type_name, i + 1);
+                return new Option<ClassLayout>.some(layout);
+            }
+            i = i + 1;
+        }
+        // Suffix match: simple name "Point" matches "__ns.Point" (char-code
+        // compare — the substring pair allocated two strings per entry).
+        let tn_len: i64 = string_length(type_name);
+        i = 0;
+        while (i < cast<i64>(em.class_layouts.size())) {
+            let layout: ClassLayout = em.class_layouts.at(cast<u64>(i)).some;
+            let ln: i64 = string_length(layout.type_name);
+            if (ln > tn_len
+                && string_char_code_at(layout.type_name, ln - tn_len - 1) == 46
+                && string_suffix_eq(layout.type_name, type_name)) {
+                em.fcl_memo.set(type_name, i + 1);
+                return new Option<ClassLayout>.some(layout);
+            }
+            i = i + 1;
+        }
+        // Reverse suffix match: "_utils.List__string" matches layout "List__string"
+        let dot_pos: mut i64 = -1;
+        let si: mut i64 = 0;
+        while (si < string_length(type_name)) {
+            if (string_char_code_at(type_name, si) == 46) {
+                dot_pos = si;
+            }
+            si = si + 1;
+        }
+        if (dot_pos >= 0) {
+            let short_name: string = string_substring(type_name, dot_pos + 1, string_length(type_name) - dot_pos - 1);
+            i = 0;
+            while (i < cast<i64>(em.class_layouts.size())) {
+                let layout: ClassLayout = em.class_layouts.at(cast<u64>(i)).some;
+                if (layout.type_name == short_name) {
+                    em.fcl_memo.set(type_name, i + 1);
+                    return new Option<ClassLayout>.some(layout);
+                }
+                i = i + 1;
+            }
+        }
+        em.fcl_memo.set(type_name, 0);
+        return new Option<ClassLayout>.none();
+    }
+
+    fun find_enum_layout(this, type_name: string) -> Option<EnumLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_enum_layout(type_name=" + cast<string>(type_name) + ")");
+ }
+        // Memoized like find_class_layout (index+1 / 0=miss / -1=unqueried);
+        // cleared when ensure_enum_layout creates a layout.
+        let m: i64 = em.fel_memo.get(type_name, -1);
+        if (m >= 0) {
+            if (m == 0) { return new Option<EnumLayout>.none(); }
+            return new Option<EnumLayout>.some(em.enum_layouts.at(cast<u64>(m - 1)).some);
+        }
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.enum_layouts.size())) {
+            let layout: EnumLayout = em.enum_layouts.at(cast<u64>(i)).some;
+            if (layout.type_name == type_name) {
+                em.fel_memo.set(type_name, i + 1);
+                return new Option<EnumLayout>.some(layout);
+            }
+            i = i + 1;
+        }
+        // Suffix match: simple name "Color" matches "__ns.Color" (char-code
+        // compare — no substring allocations).
+        let tn_len: i64 = string_length(type_name);
+        i = 0;
+        while (i < cast<i64>(em.enum_layouts.size())) {
+            let layout: EnumLayout = em.enum_layouts.at(cast<u64>(i)).some;
+            let ln: i64 = string_length(layout.type_name);
+            if (ln > tn_len
+                && string_char_code_at(layout.type_name, ln - tn_len - 1) == 46
+                && string_suffix_eq(layout.type_name, type_name)) {
+                em.fel_memo.set(type_name, i + 1);
+                return new Option<EnumLayout>.some(layout);
+            }
+            i = i + 1;
+        }
+        // Reverse suffix match: "_utils.Option__string" matches layout "Option__string"
+        let dot_pos: mut i64 = -1;
+        let si: mut i64 = 0;
+        while (si < string_length(type_name)) {
+            if (string_char_code_at(type_name, si) == 46) {
+                dot_pos = si;
+            }
+            si = si + 1;
+        }
+        if (dot_pos >= 0) {
+            let short_name: string = string_substring(type_name, dot_pos + 1, string_length(type_name) - dot_pos - 1);
+            i = 0;
+            while (i < cast<i64>(em.enum_layouts.size())) {
+                let layout: EnumLayout = em.enum_layouts.at(cast<u64>(i)).some;
+                if (layout.type_name == short_name) {
+                    em.fel_memo.set(type_name, i + 1);
+                    return new Option<EnumLayout>.some(layout);
+                }
+                i = i + 1;
+            }
+        }
+        em.fel_memo.set(type_name, 0);
+        return new Option<EnumLayout>.none();
+    }
+
+    fun extract_type_name(this, ir_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter extract_type_name(ir_type=" + ir_type + ")");
+ }
+        // Parse "ref<X>", "mut ref<X>" or "enum<X>" → "X"
+        if (em.string_starts_with(ir_type, "mut ref<")) {
+            return string_substring(ir_type, 8, string_length(ir_type) - 9);
+        }
+        if (em.string_starts_with(ir_type, "ref<")) {
+            return string_substring(ir_type, 4, string_length(ir_type) - 5);
+        }
+        if (em.string_starts_with(ir_type, "enum<")) {
+            return string_substring(ir_type, 5, string_length(ir_type) - 6);
+        }
+        return ir_type;
+    }
+
+    // True for BOTH "ref<X>" and "mut ref<X>" — mutability is a compile-time
+    // permission and never changes storage decisions.
+    fun is_any_ref_ir_type(this, ir_type: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        return em.string_starts_with(ir_type, "ref<") || em.string_starts_with(ir_type, "mut ref<");
+    }
+
+    // Strip the harmless "mut " permission prefix the IR layer keeps on
+    // mutable bindings ("mut ref<X>" -> "ref<X>"). Storage decisions must be
+    // mutability-independent.
+    fun strip_mut_ir_prefix(this, ir_type: string) -> string {
+        // Char-code prefix test — the substring(0,4) comparison allocated a
+        // fresh 4-char string on EVERY call (hot: every type classification).
+        if (string_length(ir_type) >= 4) {
+            if (string_char_code_at(ir_type, 0) == 109  // 'm'
+                && string_char_code_at(ir_type, 1) == 117  // 'u'
+                && string_char_code_at(ir_type, 2) == 116  // 't'
+                && string_char_code_at(ir_type, 3) == 32) { // ' '
+                return string_substring(ir_type, 4, string_length(ir_type) - 4);
+            }
+        }
+        return ir_type;
+    }
+
+    // If `ir_type` ("ref<X>" / "mut ref<X>") names a VALUE class, return its
+    // inline LLVM struct type ("%class.X") — the storage type for value-copy
+    // slots (mutable-reg allocas, globals, binding copies). Reference
+    // classes / strings / unknown return "" (pointer storage).
+    fun value_class_struct_type(mut this, ir_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (!em.string_starts_with(t, "ref<") && !em.gcscan.maybe_class_ir_type(t)) {
+            return "";
+        }
+        // (maybe_class_ir_type admits bare / fully-qualified value-class
+        // spellings — a struct-typed field or local: "SourceLocation" carries
+        // a filename string — so the struct-home path can slot them too.)
+        let type_name: string = this.extract_type_name(t);
+        let found: Option<ClassLayout> =
+            this.find_class_layout_ensured(type_name, !em.string_starts_with(t, "ref<"));
+        if (found.is_some()) {
+            if (found.some.is_value_type) {
+                return found.some.llvm_struct_type;
+            }
+        }
+        return "";
+    }
+
+    // find_class_layout with a lazy ensure pass for spellings the direct
+    // lookup may miss (bare/qualified names whose layout was not built yet).
+    // ref<>-spelled callers pass allow_ensure=false to keep the historical
+    // find-only behavior.
+    fun find_class_layout_ensured(mut this, name: string, allow_ensure: bool) -> Option<ClassLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let found: Option<ClassLayout> = this.find_class_layout(name);
+        if (found.is_none() && allow_ensure) {
+            em.gcscan.ensure_gc_layout(name, true);
+            return this.find_class_layout(name);
+        }
+        return found;
+    }
+
+    fun is_value_class_ref(this, ir_type: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_value_class_ref(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        // "mut ref<X>" must hit too: a MUTABLE value-class binding spells the
+        // return type "mut ref<X>", and missing it made needs_sret false — the
+        // callee then `ret ptr`-ed a pointer to its own DEAD stack alloca, which
+        // the next call's frame (same stack addresses) clobbered before the
+        // caller could copy it (trailing fields read back as garbage).
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (!em.string_starts_with(t, "ref<")) { return false; }
+        let type_name: string = this.extract_type_name(t);
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_some()) { return found.some.is_value_type; }
+        return false;
+    }
+
+    // Determine whether a return type needs sret (RVO). Both value-type classes
+    // (ref<ValueClass>) and enums (enum<...>) always use sret, so that their
+    // LLVM codegen behavior is uniform and consistent. Extern functions are
+    // excluded by the caller (emit_function checks !func.is_extern).
+    fun needs_sret(this, ir_type: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter needs_sret(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        if (this.is_value_class_ref(ir_type)) { return true; }
+        if (em.string_starts_with(ir_type, "enum<")) {
+            let llvm_type: string = this.ir_type_to_llvm(ir_type);
+            if (em.string_starts_with(llvm_type, "%enum.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Get the LLVM struct type used for sret, for both value-type classes and
+    // enums.
+    fun get_sret_llvm_type(this, ir_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_sret_llvm_type(ir_type=" + ir_type + ")");
+ }
+        // Accept "mut ref<X>" like is_value_class_ref (same "mut " spelling).
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (em.string_starts_with(t, "ref<")) {
+            let type_name: string = this.extract_type_name(t);
+            let found: Option<ClassLayout> = this.find_class_layout(type_name);
+            if (found.is_some()) { return found.some.llvm_struct_type; }
+            return "";
+        }
+        if (em.string_starts_with(ir_type, "enum<")) {
+            return this.ir_type_to_llvm(ir_type);
+        }
+        return "";
+    }
+
+    fun get_value_class_llvm_struct_type(this, ir_type: string) -> string {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_value_class_llvm_struct_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        let type_name: string = this.extract_type_name(ir_type);
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_some()) { return found.some.llvm_struct_type; }
+        return "";
+    }
+
+    // --- BoundType to LLVM type ---
+
+    fun bound_type_to_llvm_type(this, bt: BoundType) -> string {
+        _utils.trace_enter("Enter bound_type_to_llvm_type");
+        if (bt.kind is TypeKind.PrimitiveKind) {
+            return this.primitive_to_llvm(bt.primitive);
+        }
+        if (bt.kind is TypeKind.ClassKind) {
+            return this.class_type_to_llvm(bt);
+        }
+        if (bt.kind is TypeKind.EnumKind) {
+            let name: string = this.resolve_type_layout_name(bt);
+            let found: Option<EnumLayout> = this.find_enum_layout(name);
+            if (found.is_some()) {
+                return found.some.llvm_struct_type;
+            }
+            __builtin.eprintln("error[E_INTERNAL]: Enum layout not found in bound_type_to_llvm_type"); __builtin.exit(1);
+            return "i64";
+        }
+        if (bt.kind is TypeKind.InterfaceKind) {
+            // An interface value is a heap object reference: a plain pointer.
+            // (Interface-typed fields, e.g. MergeChannel's `a: mut ISource<T>`,
+            // must not abort layout building.)
+            return "ptr";
+        }
+        return "ptr";
+    }
+
+    fun resolve_type_layout_name(this, bt: BoundType) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter resolve_type_layout_name");
+        if (let def := bt.type_definition.some) {
+            if (def is BoundDefinition.class_def) {
+                let cls: BoundClassDefinition = def.class_def;
+                if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(cls.generic_params.size()) > 0) {
+                    // Full base feeds the mangle (encodes the qualified name).
+                    return this.compute_mangled_name(cls.full_name, bt);
+                }
+                return em.globals.strip_global_prefix(cls.full_name);
+            }
+            if (def is BoundDefinition.enum_def) {
+                let e: BoundEnumDefinition = def.enum_def;
+                if (cast<i64>(bt.generic_args.size()) > 0 && cast<i64>(e.generic_params.size()) > 0) {
+                    return this.compute_mangled_name(e.full_name, bt);
+                }
+                return em.globals.strip_global_prefix(e.full_name);
+            }
+        }
+        return bt.display_name();
+    }
+
+    fun compute_mangled_name(this, base_name: string, bt: BoundType) -> string {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter compute_mangled_name(base_name=" + cast<string>(base_name) + ")");
+ }
+        // The unified mangle (BoundType.penguin mangle_specialization) — must
+        // stay byte-identical to SemanticModel.mangle_generic_name.
+        return mangle_specialization(base_name, bt.generic_args);
+    }
+
+    fun class_type_to_llvm(this, bt: BoundType) -> string {
+        _utils.trace_enter("Enter class_type_to_llvm");
+        let name: string = this.resolve_type_layout_name(bt);
+        let found: Option<ClassLayout> = this.find_class_layout(name);
+        if (found.is_some()) {
+            if (found.some.is_value_type) {
+                return found.some.llvm_struct_type;
+            } else {
+                return "ptr";
+            }
+        }
+        return "ptr";
+    }
+
+    fun primitive_to_llvm(this, p: PrimitiveType) -> string {
+        _utils.trace_enter("Enter primitive_to_llvm");
+        if (p is PrimitiveType.I8) { return "i8"; }
+        if (p is PrimitiveType.I16) { return "i16"; }
+        if (p is PrimitiveType.I32) { return "i32"; }
+        if (p is PrimitiveType.I64) { return "i64"; }
+        if (p is PrimitiveType.U8) { return "i8"; }
+        if (p is PrimitiveType.U16) { return "i16"; }
+        if (p is PrimitiveType.U32) { return "i32"; }
+        if (p is PrimitiveType.U64) { return "i64"; }
+        if (p is PrimitiveType.F32) { return "float"; }
+        if (p is PrimitiveType.F64) { return "double"; }
+        if (p is PrimitiveType.BoolType) { return "i8"; }
+        if (p is PrimitiveType.CharType) { return "i32"; }
+        if (p is PrimitiveType.StringType) { return "ptr"; }
+        if (p is PrimitiveType.VoidType) { return "void"; }
+        return "ptr";
+    }
+
+    // --- Type size/align helpers ---
+
+    fun llvm_type_size(this, llvm_type: string) -> i64 {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter llvm_type_size(llvm_type=" + cast<string>(llvm_type) + ")");
+ }
+        if (llvm_type == "i8") { return 1; }
+        if (llvm_type == "i16") { return 2; }
+        if (llvm_type == "i32") { return 4; }
+        if (llvm_type == "i64") { return 8; }
+        if (llvm_type == "float") { return 4; }
+        if (llvm_type == "double") { return 8; }
+        if (llvm_type == "ptr") { return 8; }
+        // Check class layouts for value-type struct sizes
+        if (em.string_starts_with(llvm_type, "%class.")) {
+            let name: string = string_substring(llvm_type, 7, string_length(llvm_type) - 7);
+            let found: Option<ClassLayout> = this.find_class_layout(name);
+            if (found.is_some()) {
+                if (found.some.is_building) { this.size_cycle_error(found.some.type_name); }
+                return found.some.sizeof_object;
+            }
+        }
+        if (em.string_starts_with(llvm_type, "%enum.")) {
+            let name: string = string_substring(llvm_type, 6, string_length(llvm_type) - 6);
+            let found_enum: Option<EnumLayout> = this.find_enum_layout(name);
+            if (found_enum.is_some()) {
+                if (found_enum.some.is_building) { this.size_cycle_error(found_enum.some.type_name); }
+                // Enum struct = { ptr metadata, i32|i64 tag, [N x i8] payload }.
+                // The tag is i64 exactly when the payload is 8-aligned, so the
+                // alignment-1 byte array sits where the old typed layout put
+                // the payload: align_up(12, payload_align). Keep this in sync
+                // with emit_type_definitions and BoundType.byte_size_rec.
+                if (found_enum.some.has_payload) {
+                    if (string_length(found_enum.some.payload_llvm_type) > 0) {
+                        let payload_size: i64 = this.llvm_type_size(found_enum.some.payload_llvm_type);
+                        return this.align_up(16 + payload_size, 8);
+                    }
+                }
+                return 16;
+            }
+        }
+        return 8;
+    }
+
+    fun llvm_type_align(this, llvm_type: string) -> i64 {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter llvm_type_align(llvm_type=" + cast<string>(llvm_type) + ")");
+ }
+        if (llvm_type == "i8") { return 1; }
+        if (llvm_type == "i16") { return 2; }
+        if (llvm_type == "i32") { return 4; }
+        if (llvm_type == "i64") { return 8; }
+        if (llvm_type == "float") { return 4; }
+        if (llvm_type == "double") { return 8; }
+        if (llvm_type == "ptr") { return 8; }
+        // Struct types have 8-byte alignment
+        if (em.string_starts_with(llvm_type, "%class.") || em.string_starts_with(llvm_type, "%enum.")) {
+            return 8;
+        }
+        return 8;
+    }
+
+    fun align_up(this, offset: i64, alignment: i64) -> i64 {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter align_up(offset=" + cast<string>(offset) + ", alignment=" + cast<string>(alignment) + ")");
+ }
+        if (alignment <= 1) { return offset; }
+        let remainder: i64 = offset % alignment;
+        if (remainder == 0) { return offset; }
+        return offset + alignment - remainder;
+    }
+
+    fun find_class_field_layout(this, type_name: string, field_name: string) -> Option<FieldLayout> {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_class_field_layout(type_name=" + cast<string>(type_name) + ", field_name=" + cast<string>(field_name) + ")");
+ }
+        let found: Option<ClassLayout> = this.find_class_layout(type_name);
+        if (found.is_none()) { return new Option<FieldLayout>.none(); }
+        let layout: ClassLayout = found.some;
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(layout.fields.size())) {
+            let f: FieldLayout = layout.fields.at(cast<u64>(fi)).some;
+            if (f.field_name == field_name) {
+                return new Option<FieldLayout>.some(f);
+            }
+            fi = fi + 1;
+        }
+        return new Option<FieldLayout>.none();
+    }
+
+    fun compute_enum_struct_size(mut this, layout: EnumLayout) -> i64 {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter compute_enum_struct_size(layout=" + layout.to_string() + ")");
+ }
+        // { ptr metadata(8) @0, i32|i64 tag @8, payload @align_up(12, align) },
+        // total size aligned to 8 — mirrors llvm_type_size /
+        // emit_type_definitions (the tag is i64 exactly for 8-aligned payloads,
+        // so the alignment-1 byte-array member lands at the same offset the old
+        // typed layout used).
+        if (!layout.has_payload || string_length(layout.payload_llvm_type) == 0) {
+            return 16;
+        }
+        let payload_size: i64 = this.llvm_type_size(layout.payload_llvm_type);
+        return this.align_up(16 + payload_size, 8);
+    }
+
+    // If `payload_ir_type` (a variant's payload IR type, e.g. "ref<Point>" /
+    // "mut ref<Point>") names a VALUE-type class, return its layout — the
+    // variant's payload is stored INLINE in the enum's union slot. Reference
+    // classes return none (their payload is a pointer in the slot). The
+    // "mut " permission prefix is stripped first: layout is
+    // mutability-independent.
+    fun value_class_payload_layout(this, payload_ir_type: string) -> Option<ClassLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let t: string = this.strip_mut_ir_prefix(payload_ir_type);
+        if (em.string_starts_with(t, "ref<")) {
+            let name: string = this.extract_type_name(t);
+            let found: Option<ClassLayout> = this.find_class_layout(name);
+            if (found.is_some()) {
+                if (found.some.is_value_type) {
+                    return found;
+                }
+            }
+        }
+        return new Option<ClassLayout>.none();
+    }
+
+    fun ir_type_to_llvm(this, ir_type: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter ir_type_to_llvm(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        if (ir_type == "i8") { return "i8"; }
+        if (ir_type == "i16") { return "i16"; }
+        if (ir_type == "i32") { return "i32"; }
+        if (ir_type == "i64") { return "i64"; }
+        if (ir_type == "u8") { return "i8"; }
+        if (ir_type == "u16") { return "i16"; }
+        if (ir_type == "u32") { return "i32"; }
+        if (ir_type == "u64") { return "i64"; }
+        if (ir_type == "f32") { return "float"; }
+        if (ir_type == "f64") { return "double"; }
+        if (ir_type == "bool") { return "i8"; }
+        if (ir_type == "char") { return "i32"; }
+        if (ir_type == "void") { return "void"; }
+        if (ir_type == "ptr") { return "ptr"; }
+        if (ir_type == "funptr") { return "ptr"; }
+        // Native arrays `array<X>` are reference objects — a bare ptr in LLVM,
+        // whatever the element spelling is. MUST precede the enum branch: an
+        // Arrays spell "array<X>" and are references → ptr. The check must
+        // precede the enum/ref/struct prefix branches: an "array<enum<X>>"
+        // spelling would otherwise hijack into a (never-found) layout lookup
+        // and silently degrade the type to i64.
+        if (em.string_starts_with(ir_type, "array<")) { return "ptr"; }
+        // ref<...> / mut ref<...> → ptr
+        if (this.is_any_ref_ir_type(ir_type)) { return "ptr"; }
+        // enum<...> → struct type if layout available, else i64
+        if (em.string_starts_with(ir_type, "enum<")) {
+            let type_name: string = this.extract_type_name(ir_type);
+            let found: Option<EnumLayout> = this.find_enum_layout(type_name);
+            if (found.is_some()) {
+                return found.some.llvm_struct_type;
+            }
+            return "i64";
+        }
+        return "ptr";
+    }
+
+    fun is_string_type(this, ir_type: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_string_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        // Exact spelling "ref<string>" only (callers strip "mut " before
+        // consulting — see is_ref_type), compared by char codes — zero
+        // allocation (the old prefix-loop + substring allocated a 1-char
+        // string per position plus the content slice).
+        if (string_length(ir_type) != 11) { return false; }
+        let i: mut i64 = 0;
+        while (i < 11) {
+            if (string_char_code_at(ir_type, i) != string_char_code_at("ref<string>", i)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    fun is_bool_type(this, ir_type: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_bool_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        return ir_type == "bool";
+    }
+
+    fun is_enum_type(this, ir_type: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_enum_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        if (string_length(ir_type) >= 5) {
+            let prefix: string = "enum<";
+            let i: mut i64 = 0;
+            while (i < 5) {
+                if (string_char_at(ir_type, i) != string_char_at(prefix, i)) { return false; }
+                i = i + 1;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Get the payload LLVM type for an enum struct type like "%enum.bound.BoundSymbol"
+    // Returns "ptr" by default (reference-type payload)
+    fun get_enum_payload_type(this, llvm_struct_type: string) -> string {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter get_enum_payload_type(llvm_struct_type=" + cast<string>(llvm_struct_type) + ")");
+ }
+        let type_name: string = string_substring(llvm_struct_type, 6, string_length(llvm_struct_type) - 6);
+        let found: Option<EnumLayout> = this.find_enum_layout(type_name);
+        if (let layout := found.some) {
+            if (layout.has_payload) {
+                if (string_length(layout.payload_llvm_type) > 0) {
+                    return layout.payload_llvm_type;
+                }
+            }
+        }
+        return "ptr";
+    }
+
+    // Find class layout by LLVM struct type (e.g., "%class.bound.BoundScope")
+    fun find_class_layout_by_llvm(this, llvm_type: string) -> Option<ClassLayout> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_class_layout_by_llvm(llvm_type=" + cast<string>(llvm_type) + ")");
+ }
+        if (!em.string_starts_with(llvm_type, "%class.")) {
+            return new Option<ClassLayout>.none();
+        }
+        let type_name: string = string_substring(llvm_type, 7, string_length(llvm_type) - 7);
+        return this.find_class_layout(type_name);
+    }
+
+    // Find class field layout using a ClassLayout directly
+    fun find_class_field_layout_llvm(this, layout: ClassLayout, field_name: string) -> Option<FieldLayout> {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_class_field_layout_llvm(layout=" + layout.to_string() + ", field_name=" + cast<string>(field_name) + ")");
+ }
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(layout.fields.size())) {
+            let fl: FieldLayout = layout.fields.at(cast<u64>(fi)).some;
+            if (fl.field_name == field_name) {
+                return new Option<FieldLayout>.some(fl);
+            }
+            fi = fi + 1;
+        }
+        return new Option<FieldLayout>.none();
+    }
+
+    fun is_ref_type(this, ir_type: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_ref_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        // bound_type_to_ir_type spells MUTABLE class bindings "mut ref<X>" —
+        // strip that prefix before matching, or every `mut` reference-class
+        // GLOBAL (e.g. the meta host's pending_specialize_args / active_model)
+        // is silently skipped by emit_main's GC-root registration and swept by
+        // the collector the moment no live stack frame references it: the
+        // global then dangles (meta JIT path read a freed List → SIGSEGV /
+        // silently re-specialized with garbage value args).
+        // Char-code compares throughout — the old substring/char_at pairs
+        // allocated on every call, and this predicate gates every register
+        // classification.
+        let t: string = this.strip_mut_ir_prefix(ir_type);
+        if (string_length(t) < 5) { return false; }
+        if (string_char_code_at(t, 0) != 114) { return false; } // 'r'
+        if (string_char_code_at(t, 1) != 101) { return false; } // 'e'
+        if (string_char_code_at(t, 2) != 102) { return false; } // 'f'
+        if (string_char_code_at(t, 3) != 60) { return false; }  // '<'
+        return true;
+    }
+
+    fun is_int_type(this, ir_type: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_int_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        if (ir_type == "i8") { return true; }
+        if (ir_type == "i16") { return true; }
+        if (ir_type == "i32") { return true; }
+        if (ir_type == "i64") { return true; }
+        if (ir_type == "u8") { return true; }
+        if (ir_type == "u16") { return true; }
+        if (ir_type == "u32") { return true; }
+        if (ir_type == "u64") { return true; }
+        return false;
+    }
+
+    fun is_float_type(this, ir_type: string) -> bool {
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter is_float_type(ir_type=" + cast<string>(ir_type) + ")");
+ }
+        if (ir_type == "f32") { return true; }
+        if (ir_type == "f64") { return true; }
+        return false;
+    }
+}
+
+}

@@ -1,8 +1,11 @@
 // Top-level elaboration of the LSP session skeleton (the design doc's
-// static half): StdioStream ↔ JsonInputParser ↔ LspMain ↔ JsonOutputParser.
-// The dynamic half — per-document LspCompilationUnits — is instantiated by
-// LspMain on didOpen and wired through its own Fifo channels (results
-// registered into JsonOutputParser's MultiInput fan-in at runtime).
+// static half): StdioStream ↔ JsonInputParser ↔ LspMain ↔ JsonOutputParser,
+// plus the single compile actor (LspCompileActor, batch 4.4) — created
+// here statically and handed to LspMain, which attaches its output port
+// into JsonOutputParser's MultiInput fan-in at construction (every
+// compile-produced response and publishDiagnostics frame flows through it;
+// per-document actor modules are gone — the compile actor serializes all
+// incremental transactions and queries).
 //
 // Backpressure end to end (zero flow-control code anywhere): a client that
 // stops reading fills the stdout pipe → StdioStream's writer parks on fd 1
@@ -14,7 +17,8 @@ construct {
     let stdio : mut lsp.StdioStream = new lsp.StdioStream();
     let parser : mut lsp.JsonInputParser = new lsp.JsonInputParser();
     let outp : mut lsp.JsonOutputParser = new lsp.JsonOutputParser();
-    let main : mut lsp.LspMain = new lsp.LspMain(outp);
+    let compiler : mut lsp.LspCompileActor = new lsp.LspCompileActor();
+    let main : mut lsp.LspMain = new lsp.LspMain(outp, compiler);
 
     connect(stdio.rx, parser.chunks);
     connect(parser.session, main.session);

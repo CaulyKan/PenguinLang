@@ -155,24 +155,43 @@ namespace _utils {
         }
     }
 
-    // String-keyed hash map (string -> i64) for the compiler's hot name
+    // String-keyed hash map (string -> V) for the compiler's hot name
     // lookups (layout tables, per-function register/alloca sets, memoized
     // finders). Chained buckets over dense parallel arrays; the hash is
     // djb2 over string_char_code_at — ZERO allocation per probe (a
     // list_contains/linear-scan replacement: those pay one string content
-    // compare per element, which dominated the emitter profile). Values
-    // must be non-negative; get() returns -1 on miss.
+    // compare per element, which dominated the emitter profile).
+    //
+    // The value type is generic (V): the existing compiler call sites are
+    // all StrMap<i64> with the "-1 = miss" convention — they pass the miss
+    // value explicitly to get(key, miss_value), which keeps the semantics
+    // byte-identical to the old non-generic map (some sites store index+1
+    // so 0 is a REAL value and only the caller-chosen miss_value means
+    // "absent"). key_list/val_list are the insertion-ordered parallel
+    // arrays (keys() exposes them); the buckets only accelerate lookup.
+    //
+    // Buckets grow dynamically: the table starts at 8 heads and doubles
+    // whenever the load factor would exceed 0.75 (integer arithmetic
+    // (count+1)*4 > cap*3), re-threading the chains. get() results never
+    // depend on the bucket count (same djb2 hash, only the mask changes),
+    // and the insertion order of key_list/val_list is untouched by a
+    // rehash — keys() output is therefore deterministic for a given
+    // insertion sequence, independent of capacity growth (the old fixed
+    // 256-bucket table chained ~64 deep at EP scale; the load factor keeps
+    // expected chain length under 0.75).
+    #template(V: type)
     class StrMap {
         impl __builtin.IReferenceType;
         heads: mut _utils.List<i64> = new _utils.List<i64>();
         next: mut _utils.List<i64> = new _utils.List<i64>();
-        keys: mut _utils.List<string> = new _utils.List<string>();
-        vals: mut _utils.List<i64> = new _utils.List<i64>();
+        key_list: mut _utils.List<string> = new _utils.List<string>();
+        val_list: mut _utils.List<V> = new _utils.List<V>();
         count: mut i64 = 0;
+        mask: mut i64 = 7;
 
         fun new(mut this) {
             let i: mut i64 = 0;
-            while (i < 256) {
+            while (i < 8) {
                 this.heads.push(-1);
                 i = i + 1;
             }
@@ -191,38 +210,96 @@ namespace _utils {
             return (h ^ __builtin.rshift(h, 33)) & 1073741823;
         }
 
-        fun get(this, key: string) -> i64 {
-            let b: i64 = this.hash(key) & 255;
+        fun get(this, key: string, miss_value: V) -> V {
+            let b: i64 = this.hash(key) & this.mask;
             let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
             while (i >= 0) {
-                if (this.keys.at_unchecked(cast<u64>(i)) == key) {
-                    return this.vals.at_unchecked(cast<u64>(i));
+                if (this.key_list.at_unchecked(cast<u64>(i)) == key) {
+                    return this.val_list.at_unchecked(cast<u64>(i));
                 }
                 i = this.next.at_unchecked(cast<u64>(i));
             }
-            return -1;
+            return miss_value;
         }
 
-        // NOTE: `this` (not `mut this`) — the buckets/keys/vals fields are
-        // declared `mut`, so the map updates through an immutable receiver
-        // too. The emitter's classification predicates are largely non-mut
-        // and memoize through this map; requiring a mutable receiver would
-        // cascade `mut` through the whole predicate call graph.
-        fun set(this, key: string, val: i64) {
-            let b: i64 = this.hash(key) & 255;
+        // miss without a default: none() when absent, some(v) when present.
+        fun get_opt(this, key: string) -> __builtin.Option<V> {
+            let b: i64 = this.hash(key) & this.mask;
             let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
             while (i >= 0) {
-                if (this.keys.at_unchecked(cast<u64>(i)) == key) {
-                    this.vals.set(cast<u64>(i), val);
+                if (this.key_list.at_unchecked(cast<u64>(i)) == key) {
+                    return new __builtin.Option<V>.some(this.val_list.at_unchecked(cast<u64>(i)));
+                }
+                i = this.next.at_unchecked(cast<u64>(i));
+            }
+            return new __builtin.Option<V>.none();
+        }
+
+        // NOTE: `this` (not `mut this`) — the buckets/key_list/val_list
+        // fields are declared `mut`, so the map updates through an
+        // immutable receiver too. The emitter's classification predicates
+        // are largely non-mut and memoize through this map; requiring a
+        // mutable receiver would cascade `mut` through the whole predicate
+        // call graph.
+        fun set(this, key: string, val: V) {
+            let b: mut i64 = this.hash(key) & this.mask;
+            let i: mut i64 = this.heads.at_unchecked(cast<u64>(b));
+            while (i >= 0) {
+                if (this.key_list.at_unchecked(cast<u64>(i)) == key) {
+                    this.val_list.set(cast<u64>(i), val);
                     return;
                 }
                 i = this.next.at_unchecked(cast<u64>(i));
             }
-            this.keys.push(key);
-            this.vals.push(val);
+            // Grow (double the heads) when the load factor would exceed
+            // 0.75; re-thread every chain, then recompute this key's
+            // bucket. key_list/val_list order is untouched.
+            if ((this.count + 1) * 4 > (this.mask + 1) * 3) {
+                this.rehash();
+                b = this.hash(key) & this.mask;
+            }
+            this.key_list.push(key);
+            this.val_list.push(val);
             this.next.push(this.heads.at_unchecked(cast<u64>(b)));
             this.heads.set(cast<u64>(b), this.count);
             this.count = this.count + 1;
+        }
+
+        // Double the bucket array and re-thread the chains (head-insert,
+        // same as set). Chain order is internal — get() scans linearly and
+        // exactly one entry per key exists — so re-threading never changes
+        // any observable result.
+        fun rehash(this) {
+            let new_cap: i64 = (this.mask + 1) * 2;
+            let new_mask: i64 = new_cap - 1;
+            let new_heads: mut _utils.List<i64> = new _utils.List<i64>();
+            let i: mut i64 = 0;
+            while (i < new_cap) {
+                new_heads.push(-1);
+                i = i + 1;
+            }
+            i = 0;
+            while (i < this.count) {
+                let b: i64 = this.hash(this.key_list.at_unchecked(cast<u64>(i))) & new_mask;
+                this.next.set(cast<u64>(i), new_heads.at_unchecked(cast<u64>(b)));
+                new_heads.set(cast<u64>(b), i);
+                i = i + 1;
+            }
+            this.heads = new_heads;
+            this.mask = new_mask;
+        }
+
+        // Insertion-ordered keys (LinkedHashMap-style determinism): the
+        // returned list is the live internal key array — same insertion
+        // sequence yields the same iteration order regardless of how many
+        // rehashes happened along the way. Re-inserting an existing key
+        // updates its value in place and does NOT move it.
+        fun keys(this) -> _utils.List<string> {
+            return this.key_list;
+        }
+
+        fun size(this) -> i64 {
+            return this.count;
         }
     }
 

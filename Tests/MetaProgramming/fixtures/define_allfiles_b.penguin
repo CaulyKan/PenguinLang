@@ -1,0 +1,12 @@
+// Fixture for MetaCliDefineAllFiles.md — compiled BEFORE the md's own source.
+// CLI defines are visible to EVERY file: this fixture gates its own function
+// on the CLI define and also calls the md source's namespace-gated function.
+#if (#defined("CLIDEF")) {
+    fun b_marker() -> string { return "b-sees"; }
+} #else {
+    fun b_marker() -> string { return "b-misses"; }
+}
+initial {
+    println(cast<string>(nsa.a_saw()));
+    println(b_marker());
+}

@@ -3,6 +3,7 @@
 Phase 5a negative test: a `#if (false)` block is dropped entirely, so `ghost()` never enters the compilation. Calling it must fail to compile with an unresolved-symbol error.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

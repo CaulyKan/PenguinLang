@@ -1,0 +1,502 @@
+// Module-level globals concern of the LLVM emitter (batch 0.1 split): string
+// literal collection/emission, global variables, extern declarations (own +
+// runtime) and array metadata globals.
+namespace emperor {
+
+class LLVMGlobals {
+    // Back-reference to the owning emitter (the src/bound pass-class
+    // `model: mut Option<SemanticModel>` pattern): all shared emission
+    // state stays on LLVMEmitter.
+    emitter: mut Option<LLVMEmitter> = new Option<LLVMEmitter>.none();
+
+    fun new(mut this, emitter: mut LLVMEmitter) {
+        this.emitter = new Option<LLVMEmitter>.some(emitter);
+    }
+
+
+    // --- Pass 1: collect string literals ---
+
+    fun collect_strings(mut this, module: IRModule) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter collect_strings(module=" + module.to_string() + ")");
+ }
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
+            if (!func.is_extern) {
+                this.collect_strings_in_func(func);
+            }
+            fi = fi + 1;
+        }
+        // Collect strings from global variable initializers
+        let gi: mut i64 = 0;
+        while (gi < cast<i64>(module.global_variables.size())) {
+            let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gi)).some;
+            if (em.types.is_string_type(gv.ir_type) && gv.initializer_value != "null" && gv.initializer_value != "") {
+                let val: string = strip_string_quotes(gv.initializer_value);
+                if (this.find_string_lit(val).is_none()) {
+                    let id: i64 = em.next_str_id;
+                    em.next_str_id = em.next_str_id + 1;
+                    em.string_lits.push(new StringLitEntry(id, val));
+                    em.string_lit_index.set(val, cast<i64>(em.string_lits.size()) - 1);
+                }
+            }
+            gi = gi + 1;
+        }
+    }
+
+    fun collect_strings_in_func(mut this, func: IRFunction) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter collect_strings_in_func(func=" + func.to_string() + ")");
+ }
+        let ii: mut i64 = 0;
+        while (ii < cast<i64>(func.instructions.size())) {
+            let inst: IRInstruction = func.instructions.at(cast<u64>(ii)).some;
+            if (inst is IRInstruction.const_inst) {
+                let ir_type: string = inst.const_inst.result.get_ir_type();
+                if (em.types.is_string_type(ir_type)) {
+                    let raw_val: string = inst.const_inst.value;
+                    let val: string = strip_string_quotes(raw_val);
+                    if (this.find_string_lit(val).is_none()) {
+                        let id: i64 = em.next_str_id;
+                        em.next_str_id = em.next_str_id + 1;
+                        em.string_lits.push(new StringLitEntry(id, val));
+                        em.string_lit_index.set(val, cast<i64>(em.string_lits.size()) - 1);
+                    }
+                }
+            }
+            ii = ii + 1;
+        }
+    }
+
+    fun find_string_lit(this, value: string) -> Option<StringLitEntry> {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter find_string_lit(value=" + cast<string>(value) + ")");
+ }
+        let idx: i64 = em.string_lit_index.get(value, -1);
+        if (idx >= 0) {
+            return new Option<StringLitEntry>.some(em.string_lits.at_unchecked(cast<u64>(idx)));
+        }
+        return new Option<StringLitEntry>.none();
+    }
+
+    // --- Pass 2: emit LLVM IR ---
+
+    fun emit_global_strings(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_global_strings");
+        let i: mut i64 = 0;
+        if (cast<i64>(em.string_lits.size()) > 0) {
+            // The string class metadata global every literal references (see
+            // emperor_string.h). Declared as a raw i8 global — the IR only ever
+            // takes its ADDRESS for the literal headers, so the C-side
+            // EmperorClassMetadata layout does not need repeating here. It
+            // resolves at link time from libcore_builtin.a / the exe's
+            // -rdynamic exports; JIT unit-B modules resolve it through the
+            // process symbol table (ORC DynamicLibrarySearchGenerator).
+            em.sb.append("@_emperor_string_metadata = external global i8\n");
+        }
+        while (i < cast<i64>(em.string_lits.size())) {
+            let entry: StringLitEntry = em.string_lits.at(cast<u64>(i)).some;
+            let byte_len: i64 = utf8_byte_len(entry.value) + 1;
+            // Literals carry the runtime string header INLINE
+            // (emperor_string.h): { metaptr, length, data + NUL }. The value
+            // of a literal is the ADDRESS of this struct — a valid
+            // _emperor_string*, identical to a heap string at the C ABI, and
+            // never GC-tracked (static storage).
+            em.sb.append(entry.global_name() + " = private unnamed_addr constant { ptr, i64, [" + cast<string>(byte_len) + " x i8] } { ptr @_emperor_string_metadata, i64 " + cast<string>(byte_len - 1) + ", [" + cast<string>(byte_len) + " x i8] c\"" + escape_llvm_string(entry.value) + "\\00\" }\n");
+            i = i + 1;
+        }
+        // Emit type ID string constants for ISINSTANCE — in canonical order
+        // (by global name; batch 1.2), independent of the sweep order that
+        // first ensured them.
+        if (cast<i64>(em.type_id_constants.size()) > 0) {
+            let tkeys: mut _utils.List<string> = new _utils.List<string>();
+            let ti0: mut i64 = 0;
+            while (ti0 < cast<i64>(em.type_id_constants.size())) {
+                tkeys.push(em.type_id_constants.at(cast<u64>(ti0)).some.global_name);
+                ti0 = ti0 + 1;
+            }
+            let tidx: _utils.List<i64> = merge_sort_string_indices(tkeys);
+            let ti: mut i64 = 0;
+            while (ti < cast<i64>(tidx.size())) {
+                let tc: TypeIdConstant = em.type_id_constants.at(cast<u64>(tidx.at_unchecked(cast<u64>(ti)))).some;
+                em.sb.append(tc.global_name + " = private unnamed_addr constant [" + cast<string>(tc.len) + " x i8] c\"" + escape_llvm_string(tc.display_name) + "\\00\"\n");
+                ti = ti + 1;
+            }
+        }
+    }
+
+    fun emit_global_variables(mut this, module: IRModule) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_global_variables(module=" + module.to_string() + ")");
+ }
+        // Canonical order (batch 1.2): by emitted symbol name, so the section
+        // does not follow the module's global-variables push order.
+        let gkeys: mut _utils.List<string> = new _utils.List<string>();
+        let gi0: mut i64 = 0;
+        while (gi0 < cast<i64>(module.global_variables.size())) {
+            gkeys.push(sanitize_name(module.global_variables.at(cast<u64>(gi0)).some.name));
+            gi0 = gi0 + 1;
+        }
+        let gidx: _utils.List<i64> = merge_sort_string_indices(gkeys);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(gidx.size())) {
+            let gv: IRGlobalVariable = module.global_variables.at(cast<u64>(gidx.at_unchecked(cast<u64>(i)))).some;
+            let llvm_type: mut string = em.types.ir_type_to_llvm(gv.ir_type);
+            // A value-class global stores the STRUCT INLINE (value-copy
+            // semantics; mutability never changes storage). Reference classes
+            // and strings keep pointer storage.
+            if (llvm_type == "ptr") {
+                let vc: string = em.types.value_class_struct_type(gv.ir_type);
+                if (string_length(vc) > 0) { llvm_type = vc; }
+            }
+            let global_name: string = "@" + sanitize_name(gv.name);
+            if (gv.initializer_value == "null" && llvm_type == "ptr") {
+                em.sb.append(global_name + " = global " + llvm_type + " null\n");
+            } else if (em.types.is_int_type(gv.ir_type)) {
+                em.sb.append(global_name + " = global " + llvm_type + " " + gv.initializer_value + "\n");
+            } else if (em.types.is_bool_type(gv.ir_type)) {
+                let val: mut string = "0";
+                if (gv.initializer_value == "true") { val = "1"; }
+                em.sb.append(global_name + " = global " + llvm_type + " " + val + "\n");
+            } else {
+                em.sb.append(global_name + " = global " + llvm_type + " zeroinitializer\n");
+            }
+            i = i + 1;
+        }
+    }
+
+    fun emit_extern_declarations_to(mut this, target: mut StringBuilder, module: IRModule) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter emit_extern_declarations_to(module=" + module.to_string() + ")");
+ }
+        // Collect extern declares (first spelling dedup, module order), then
+        // emit in canonical order by LLVM symbol name (batch 1.2).
+        let emitted: mut _utils.List<string> = new _utils.List<string>();
+        let emitted_fns: mut _utils.List<IRFunction> = new _utils.List<IRFunction>();
+        let fi: mut i64 = 0;
+        while (fi < cast<i64>(module.functions.size())) {
+            let func: IRFunction = module.functions.at(cast<u64>(fi)).some;
+            if (func.is_extern) {
+                let llvm_name: string = this.llvm_func_name(func.name);
+                let already: mut bool = false;
+                let ei: mut i64 = 0;
+                while (ei < cast<i64>(emitted.size())) {
+                    if (emitted.at(cast<u64>(ei)).some == llvm_name) {
+                        already = true;
+                    }
+                    ei = ei + 1;
+                }
+                if (!already) {
+                    emitted.push(llvm_name);
+                    emitted_fns.push(func);
+                }
+            }
+            fi = fi + 1;
+        }
+        let didx: _utils.List<i64> = merge_sort_string_indices(emitted);
+        let di0: mut i64 = 0;
+        while (di0 < cast<i64>(didx.size())) {
+            let func: IRFunction = emitted_fns.at(cast<u64>(didx.at_unchecked(cast<u64>(di0)))).some;
+            {
+                let llvm_name: string = this.llvm_func_name(func.name);
+                    // Dyn-lib declare ABI: a lib-export extern must match the
+                    // callee's real signature as emit_function defines it.
+                    // Aggregate returns are passed via sret (void + hidden ptr
+                    // first arg) — ONLY when needs_sret (value-type classes /
+                    // enums), matching emit_function and the call site; reference
+                    // types map to ptr and must stay `declare ptr` (get_sret_
+                    // llvm_type alone would wrongly sret an IRef class whose
+                    // struct type is never emitted). >16-byte aggregate params
+                    // use byval. Existing C-runtime externs never return/accept
+                    // aggregates, so this only changes lib-export declarations.
+                    let decl_sret_type: mut string = "";
+                    if (em.types.needs_sret(func.return_type)) {
+                        decl_sret_type = em.types.get_sret_llvm_type(func.return_type);
+                    }
+                    if (string_length(decl_sret_type) > 0) {
+                        target.append("declare void " + llvm_name + "(ptr sret(" + decl_sret_type + ")");
+                    } else {
+                        target.append("declare " + em.types.ir_type_to_llvm(func.return_type) + " " + llvm_name + "(");
+                    }
+                    // void-as-unit: elide void-typed params from the declaration
+                    // too (call sites drop the matching arguments).
+                    let wrote_any_dparam: mut bool = string_length(decl_sret_type) > 0;
+                    let pi: mut i64 = 0;
+                    while (pi < cast<i64>(func.parameters.size())) {
+                        let p: IRParameter = func.parameters.at(cast<u64>(pi)).some;
+                        let p_llvm_type: string = em.types.ir_type_to_llvm(p.ir_type);
+                        if (p_llvm_type == "void") { pi = pi + 1; continue; }
+                        if (wrote_any_dparam) { target.append(", "); }
+                        wrote_any_dparam = true;
+                        if (em.types.llvm_type_size(p_llvm_type) > 16) {
+                            target.append("ptr byval(" + p_llvm_type + ")");
+                        } else {
+                            target.append(p_llvm_type);
+                        }
+                        pi = pi + 1;
+                    }
+                    target.append(")\n");
+            }
+            di0 = di0 + 1;
+        }
+    }
+
+    // Emit one metadata + refmap global per registered array element type.
+    // Canonical order (batch 1.2): entries sorted by meta_name, and the name
+    // string constant is CONTENT-ADDRESSED (`@.__array_name_<meta_name>_s`)
+    // instead of carrying the registration index — the section no longer
+    // depends on which ARRAY instruction the sweep saw first.
+    fun emit_array_metadata(mut this) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let akeys: mut _utils.List<string> = new _utils.List<string>();
+        let ai0: mut i64 = 0;
+        while (ai0 < cast<i64>(em.array_meta_entries.size())) {
+            akeys.push(em.array_meta_entries.at(cast<u64>(ai0)).some.meta_name);
+            ai0 = ai0 + 1;
+        }
+        let aidx: _utils.List<i64> = merge_sort_string_indices(akeys);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(aidx.size())) {
+            let entry: ArrayMetaEntry = em.array_meta_entries.at(cast<u64>(aidx.at_unchecked(cast<u64>(i)))).some;
+            // refmap program: the payload already carries [total, ...] at
+            // index 0 (same layout as the class/enum ref-map emitters).
+            let total: i64 = cast<i64>(entry.refmap_ints.size());
+            em.sb.append("@" + entry.refmap_name + " = private constant [" + cast<string>(total) + " x i32] [");
+            let j: mut i64 = 0;
+            while (j < cast<i64>(entry.refmap_ints.size())) {
+                if (j > 0) { em.sb.append(", "); }
+                em.sb.append("i32 " + cast<string>(entry.refmap_ints.at(cast<u64>(j)).some));
+                j = j + 1;
+            }
+            em.sb.append("]\n");
+            // name string ("array<T>")
+            let disp: string = "array<" + entry.elem_ir + ">";
+            em.sb.append("@.__array_name_" + entry.meta_name + "_s = private unnamed_addr constant [" + cast<string>(string_length(disp) + 1) + " x i8] c\"" + disp + "\\00\"\n");
+            // metadata: { ptr name, i32 instance_size(0=variable), i32 field_count,
+            //            ptr offsets, ptr field_is_ptr, ptr vtable, i32 iface_count,
+            //            ptr iface_map, ptr refmap }
+            em.sb.append("@" + entry.meta_name + "_metadata = private constant { ptr, i32, i32, ptr, ptr, ptr, i32, ptr, ptr } {\n");
+            em.sb.append("  ptr @.__array_name_" + entry.meta_name + "_s,\n");
+            em.sb.append("  i32 0,\n");
+            em.sb.append("  i32 0,\n");
+            em.sb.append("  ptr null,\n");
+            em.sb.append("  ptr null,\n");
+            em.sb.append("  ptr null,\n");
+            em.sb.append("  i32 0,\n");
+            em.sb.append("  ptr null,\n");
+            em.sb.append("  ptr @" + entry.refmap_name + "\n");
+            em.sb.append("}\n");
+            i = i + 1;
+        }
+    }
+
+    fun emit_extern_declarations_runtime_to(mut this, target: mut StringBuilder) {
+        let em: mut LLVMEmitter = this.emitter.some;
+        _utils.trace_enter("Enter emit_extern_declarations_runtime_to");
+        let has_layouts: bool = cast<i64>(em.class_layouts.size()) > 0 || cast<i64>(em.enum_layouts.size()) > 0;
+        let needs_its: bool = em.plan.needs_int_to_string;
+        let needs_sc: bool = em.plan.needs_string_concat;
+        // GC v2 phase 2: safepoint poll + the precise frame-chain head
+        // accessors. Unconditional — the poll is a one-load no-op until a
+        // collection is pending, and old-runtime links are rejected by the
+        // ABI gate. The head itself is THREAD-LOCAL in the runtime (N mt
+        // workers swap per-coroutine chains in parallel); the IR reaches it
+        // through get/set calls because a thread_local global referenced
+        // from a JIT module binds to an emutls clone that does not alias
+        // the host's ELF TLS slot.
+        target.append("declare void @_emperor_gc_poll()\n");
+        target.append("declare ptr @_emperor_gc_frame_get()\n");
+        target.append("declare void @_emperor_gc_frame_set(ptr)\n");
+        if (em.plan.has_iref_class || em.plan.has_boxing || em.plan.needs_funval_alloc) {
+            target.append("declare ptr @_emperor_alloc_impl(i32)\n");
+        }
+        if (em.plan.has_boxing || em.plan.needs_memcpy) {
+            target.append("declare void @llvm.memcpy.p0.p0.i32(ptr, ptr, i32, i1)\n");
+        }
+        if (has_layouts || needs_its) {
+            target.append("declare ptr @_emperor_int_to_string(i32)\n");
+            target.append("declare ptr @_emperor_i64_to_string(i64)\n");
+        }
+        if (has_layouts || needs_sc) {
+            target.append("declare ptr @_emperor_string_concat(ptr, ptr)\n");
+        }
+        if (em.plan.needs_bool_to_string) {
+            target.append("declare ptr @_emperor_bool_to_string(i8)\n");
+        }
+        if (em.plan.needs_double_to_string) {
+            target.append("declare ptr @_emperor_double_to_string(double)\n");
+        }
+        if (em.plan.needs_char_to_string) {
+            target.append("declare ptr @_emperor_char_to_string(i32)\n");
+        }
+        if (em.plan.needs_string_equal) {
+            target.append("declare i32 @_emperor_string_equal(ptr, ptr)\n");
+        }
+        if (em.plan.needs_string_compare) {
+            target.append("declare i32 @_emperor_string_compare(ptr, ptr)\n");
+        }
+        if (em.plan.needs_string_adopt) {
+            // Bare-libc-extern string returns are adopt-copied (emit_call).
+            target.append("declare ptr @_emperor_string_adopt_cstring(ptr)\n");
+        }
+        if (em.plan.needs_vtable_lookup) {
+            target.append("declare ptr @_emperor_vtable_lookup(ptr, ptr, i32)\n");
+        }
+        if (em.plan.needs_sched_run) {
+            target.append("declare void @_emperor_co_spawn_fn0(ptr)\n");
+            // The scheduler loop itself needs no runtime declare: it is the
+            // compiled module function __builtin.__sched_run (scheduler.penguin,
+            // auto-loaded with --enable-coroutine — a suspending module always
+            // defines it), called directly as @__builtin___sched_run below.
+        }
+        if (em.plan.needs_setjmp) {
+            // The try/catch landing pad: _setjmp (no signal mask), marked
+            // returns_twice (#1) so LLVM keeps allocas conservative. Always
+            // the TWO-argument form (jmp_buf, frame): mingw-w64's x64 _setjmp
+            // requires it (the call site passes ptr null — plain sjlj, no SEH
+            // unwinding, matching what clang emits for C `setjmp` in the
+            // non-SEH flavor); glibc's one-argument _setjmp ignores the extra
+            // register argument, so the same IR links on linux too.
+            target.append("declare i32 @_setjmp(ptr, ptr) #1\n");
+            target.append("attributes #1 = { returns_twice }\n");
+        }
+        if (em.plan.needs_isinstance) {
+            target.append("declare i32 @_emperor_isinstance(ptr, ptr)\n");
+        }
+        if (em.plan.needs_check_class) {
+            target.append("declare i32 @_emperor_check_class(ptr, ptr)\n");
+        target.append("declare ptr @_emperor_ICopy_copy(ptr)\n");
+        }
+        if (em.plan.has_main) {
+            target.append("declare void @_emperor_gc_init(ptr)\n");
+            target.append("declare void @_emperor_gc_add_root(ptr)\n");
+            // The std container's extern (__builtin._gc_scan_add) may already
+            // have emitted this declaration — emitting it twice is a redefinition.
+            let scan_add_declared: mut bool = false;
+            let ei2: mut i64 = 0;
+            while (ei2 < cast<i64>(em.extern_map.size())) {
+                if (em.extern_map.at(cast<u64>(ei2)).some.llvm_value == "@_emperor_gc_scan_add") {
+                    scan_add_declared = true;
+                }
+                ei2 = ei2 + 1;
+            }
+            if (!scan_add_declared) {
+                target.append("declare void @_emperor_gc_scan_add(i64, i64)\n");
+            }
+            target.append("declare void @_emperor_args_init(i32, ptr)\n");
+            target.append("declare void @_emperor_boost_stack()\n");
+        }
+        if (em.plan.needs_memset) {
+            target.append("declare void @llvm.memset.p0.i64(ptr nocapture writeonly, i8, i64, i1 immarg)\n");
+        }
+        if (em.plan.needs_array_create) {
+            target.append("declare ptr @_emperor_array_create(ptr, i64, i64)\n");
+        }
+        if (em.plan.needs_array_ops) {
+            target.append("declare void @_emperor_array_fill(ptr, ptr)\n");
+            target.append("declare void @_emperor_array_copy_range(ptr, ptr, i64)\n");
+        }
+        if (em.plan.needs_gc_promote) {
+            // Two-tier M2: write-point promotion runtime entry (lowered from
+            // the __gc_promote intrinsic for reference-typed arguments).
+            target.append("declare void @_emperor_gc_promote(ptr)\n");
+        }
+        if (em.plan.needs_gc_pin_refmap) {
+            target.append("@_emperor_gc_pin_refmap = external global [1 x i32]\n");
+        }
+    }
+
+    // --- Function name ---
+
+    fun llvm_func_name(this, name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter llvm_func_name(name=" + cast<string>(name) + ")");
+ }
+        let key: string = this.strip_global_prefix(name);
+        // Extern symbol resolution — two rules, no special cases per library:
+        //   1. __builtin/_utils runtime externs: the extern map (precomputed in
+        //      lower() from is_extern) keys them by normalized tail, so a
+        //      builtin call resolves identically from the short form ("println")
+        //      and the qualified form ("__builtin.println") to @_emperor_<tail>.
+        //   2. EVERY other extern — std.io.*, emperor.*, any USER namespace —
+        //      maps by the universal rule to @<sanitize(full dotted name)>:
+        //      std.io.file_open -> @std_io_file_open, mylib.foo -> @mylib_foo,
+        //      and a global-scope `extern fun abs` -> @abs (literal libc
+        //      symbol — sanitize of a bare name is the name itself). The C
+        //      side just implements the mangled name.
+        // Discriminating via the extern map (built from is_extern) — not by
+        // namespace — is what keeps real functions that live in
+        // __builtin/_utils (List.push, Option.is_some, ...) untouched.
+        // Because IR preserves call-site spelling, a namespaced extern must
+        // be called QUALIFIED (std.io.file_open) — a bare call would emit the
+        // bare symbol and fail to link.
+        let tail: string = this.compute_extern_tail(name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.extern_map.size())) {
+            let e: RegMapping = em.extern_map.at(cast<u64>(i)).some;
+            if (e.ir_name == tail) {
+                return e.llvm_value;
+            }
+            i = i + 1;
+        }
+        return "@" + sanitize_name(key);
+    }
+
+    // True when the call target is a BARE top-level extern (literal libc
+    // symbol, char* ABI): its call sites marshal string arguments/returns
+    // (see bare_libc_externs and emit_args_coerced/emit_call).
+    fun is_bare_libc_extern(this, name: string) -> bool {
+        let em: mut LLVMEmitter = this.emitter.some;
+        let key: string = this.strip_global_prefix(name);
+        let i: mut i64 = 0;
+        while (i < cast<i64>(em.bare_libc_externs.size())) {
+            if (em.bare_libc_externs.at(cast<u64>(i)).some == key) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // Compute the <tail> of an extern's C-runtime symbol: strip the <global>.,
+    // __builtin., _utils. prefixes and any leading underscores, preserving case.
+    // The LLVM symbol is then "@_emperor_" + sanitize_name(tail).
+    fun compute_extern_tail(this, name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter compute_extern_tail(name=" + cast<string>(name) + ")");
+ }
+        let s: string = this.strip_global_prefix(name);
+        let bp: string = "__builtin.";
+        let up: string = "_utils.";
+        let ns_len: mut i64 = 0;
+        if (em.string_starts_with(s, bp)) {
+            ns_len = string_length(bp);
+        } else {
+            if (em.string_starts_with(s, up)) {
+                ns_len = string_length(up);
+            }
+        }
+        let start: mut i64 = ns_len;
+        while (start < string_length(s) && string_char_at(s, start) == "_") {
+            start = start + 1;
+        }
+        return string_substring(s, start, string_length(s) - start);
+    }
+
+    fun strip_global_prefix(this, name: string) -> string {
+        let em: mut LLVMEmitter = this.emitter.some;
+        if (_utils.verbose_level >= 3) { _utils.trace_enter("Enter strip_global_prefix(name=" + cast<string>(name) + ")");
+ }
+        let prefix: string = "<global>.";
+        let prefix_len: i64 = string_length(prefix);
+        let name_len: i64 = string_length(name);
+        if (name_len > prefix_len && em.string_starts_with(name, prefix)) {
+            return string_substring(name, prefix_len, name_len - prefix_len);
+        }
+        return name;
+    }
+}
+
+}

@@ -12,7 +12,52 @@ primaryExpression:
 	| ifExpression
 	| whileExpression
 	| 'cast' '<' typeSpecifier '>' '(' expression ')'
-	| tryBindExpression;
+	| tryBindExpression
+	| metaCallExpression;
+
+// ── Compile-time conditional compilation (batch 2.2) ──
+// Surface forms align with EmperorPenguin's lexer/parser: `#define("K","V")`
+// is a generic meta call (name "define" + two string literals), `#defined` /
+// `#compiler` are meta-call primaries usable inside #if conditions. The
+// MetaSplicer resolves all of these at the ANTLR-context level (after parse,
+// before the syntax tree is built), so downstream passes only ever see the
+// plain definitions/statements the unrolled source would have produced.
+
+// #name(args) as an expression: valid inside #if/#while conditions
+// (#defined("K")); #define("K","V"); at statement level parses
+// as an expressionStatement of this form. Anything the splicer does not
+// consume is reported by the PrimaryExpression builder.
+metaCallExpression: '#' identifier '(' (expression (',' expression)*)? ')';
+
+metaCallDeclaration:
+	'#' identifier '(' (expression (',' expression)*)? ')' ';';
+
+metaDeclaration:
+	metaCallDeclaration
+	| metaIfDeclaration
+	| metaWhileDeclaration;
+
+metaElifDeclaration:
+	'#' 'elif' '(' expression ')' '{' namespaceDeclaration* '}';
+
+metaElseDeclaration: '#else' '{' namespaceDeclaration* '}';
+
+metaIfDeclaration:
+	'#' 'if' '(' expression ')' '{' namespaceDeclaration* '}' (
+		metaElifDeclaration
+	)* metaElseDeclaration?;
+
+metaWhileDeclaration:
+	'#' 'while' '(' expression ')' '{' namespaceDeclaration* '}';
+
+metaElifStatement: '#' 'elif' '(' expression ')' statement;
+
+metaIfStatement:
+	'#' 'if' '(' expression ')' statement (metaElifStatement)* (
+		'#else' statement
+	)?;
+
+metaWhileStatement: '#' 'while' '(' expression ')' statement;
 
 // try-bind: `let a [: T] := b` — a boolean expression that, when true, binds `a`.
 // RHS is parsed at bitwiseOrExpression level (tighter than && / ||) so that
@@ -164,18 +209,19 @@ interfaceDefinition:
 		(declaration ';')
 		| functionDefinition
 		| interfaceImplementation
+		| metaDeclaration
 	)* '}';
 
 interfaceImplementation:
 	'impl' typeSpecifier (
 		';'
-		| ( '{' (functionDefinition)* '}')
+		| ( '{' (functionDefinition | metaDeclaration)* '}')
 	);
 
 interfaceForImplementation:
 	'impl' typeSpecifier 'for' typeSpecifier (
 		';'
-		| ( '{' (functionDefinition)* '}')
+		| ( '{' (functionDefinition | metaDeclaration)* '}')
 	);
 
 classDefinition:
@@ -186,6 +232,7 @@ classDefinition:
 		| interfaceImplementation
 		| initialRoutine
 		| constructBlock
+		| metaDeclaration
 	)* '}';
 
 // RTL-style module port: input is module-read-only (a bound ISource view),
@@ -204,6 +251,7 @@ enumDefinition:
 		enumDeclaration
 		| functionDefinition
 		| interfaceImplementation
+		| metaDeclaration
 	)* '}';
 
 enumDeclaration: identifier (':' typeSpecifier)? ';';
@@ -233,6 +281,8 @@ statement:
 | signalStatement
 | tryStatement
 | connectStatement
+| metaIfStatement
+| metaWhileStatement
 | ';';
 
 tryStatement:
@@ -285,6 +335,7 @@ namespaceDeclaration:
 		| interfaceDefinition
 		| interfaceForImplementation
 		| constructBlock
+		| metaDeclaration
 		| ';'
 	);
 

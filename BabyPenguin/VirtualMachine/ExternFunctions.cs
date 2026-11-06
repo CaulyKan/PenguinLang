@@ -652,6 +652,17 @@ namespace BabyPenguin.VirtualMachine
                 result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = s.Length;
             });
 
+            // Monotonic milliseconds — the VM mirror of the C runtime's
+            // _emperor_now_ms (core_builtin.c). Consumers: the incremental
+            // session's stage timing (EMPEROR_INCREMENTAL_TIMING=1) and
+            // user benchmarks. Environment.TickCount64 is monotonic and
+            // non-decreasing across the process lifetime, matching the
+            // CLOCK_MONOTONIC contract.
+            vm.Global.RegisterExternFunction("__builtin.now_ms", (result, args) =>
+            {
+                result!.As<BasicRuntimeSymbol>().BasicValue.I64Value = Environment.TickCount64;
+            });
+
             vm.Global.RegisterExternFunction("__builtin.string_find", (result, args) =>
             {
                 var s = args[0].As<BasicRuntimeValue>().StringValue;

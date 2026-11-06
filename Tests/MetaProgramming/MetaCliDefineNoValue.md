@@ -3,6 +3,7 @@
 Phase 5a: `--define FEATURE` (no `=value`) defines the option with the default value "1", which is enough for `#defined("FEATURE")` to be true.
 
 ## Apply To
+* BabyPenguin
 * EmperorPenguin Pass2
 * EmperorPenguin Pass3
 

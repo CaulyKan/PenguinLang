@@ -7,7 +7,7 @@ PenguinLang's metaprogramming runs ordinary PenguinLang code at compile time and
 | Construct | Kind | Availability |
 |---|---|---|
 | `#template(...)` prefix | sugar for a type-returning meta function | all compilers (parsed and monomorphized everywhere) |
-| `#define("K","V")` / `#defined("K")` / `#option("K")` | compile-time key/value store | every EmperorPenguin build |
+| `#define("K","V")` / `#defined("K")` | file-scoped compile-time key/value store (CLI `--define` seeds every file) | every EmperorPenguin build |
 | `#if` / `#elif` / `#else`, `#while` | compile-time control flow (hardcoded folding) | every EmperorPenguin build |
 | `#fun` (JIT meta functions), `-> type`, reflection, value template params, `#specializing`, `#class`, `#compiler()`, `-> ast` / `unstructured_ast` | meta engine (LLVM ORC JIT) | native compilers: Pass2, Pass3, LSP |
 
@@ -58,9 +58,9 @@ A meta function returning `type` is usable in any type-specifier position: `let 
 * In definition position: `#name(args)` followed by a braced block or a definition — the block/definition text is passed to the meta function (the annotation form; see `unstructured_ast` below).
 * Unknown `#name` calls that are not registered `#fun`s fall back to a `BoundMetaCallExpression` that survives to later passes (the meta engine may still resolve them, e.g. deferred template re-binding).
 
-## Compile-Time Options: #define / #defined / #option
+## Compile-Time Defines: #define / #defined (file-scoped)
 
-`#define("K", "V")` writes to the compiler's option store; `#defined("K") -> bool` tests presence; `#option("K") -> string` reads. The CLI `-DK=V` writes into the same store. Inside `#fun` bodies these are also available as built-in meta functions and via `compiler().set_option/get_option/has_option`.
+`#define("K", "V")` records a FILE-scoped define: visible from its line to the end of its file, never across files; redefining the same key by code in one file is `E_DUPLICATE_SYMBOL`. The CLI `--define K=V` (or bare `K`, value "1") pre-seeds EVERY file's view; a code `#define` overwrites its file's seed without error (code wins). `#defined("K") -> bool` tests presence. The legacy global option table and the `#option("K")` read were retired (batch 2.3) — a bare identifier in a condition reads its define VALUE instead. Inside `#fun` bodies `#defined` folds against the #fun's DEFINING file view, and `compiler().set_option/get_option/has_option` bridge to the same store.
 
 ## Compile-Time Conditions: #if / #while
 
@@ -71,7 +71,7 @@ A meta function returning `type` is usable in any type-specifier position: `let 
 ```
 
 * Branch bodies are braced blocks of definitions (definition position) or statements (statement position).
-* Conditions fold from literals, `#defined`, `#option` comparisons, `!`, `&&`, `||`, `==`, `!=`, and parentheses. Non-constant conditions are `E_UNSUPPORTED`.
+* Conditions fold from literals, `#defined("K")`, bare define-name comparisons (`NAME == "v"`), `!`, `&&`, `||`, `==`, `!=`, and parentheses. Non-constant conditions are `E_UNSUPPORTED`.
 * `#elif`/`#else` carry the `#` prefix (they are parser keywords, distinct from runtime `else`).
 * `#while` unrolls with a 10000-iteration cap. `#for` / `#break` / `#continue` are parsed; collection iteration is not implemented.
 

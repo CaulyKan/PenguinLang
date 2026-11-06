@@ -1,5 +1,6 @@
 using BabyPenguin.SemanticInterface;
 using BabyPenguin.Parser;
+using BabyPenguin.Symbol;
 
 namespace BabyPenguin.VirtualMachine
 {
@@ -69,7 +70,15 @@ namespace BabyPenguin.VirtualMachine
             var irFunc = new IRFunction(containerName, returnType)
             {
                 DisplayName = cc.FullName(),
-                IsExtern = false
+                // Extern declarations still get an (empty-body) IR entry —
+                // the semantic layer seeds them with a single placeholder
+                // return. Mark them so the VM's CALL path can fail LOUDLY
+                // when an extern has no C# implementation (handover bug #8:
+                // calling the stub silently returned void — the unwritten
+                // result register then propagated NotInitialized values into
+                // arbitrary downstream ops, e.g. MetaEngine.init's
+                // `jit_ctx == 0` crashing with E_RUNTIME_INVALID_OP).
+                IsExtern = (_model.ResolveSymbol(cc.FullName()) as FunctionSymbol)?.IsExtern ?? false
             };
 
             _module.AddFunction(irFunc);
@@ -425,12 +434,21 @@ namespace BabyPenguin.VirtualMachine
                     return funcConst;
                 }
 
-                // Global variable: emit a GLOBAL_LOAD instruction
+                // Global variable: emit a GLOBAL_LOAD instruction at EVERY use.
+                // The load register must NOT be memoized in symbolRegs: the
+                // first resolution can sit inside a conditional branch (or a
+                // loop body that never executes), and a later use after the
+                // merge point would reuse the register without its defining
+                // GLOBAL_LOAD having run — reading a void uninitialized
+                // register ("Cannot read field ... from NotInitializedRuntimeValue").
+                // Re-loading per use is always positionally correct (loads
+                // alias the global storage object; writes sync back through
+                // globalRegs/GLOBAL_STORE) and also keeps value-type globals
+                // fresh across calls that re-store the global.
                 if (!symbol.IsLocal && !symbol.IsParameter && !symbol.IsClassMember && !symbol.IsEnum)
                 {
                     var globalReg = builder.AllocTemp(irType);
                     builder.EmitGlobalLoad(globalReg, symbol.FullName(), irType, MakeLoc(symbol.SourceLocation));
-                    symbolRegs[symbol.FullName()] = globalReg;
                     globalRegs[symbol.FullName()] = symbol.FullName();
                     return globalReg;
                 }

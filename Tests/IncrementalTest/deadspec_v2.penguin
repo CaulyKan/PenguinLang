@@ -1,0 +1,7 @@
+fun work() -> i64 {
+    return 7;
+}
+
+initial {
+    println(cast<string>(work()));
+}
