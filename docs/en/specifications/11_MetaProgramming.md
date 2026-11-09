@@ -7,11 +7,11 @@ PenguinLang's metaprogramming runs ordinary PenguinLang code at compile time and
 | Construct | Kind | Availability |
 |---|---|---|
 | `#template(...)` prefix | sugar for a type-returning meta function | all compilers (parsed and monomorphized everywhere) |
-| `#define("K","V")` / `#defined("K")` | file-scoped compile-time key/value store (CLI `--define` seeds every file) | every EmperorPenguin build |
+| `#define("K","V")` / `#defined("K")` | file-scoped compile-time key/value store (CLI `--define` seeds every file) | every EmperorPenguin build + BabyPenguin |
 | `#if` / `#elif` / `#else`, `#while` | compile-time control flow (hardcoded folding) | every EmperorPenguin build |
 | `#fun` (JIT meta functions), `-> type`, reflection, value template params, `#specializing`, `#class`, `#compiler()`, `-> ast` / `unstructured_ast` | meta engine (LLVM ORC JIT) | native compilers: Pass2, Pass3, LSP |
 
-BabyPenguin (the C# compiler) parses only `#template` and executes none of the meta constructs. Pass1 (EmperorPenguin on the BabyPenguin VM) runs the hardcoded constructs but has no JIT.
+BabyPenguin (the C# compiler) parses `#template` and splices `#define`/`#if`/`#elif`/`#else`/`#while` with its own ANTLR-tree splicer (`BabyPenguin/Parser/MetaSplicer.cs` — file-scoped semantics, the CLI `-D`/`--define` seeds every file); it has no meta engine, so `#fun` and the other JIT constructs are unavailable. Pass1 (EmperorPenguin on the BabyPenguin VM) runs the hardcoded constructs but has no JIT.
 
 ## Execution Model
 
@@ -60,7 +60,7 @@ A meta function returning `type` is usable in any type-specifier position: `let 
 
 ## Compile-Time Defines: #define / #defined (file-scoped)
 
-`#define("K", "V")` records a FILE-scoped define: visible from its line to the end of its file, never across files; redefining the same key by code in one file is `E_DUPLICATE_SYMBOL`. The CLI `--define K=V` (or bare `K`, value "1") pre-seeds EVERY file's view; a code `#define` overwrites its file's seed without error (code wins). `#defined("K") -> bool` tests presence. The legacy global option table and the `#option("K")` read were retired (batch 2.3) — a bare identifier in a condition reads its define VALUE instead. Inside `#fun` bodies `#defined` folds against the #fun's DEFINING file view, and `compiler().set_option/get_option/has_option` bridge to the same store.
+`#define("K", "V")` records a FILE-scoped define: visible from its line to the end of its file, never across files; redefining the same key by code in one file is `E_DUPLICATE_SYMBOL`. The CLI `--define K=V` (or bare `K`, value "1") pre-seeds EVERY file's view; a code `#define` overwrites its file's seed without error (code wins). `#defined("K") -> bool` tests presence. The legacy global option table and the `#option("K")` read were retired — a bare identifier in a condition reads its define VALUE instead. Inside `#fun` bodies `#defined` folds against the #fun's DEFINING file view, and `compiler().set_option/get_option/has_option` bridge to the same store.
 
 ## Compile-Time Conditions: #if / #while
 

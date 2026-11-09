@@ -36,9 +36,13 @@ BabyPenguin 前端是生成的 ANTLR4 解析器外披一层手写的语法层。
 
 **源位置**——`BabyPenguin/Parser/SourceLocation.cs`（108 行）：`(FileName, FileNameIdentifier, RowStart, RowEnd, ColStart, ColEnd)` 记录；`SourceLocation.From(filename, ctx)`（15 行）为单 token 上下文计算结束位置；`Contains`、`GetText`（源码切片提取）与比较运算符。
 
+## 编译期拼接（MetaSplicer）
+
+**`BabyPenguin/Parser/MetaSplicer.cs`**（754 行）：文件级条件编译拼接器。它运行在 ANTLR 解析树上——`PenguinParser.Parse` 之后、`SyntaxCompiler` 构建语法节点树之前——按源码序解析元指令：`#define("K","V");`、`#if (c) { defs } #elif (c) { defs } #else { defs }`（定义级）、`#if (c) stmt ...`（语句级），以及两个级别的 `#while`。语义与 EmperorPenguin 的 `SemanticMetaRewrite` 对齐：代码 `#define` 从所在行可见到**文件末尾**、绝不跨文件泄露；同一文件内重定义同名键报 `E_DUPLICATE_SYMBOL`；CLI define（`-D`/`--define K=V`，裸 `K` 即 `"1"`）为每个文件的存储预播种，代码 `#define` 覆盖播种值；条件由 `#defined("K")`、裸标识符 NAME（它的 define 值）、string/bool 字面量、`!`、`&&`、`||`、`==`/`!=` 与括号折叠（其余报 `E_UNSUPPORTED`）；一个函数内的语句级 `#define` 影响同文件后续的 `#if` 条件（单次有序遍历）。拼接有意发生在解析上下文层：语法树按种类分组定义，要按序拼接含混合定义种类的 `#if` 分支，唯一办法是原位展开解析上下文——下游构建器看到的正是展开后源码会产生的树，且原始源位置保持不变。
+
 ## BabyPenguin 在哪里接入
 
-`BabyPenguin/SemanticModel.AddSource`（SemanticModel.cs 593–605 行）：`PenguinParser.Parse` → `SyntaxCompiler.Compile()` → 每个语法 `NamespaceDefinition` 被包成语义 `Namespace` 节点加入模型。此后 9 个语义遍（见 [BabyPenguin Semantic](./21_BabyPenguinSemantic.md)）消费语法树。
+`BabyPenguin/SemanticModel.AddSource`（SemanticModel.cs 682 行）：`PenguinParser.Parse` → `MetaSplicer.Rewrite(context, fileName, reporter, cliDefines)`（688 行）→ `SyntaxCompiler.Compile()` → 每个语法 `NamespaceDefinition` 被包成语义 `Namespace` 节点加入模型。此后 9 个语义遍（见 [BabyPenguin Semantic](./21_BabyPenguinSemantic.md)）消费语法树。
 
 ## 与 EmperorPenguin AST 的对比
 

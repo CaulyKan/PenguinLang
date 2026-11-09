@@ -6,7 +6,7 @@ PenguinLang's metaprogramming lets ordinary PenguinLang code run **at compile ti
 2. **Sequential code, not pattern matching.** Instead of C++ template specialization rules, compile-time decisions are `if`/`while` in a normal function.
 3. **The compiler's own objects are the reflection API.** A `type` argument inside a `#fun` is a real `emperor.BoundType`; `t.fields()` returns the live field objects.
 
-Metaprogramming is implemented by the self-hosted EmperorPenguin compiler. The `#fun` JIT paths run in the **native compilers only** (Pass2, Pass3, and the LSP's embedded compiler); the hardcoded constructs (`#define`, `#if`, `#while`) work in every EmperorPenguin build. BabyPenguin (the C# compiler) parses only `#template` and executes none of this. Full rules: the [Meta Programming specification](../specifications/11_MetaProgramming.md).
+Metaprogramming is implemented by the self-hosted EmperorPenguin compiler. The `#fun` JIT paths run in the **native compilers only** (Pass2, Pass3, and the LSP's embedded compiler); the hardcoded constructs (`#define`, `#if`, `#while`) work in every EmperorPenguin build — and in BabyPenguin too (the C# compiler splices them with its own ANTLR-tree `MetaSplicer`, same file-scoped semantics). Full rules: the [Meta Programming specification](../specifications/11_MetaProgramming.md).
 
 ## Compile-Time Options and #if
 
@@ -149,8 +149,8 @@ The standard library's JSON serialization (`#impl_json_serializable()` in `json.
 | Feature | BabyPenguin | EP Pass1 | EP Pass2/Pass3 / LSP |
 |---|---|---|---|
 | `#template` (type params) | parses & monomorphizes | parses & monomorphizes | full |
-| `#define` / `#defined` | — | ✓ | ✓ |
-| `#if` / `#while` | — | ✓ | ✓ |
+| `#define` / `#defined` | ✓ | ✓ | ✓ |
+| `#if` / `#while` | ✓ | ✓ | ✓ |
 | `#fun` JIT, `-> type`, reflection, value templates, `#specializing`, `#class`, `#compiler()`, `-> ast` | — | — | ✓ |
 
 Run the meta test suite with:

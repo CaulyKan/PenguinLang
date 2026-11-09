@@ -20,16 +20,20 @@ Bound Model（绑定模型）是 AST 和 IR 之间的中间层。它将 AST 的�
 - `SemanticMetaRewrite.penguin` — `MetaRewriter` 元编程预处理（`run_prepass`，pass 之前运行）
 - `SemanticBuildScopes.penguin` — Pass 1 `BuildScopesPass`
 - `SemanticResolveTypes.penguin` — Pass 2 `ResolveTypesPass`
-- `SemanticMonomorphize.penguin` — Pass 3 `MonomorphizePass`
+- `SemanticMonomorphize.penguin` — Pass 3 `MonomorphizePass`（不动点驱动器 + `mangle_generic_name` + B1 记录表 `b1_adjudicated`；机制在按关注点拆分的模块里：`SemanticMonomorphizeCollect.penguin`（MonoCollect，请求收集）、`SemanticMonomorphizeAdjudicate.penguin`（MonoAdjudicate，裁定每个请求的单一入口）、`SemanticMonomorphizeSpecialize.penguin`（MonoSpecialize，特化构造）、`SemanticMonomorphizeSpecializing.penguin`（MonoSpecializing，`#specializing` 注入））
 - `SemanticBindSymbols.penguin` — Pass 4 `BindSymbolsPass`
 - `SemanticConstructors.penguin` — Pass 5 `ConstructorsPass`
-- `SemanticInterfaces.penguin` — Pass 6 `InterfacesPass`
+- `SemanticBindA5.penguin` — `BindA5Pass`，Pass 4+5 / Pass 8+9 的合并入口（`run_symbols_and_constructors` / `run_bodies_and_validate`），以及增量快速车道使用的单 def 回放遍历
+- `SemanticIfaceLayout.penguin` — Pass 6 `IfaceLayoutPass`
 - `SemanticClassifyValueTypes.penguin` — Pass 7 `ClassifyValueTypesPass`
 - `SemanticBindBodies.penguin` — Pass 8a `BindBodiesPass`（语句/函数体绑定）
-- `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass`（表达式绑定）
+- `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass`（驱动器；主体在按关注点拆分的模块 `SemanticBindExpr{Literal,Member,Call,CastNew,Lambda,Coroutine,Generator,Ownership}.penguin`——类名 `BindExprLiteral`/`Member`/`Call`/`CastNew`/`Lambda`/`Coroutine`/`Generator`/`Linear`；Ownership 文件保留名字，类名避开 `new` 守卫的子串误报）
 - `SemanticBindMetaCalls.penguin` — Pass 8c `BindMetaCallsPass`（元调用绑定）
 - `SemanticValidateControlFlow.penguin` — Pass 9 `ValidateControlFlowPass`
 - `SemanticConcurrency.penguin` — Pass 10 `ConcurrencyAnalysisPass`（封闭性分析；仅 mt 调度器）
+- `SemanticTypeInterner.penguin` — `TypeInterner`，规范化类型驻留查询层（在 GlobalIndex 重建时喂数；模板+实参与特化 def 两种表示折到同一键）
+- `GlobalIndex.penguin` — 全局归并层反向索引（symbols/types/instances/ifaces/users + 指纹），在 `bind()` 末尾重建（见 [EmperorPenguin 增量编译](33_EmperorPenguinIncremental.md)）
+- `IncrementalSession.penguin` — 增量编译会话：per-file 快照、epoch 切换、两车道 didChange 事务（见 [EmperorPenguin 增量编译](33_EmperorPenguinIncremental.md)）
 - `EmperorPenguinCompiler.penguin` — 编译器顶层入口（`compile_sources`）
 - `BoundTreePrinter.penguin` — Bound Tree 调试打印
 
@@ -282,7 +286,7 @@ SemanticError
 
 `SemanticModel` 是语义分析引擎，将 AST 转换为 Bound Tree。每个 pass 是一个独立的协作类，持有 `model: mut Option<SemanticModel>` 反向引用（Option 包装以打破类字段默认构造的循环依赖），对外提供单一 `run()` 入口；`SemanticModel` 在构造函数中装配全部 pass 实例。
 
-`bind()` 在各 pass 之前先运行 `MetaRewriter.run_prepass(unit)`（元编程预处理：收集 `#fun`/`#class`、`#define`/`#if`/`#while` 拼接、JIT 引擎播种）。Pass 3 产生的新特化定义由核心的 `catch_up_def` 按需回放后续 pass，保证泛型实例走完 Pass 4-8。
+`bind()` 在各 pass 之前先运行 `MetaRewriter.run_prepass(unit)`（元编程预处理：收集 `#fun`/`#class`、文件级 `#define`/`#if`/`#while` 拼接、JIT 引擎播种）。Pass 3 产生的新特化定义由核心的 `catch_up_def` 按需回放后续 pass，保证泛型实例走完 Pass 4-8。编排经 `BindA5Pass` 的合并入口进入 Pass 4+5 与 Pass 8+9（`run_symbols_and_constructors`、`run_bodies_and_validate`）——`BindA5Pass` 暴露的单 def 回放遍历正是增量快速车道复用的东西。各 pass（及端口拓扑检查）之后，`bind()` 在完成的结果上重建 `GlobalIndex`——增量会话消费的反向索引（见 [EmperorPenguin 增量编译](33_EmperorPenguinIncremental.md)）。
 
 ### Pass 1：构建作用域（`BuildScopesPass.run(unit, result)`）
 
@@ -297,7 +301,7 @@ SemanticError
 
 ### Pass 3：单态化（`MonomorphizePass.run(unit, result)`）
 
-泛型特化的迭代不动点（类、枚举、函数，最多 10 轮）：实例收集、名字修饰（`mangle_specialization`）、`#specializing` 条件 impl 注入、特化方法 `this` 参数类型修正。新特化的 def 由 `catch_up_def` 回放 Pass 4-8。
+泛型特化的迭代不动点（类、枚举、函数，最多 10 轮）。`MonomorphizePass` 是驱动器兼 B1 记录表 `b1_adjudicated`（记录每个实例由哪条请求路径裁定）；工作按关注点拆分：**MonoCollect** 遍历 bound tree + AST 收集实例化**请求**（纯遍历），**MonoAdjudicate** 是裁定每个请求的单一入口（守卫检查、已存在去重、构造、B1 记录写入），**MonoSpecialize** 构造特化 def（`mangle_specialization` 名字修饰、`this` 参数类型修正），**MonoSpecializing** 执行 `#specializing` 块并注入其 impl 片段。新特化的 def 由 `catch_up_def` 回放 Pass 4-8。
 
 ### Pass 4：绑定符号（`BindSymbolsPass.run(result)`）
 
@@ -307,7 +311,7 @@ SemanticError
 
 为类生成默认构造函数，处理 `is_new` 显式构造函数与字段初始化。
 
-### Pass 6：接口（`InterfacesPass.run(unit, result)`）
+### Pass 6：接口布局（`IfaceLayoutPass.run(unit, result)`）
 
 构建接口 vtable（类与枚举），处理 `impl` 与 `impl...for` 块，合并接口继承的 vtable。
 
@@ -319,7 +323,7 @@ SemanticError
 
 将 AST 表达式/语句转换为绑定表达式/语句，是类型检查与符号引用解析的核心 pass。`BindBodiesPass`（8a，语句/函数体绑定与 `current_unit` 生命周期）分发给两个协作器：
 
-- `BindExpressionsPass`（8b）：字面量、标识符、二元/一元/逻辑运算、成员访问、函数调用（虚调用/泛型调用）、if/while、代码块、cast/new、try-bind、端口语法脱糖
+- `BindExpressionsPass`（8b，薄驱动器）：主体在按关注点拆分的模块里——`BindExprLiteral`（字面量/标识符、二元/一元/逻辑运算）、`BindExprMember`（成员访问）、`BindExprCall`（函数调用、虚调用/泛型调用）、`BindExprCastNew`（cast/new、try-bind）、`BindExprLambda`（lambda/闭包）、`BindExprCoroutine`（async/wait 协程表达式）、`BindExprGenerator`（生成器）、`BindExprLinear`（位于 `SemanticBindExprOwnership.penguin`；所有权/线性类型路径），以及控制流表达式
 - `BindMetaCallsPass`（8c）：`#fun` 元调用绑定与 JIT 结果拼接、`#sizeof` 内建、unique-name trampoline、模板实例路由
 
 ### Pass 9：控制流验证（`ValidateControlFlowPass.run(result)`）

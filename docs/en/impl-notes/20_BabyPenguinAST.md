@@ -36,9 +36,13 @@ There is no generated visitor. Conversion from the ANTLR parse tree to the AST h
 
 **Source locations** — `BabyPenguin/Parser/SourceLocation.cs` (108 lines): a record of `(FileName, FileNameIdentifier, RowStart, RowEnd, ColStart, ColEnd)`; `SourceLocation.From(filename, ctx)` (line 15) computes end positions for single-token contexts; `Contains`, `GetText` (source-slice extraction), and comparison operators.
 
+## Compile-Time Splicing (MetaSplicer)
+
+**`BabyPenguin/Parser/MetaSplicer.cs`** (754 lines): the file-scoped conditional-compilation splicer. It runs on the ANTLR parse tree — after `PenguinParser.Parse`, before `SyntaxCompiler` builds the syntax-node tree — and resolves the meta directives in source order: `#define("K","V");`, `#if (c) { defs } #elif (c) { defs } #else { defs }` (definition level), `#if (c) stmt ...` (statement level), and `#while` at both levels. Semantics are aligned with EmperorPenguin's `SemanticMetaRewrite`: a code `#define` is visible from its line to the END OF THE FILE and never leaks across files; redefining the same key within one file is `E_DUPLICATE_SYMBOL`; CLI defines (`-D`/`--define K=V`, bare `K` = `"1"`) are pre-seeded into every file's store and a code `#define` overwrites the seed; conditions fold `#defined("K")`, bare identifier NAME (its define value), string/bool literals, `!`, `&&`, `||`, `==`/`!=` and parentheses (anything else is `E_UNSUPPORTED`); a statement-level `#define` inside one function affects later `#if` conditions in the SAME file (single ordered walk). Splicing happens at the parse-context level on purpose: the syntax tree groups definitions by kind, so the only way to splice an `#if` branch containing mixed definition kinds in order is to expand the parse contexts in place — downstream builders see exactly the tree the unrolled source would have produced, with original source locations intact.
+
 ## Where BabyPenguin Hooks In
 
-`BabyPenguin/SemanticModel.AddSource` (SemanticModel.cs lines 593–605): `PenguinParser.Parse` → `SyntaxCompiler.Compile()` → each syntax `NamespaceDefinition` is wrapped in a semantic `Namespace` node and added to the model. From there the 9 semantic passes (see [BabyPenguin Semantic](./21_BabyPenguinSemantic.md)) consume the syntax tree.
+`BabyPenguin/SemanticModel.AddSource` (SemanticModel.cs line 682): `PenguinParser.Parse` → `MetaSplicer.Rewrite(context, fileName, reporter, cliDefines)` (line 688) → `SyntaxCompiler.Compile()` → each syntax `NamespaceDefinition` is wrapped in a semantic `Namespace` node and added to the model. From there the 9 semantic passes (see [BabyPenguin Semantic](./21_BabyPenguinSemantic.md)) consume the syntax tree.
 
 ## Contrast with EmperorPenguin's AST
 

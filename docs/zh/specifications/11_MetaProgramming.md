@@ -7,11 +7,11 @@ PenguinLang 的元编程在编译期运行普通 PenguinLang 代码，并把结�
 | 构造 | 种类 | 可用性 |
 |---|---|---|
 | `#template(...)` 前缀 | 返回类型的元函数的语法糖 | 所有编译器（各处解析与单态化） |
-| `#define("K","V")` / `#defined("K")` / `#option("K")` | 编译期键值存储 | 所有 EmperorPenguin 构建 |
+| `#define("K","V")` / `#defined("K")` | 文件级编译期键值存储（CLI `--define` 为每个文件播种） | 所有 EmperorPenguin 构建 + BabyPenguin |
 | `#if` / `#elif` / `#else`、`#while` | 编译期控制流（硬编码折叠） | 所有 EmperorPenguin 构建 |
 | `#fun`（JIT 元函数）、`-> type`、反射、值模板参数、`#specializing`、`#class`、`#compiler()`、`-> ast` / `unstructured_ast` | 元引擎（LLVM ORC JIT） | 原生编译器：Pass2、Pass3、LSP |
 
-BabyPenguin（C# 编译器）只解析 `#template`，不执行任何元构造。Pass1（BabyPenguin VM 上的 EmperorPenguin）运行硬编码构造但没有 JIT。
+BabyPenguin（C# 编译器）解析 `#template`，并用自己的 ANTLR 树拼接器（`BabyPenguin/Parser/MetaSplicer.cs`）拼接 `#define`/`#if`/`#elif`/`#else`/`#while`——文件级语义一致，CLI 的 `-D`/`--define` 为每个文件播种；它没有元引擎，`#fun` 等其余元构造不可用。Pass1（BabyPenguin VM 上的 EmperorPenguin）运行硬编码构造但没有 JIT。
 
 ## 执行模型
 
@@ -58,9 +58,9 @@ initial {
 * 定义位置：`#name(args)` 后跟花括号块或定义——块/定义文本传给元函数（注解形式；见下文 `unstructured_ast`）。
 * 未注册为 `#fun` 的未知 `#name` 调用回退为 `BoundMetaCallExpression` 存续到后续遍（元引擎仍可能解析它们，例如延迟的模板重绑定）。
 
-## 编译期选项：#define / #defined / #option
+## 编译期定义：#define / #defined（文件级）
 
-`#define("K", "V")` 写入编译器的选项存储；`#defined("K") -> bool` 测试存在；`#option("K") -> string` 读取。CLI 的 `-DK=V` 写入同一存储。`#fun` 体内它们也可作为内建元函数并经 `compiler().set_option/get_option/has_option` 使用。
+`#define("K", "V")` 记录一个**文件级** define：从所在行起可见到文件末尾，绝不跨文件；同一文件内代码重定义同名键是 `E_DUPLICATE_SYMBOL`。CLI 的 `--define K=V`（或裸 `K`，值为 `"1"`）为每个文件的视图预播种；代码 `#define` 覆盖所在文件的播种值且不报错（代码优先）。`#defined("K") -> bool` 测试存在性。旧的全局选项表与 `#option("K")` 读取已废除——条件里的裸标识符改为读取 define 的**值**。`#fun` 体内 `#defined` 按 `#fun` **定义文件**的视图折叠，`compiler().set_option/get_option/has_option` 桥接到同一存储。
 
 ## 编译期条件：#if / #while
 
@@ -71,7 +71,7 @@ initial {
 ```
 
 * 分支体是定义（定义位置）或语句（语句位置）的花括号块。
-* 条件由字面量、`#defined`、`#option` 比较、`!`、`&&`、`||`、`==`、`!=` 与括号折叠。非常量条件报 `E_UNSUPPORTED`。
+* 条件由字面量、`#defined("K")`、裸 define 名比较（`NAME == "v"`）、`!`、`&&`、`||`、`==`、`!=` 与括号折叠。非常量条件报 `E_UNSUPPORTED`。
 * `#elif`/`#else` 带 `#` 前缀（它们是解析器关键字，区别于运行时 `else`）。
 * `#while` 以 10000 次上限展开。`#for` / `#break` / `#continue` 已可解析；集合迭代未实现。
 

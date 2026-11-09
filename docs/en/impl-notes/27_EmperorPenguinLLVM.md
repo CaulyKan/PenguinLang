@@ -4,7 +4,7 @@
 
 This document defines the strategy for lowering EmperorPenguin IR to LLVM IR, including the memory layout of all types, how each data structure is represented, and the conversion rules from every IR instruction to LLVM IR.
 
-**Implementation location**: `EmperorPenguin/src/llvm/LLVMEmitter.penguin` (driven by `LLVMCompiler.penguin`, which chains it after the IRGenerator)
+**Implementation location**: `EmperorPenguin/src/llvm/` — 13 files. `LLVMEmitter.penguin` is the driver: it keeps all shared emission state (needs_* maps, layout tables, sb buffers, memo hashes) and owns the collaborator instances; `LLVMCompiler.penguin` (`build_ll`) chains it after the IRGenerator. Per-concern collaborators: `LLVMPlan.penguin` (the EmitPlan — the pre-emission sweep), `LLVMData.penguin` (shared data classes: layouts, string-lit/register mappings, GC frame slots, sret-elision records), `LLVMTypes.penguin` (layout building, type mapping/sizing), `LLVMGCScan.penguin` (pre-emission scans: write chains, alias assigns, sret elision, mutable registers, frame-slot classification), `LLVMInstructions.penguin` (per-instruction dispatch, scalar/aggregate emitters), `LLVMObjects.penguin` (member access, NEW/NEW_ENUM, enum pattern ops, boxing/unboxing), `LLVMValues.penguin` (entry allocas, temp names, value resolution/coercion), `LLVMCalls.penguin` (direct/void/indirect/virtual calls, argument coercion, funval singletons), `LLVMMetadata.penguin` (type definitions, class/enum metadata globals, GC ref-map programs), `LLVMDebug.penguin` (DWARF debug info), `LLVMGlobals.penguin` (string literals, globals, extern declarations), `LLVMUtil.penguin` (pure helpers)
 
 **Output format**: LLVM IR text (`.ll` files), platform-independent; linking (clang + the C runtime archive) is handled by the `emperor`/`emperor_penguin.bat` driver scripts outside the compiler
 
@@ -1305,26 +1305,28 @@ Pre-step: ICopy/IRef classification (semantic-layer ClassifyValueTypesPass)
   - the result is written to BoundClassDefinition.is_value_class
        ↓
 LLVMEmitter.lower(module, unit):
-Pass 1: collect string literals
-  - scans the CONST instructions of all functions and the global variable initializers
-  - aggregates, deduplicates, and numbers them @str_N
+Pre-sweep: EmitPlan.precollect (LLVMPlan.penguin)
+  - ONE pass over the module BEFORE any function body is emitted collects every
+    cross-function plan state into an explicit EmitPlan: the needs_* runtime-
+    declaration booleans, the string table, the extern face, the per-function
+    parameter-signature table (so forward-reference call sites resolve callee
+    parameter types), the type-layout closure (build_layout_tables) and the
+    lazily-ensured metadata tables (array/type-id/interface-id/funval —
+    pre-triggered in emission order)
+  - the emission order is decided here as well: functions are stable-sorted by
+    LLVM symbol name, making the function section and every order-dependent
+    side effect riding it (tmp/cond/debug counters, the lazily-ensured tables)
+    independent of the module's construction order (input file order,
+    specialization discovery order)
        ↓
-Pass 2: build layout tables (build_layout_tables)
-  - walks all class/enum/interface definitions
-  - layout unified as { ptr metadata, fields... } (enum: { ptr, i64 tag, [N x i8] payload }):
-    - IRef class: heap allocated, byte-offset GEPs
-    - ICopy class: stack allocated, struct-indexed GEPs (field 0 is the metadata)
-  - aggregates each type's interface vtable slots
-       ↓
-Pass 3: emit functions (emit_functions + emit_main)
-  - walks each IRFunction, converting IRInstructions to LLVM instructions one by one
+Pass 1: emit functions (emit_functions + emit_main, consuming the plan)
+  - walks each IRFunction in the plan's emission order, converting IRInstructions to LLVM instructions one by one
   - picks the correct lowering path by ICopy/IRef classification:
     - NEW: heap allocation (alloc_impl + memset) vs entry-block alloca
     - RDMBR/WRMBR: byte-offset GEP vs struct-indexed GEP
     - ASSIGN: pointer copy vs struct copy
     - CALL_VIRT: interface_map lookup via _emperor_vtable_lookup
   - multi-definition registers are backed by entry-block allocas via scan_mutable_regs (no phi nodes)
-  - function bodies are emitted first, to determine the required set of runtime declares
        ↓
 Final assembly
   - type definitions (%class./%enum. structs, ordered by layout completion = type-nesting topological order)

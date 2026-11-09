@@ -6,16 +6,16 @@ PenguinLang 的元编程让普通 PenguinLang 代码在**编译期**运行，并
 2. **顺序代码，而非模式匹配。** 编译期决策是普通函数里的 `if`/`while`，不是 C++ 模板特化规则。
 3. **编译器自身的对象就是反射 API。** `#fun` 里的 `type` 参数是真实的 `emperor.BoundType`；`t.fields()` 返回活的字段对象。
 
-元编程由自举的 EmperorPenguin 编译器实现。`#fun` JIT 路径只在**原生编译器**（Pass2、Pass3 及 LSP 内嵌编译器）上运行；硬编码构造（`#define`、`#if`、`#while`）在所有 EmperorPenguin 构建里可用。BabyPenguin（C# 编译器）只解析 `#template`，不执行任何元构造。完整规则见[元编程规范](../specifications/11_MetaProgramming.md)。
+元编程由自举的 EmperorPenguin 编译器实现。`#fun` JIT 路径只在**原生编译器**（Pass2、Pass3 及 LSP 内嵌编译器）上运行；硬编码构造（`#define`、`#if`、`#while`）在所有 EmperorPenguin 构建里可用——BabyPenguin（C# 编译器）也支持它们（用自己的 ANTLR 树 `MetaSplicer` 拼接，文件级语义相同）。完整规则见[元编程规范](../specifications/11_MetaProgramming.md)。
 
 ## 编译期选项与 #if
 
-`#define("K","V")` 向编译器的选项存储写入键值对；`#defined("K")` 测试存在性，`#option("K")` 读取。命令行 `-DMode=debug` 写入同一个存储。`#if` / `#elif` / `#else` 在编译期在定义之间做选择——每个分支是花括号包裹的定义块，条件由字面量、`#defined`、`#option` 比较与 `!`/`&&`/`||` 折叠而来：
+`#define("K","V")` 记录一个**文件级** define（从所在行起可见到文件末尾；同一文件内代码重定义同名键是错误）；`#defined("K")` 测试存在性，条件里的裸标识符读取它的值。命令行 `--define K=V` 为每个文件的视图播种。`#if` / `#elif` / `#else` 在编译期在定义之间做选择——每个分支是花括号包裹的定义块，条件由字面量、`#defined`、裸 define 名比较与 `!`/`&&`/`||` 折叠而来：
 
 ```penguin
 #define("Mode", "debug");
 
-#if (#option("Mode") == "debug") {
+#if (Mode == "debug") {
 	fun log_enabled() -> bool { return true; }
 } #else {
 	fun log_enabled() -> bool { return false; }
@@ -149,8 +149,8 @@ initial {
 | 特性 | BabyPenguin | EP Pass1 | EP Pass2/Pass3 / LSP |
 |---|---|---|---|
 | `#template`（类型参数） | 解析并单态化 | 解析并单态化 | 完整 |
-| `#define` / `#defined` / `#option` | — | ✓ | ✓ |
-| `#if` / `#while` | — | ✓ | ✓ |
+| `#define` / `#defined` | ✓ | ✓ | ✓ |
+| `#if` / `#while` | ✓ | ✓ | ✓ |
 | `#fun` JIT、`-> type`、反射、值模板、`#specializing`、`#class`、`#compiler()`、`-> ast` | — | — | ✓ |
 
 运行元编程测试套件：

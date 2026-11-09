@@ -4,7 +4,7 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 
 ## Markdown 测试套件（`Tests/`）
 
-42 个类别目录、727 例（`Tests/<Category>/<Name>.md`），由 `Tests/PenguinTestRunner.csproj` 驱动——一个普通 `net10.0` 控制台 exe，全部实现是 **`Tests/Program.cs`（3005 行，无测试 SDK）**。格式参考：`Tests/Readme.md`。
+41 个类别目录、762 例（`Tests/<Category>/<Name>.md`），由 `Tests/PenguinTestRunner.csproj` 驱动——一个普通 `net10.0` 控制台 exe，全部实现是 **`Tests/Program.cs`（3038 行，无测试 SDK）**。格式参考：`Tests/Readme.md`。
 
 ### 用例格式
 
@@ -27,7 +27,8 @@ PenguinLang 让每个编译器互相验证。基础设施分两半：**跨编译
 * 流期望：`EQUALS`（逐字节）、`ESCAPE`（C 转义后比较）、`MATCH`（带 `\d`/`\s`/`\w`/`.*` 洞的近似字面锚定模式——用于 LSP `Content-Length` 计数）、`CONTAINS`、`DISCARD`。
 * 退出期望：整数、`NONZERO` 或 `ANY`。
 * `ExpectedStdout: EQUALS \`...\`` 字面量可跨行到闭合反引号；`${VAR}` 环境展开作用于 Args/Env/Stdin 与期望（`${PENGUIN_ROOT}`、`${WORKDIR}`）。
-* `BabyPenguin` 以单进程编译+运行——一个退出码同时对照两个阶段；`Compile.Args` 被忽略（总是 `-q`）。Emperor 后端遵守 `Compile.Args`（如 `--enable-coroutine`、标准库文件）。
+* `BabyPenguin` 以单进程编译+运行——一个退出码同时对照两个阶段；`Compile.Args` 多为 Emperor 标志，但 `--define`/`-D` 是共享面——BabyPenguin 后端只转发这几个，使 CLI define 测试在两个实现上都运行。Emperor 后端遵守 `Compile.Args`（如 `--enable-coroutine`、标准库文件）。
+* `Tests/IncrementalTest/` 用一个用例驱动两段编译事务：`Compile.Args` 携带 `--incremental --edit=${WORKDIR}/source.penguin=<替换文件>`——Emperor 后端先编译一次，应用编辑，再重新编译会话（见 [EmperorPenguin 增量编译](33_EmperorPenguinIncremental.md)）。
 
 ### 运行器架构（`Tests/Program.cs`）
 

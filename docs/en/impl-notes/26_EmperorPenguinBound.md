@@ -20,16 +20,20 @@ The Bound Model is the intermediate layer between the AST and the IR. It convert
 - `SemanticMetaRewrite.penguin` — the `MetaRewriter` metaprogramming pre-pass (`run_prepass`, runs before the passes)
 - `SemanticBuildScopes.penguin` — Pass 1 `BuildScopesPass`
 - `SemanticResolveTypes.penguin` — Pass 2 `ResolveTypesPass`
-- `SemanticMonomorphize.penguin` — Pass 3 `MonomorphizePass`
+- `SemanticMonomorphize.penguin` — Pass 3 `MonomorphizePass` (the fixpoint driver + `mangle_generic_name` + the B1 record table `b1_adjudicated`; the machinery lives in the per-concern split modules `SemanticMonomorphizeCollect.penguin` (MonoCollect, request collection), `SemanticMonomorphizeAdjudicate.penguin` (MonoAdjudicate, the single point that decides each request), `SemanticMonomorphizeSpecialize.penguin` (MonoSpecialize, specialization construction) and `SemanticMonomorphizeSpecializing.penguin` (MonoSpecializing, `#specializing` injection))
 - `SemanticBindSymbols.penguin` — Pass 4 `BindSymbolsPass`
 - `SemanticConstructors.penguin` — Pass 5 `ConstructorsPass`
-- `SemanticInterfaces.penguin` — Pass 6 `InterfacesPass`
+- `SemanticBindA5.penguin` — `BindA5Pass`, the merged Pass 4+5 / Pass 8+9 entry points (`run_symbols_and_constructors` / `run_bodies_and_validate`) plus the per-def replay walks the incremental fast lane uses
+- `SemanticIfaceLayout.penguin` — Pass 6 `IfaceLayoutPass`
 - `SemanticClassifyValueTypes.penguin` — Pass 7 `ClassifyValueTypesPass`
 - `SemanticBindBodies.penguin` — Pass 8a `BindBodiesPass` (statement/function-body binding)
-- `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass` (expression binding)
+- `SemanticBindExpressions.penguin` — Pass 8b `BindExpressionsPass` (the driver; the body lives in the per-concern split modules `SemanticBindExpr{Literal,Member,Call,CastNew,Lambda,Coroutine,Generator,Ownership}.penguin` — classes `BindExprLiteral`/`Member`/`Call`/`CastNew`/`Lambda`/`Coroutine`/`Generator`/`Linear`; the Ownership FILE keeps its name, the class avoids a `new`-guard substring false positive)
 - `SemanticBindMetaCalls.penguin` — Pass 8c `BindMetaCallsPass` (meta-call binding)
 - `SemanticValidateControlFlow.penguin` — Pass 9 `ValidateControlFlowPass`
 - `SemanticConcurrency.penguin` — Pass 10 `ConcurrencyAnalysisPass` (confinement analysis; mt schedulers only)
+- `SemanticTypeInterner.penguin` — `TypeInterner`, the canonical type-interning query layer (fed during GlobalIndex rebuild; template+args and specialized-def representations of the same instantiation fold to one key)
+- `GlobalIndex.penguin` — the global merge-layer reverse index (symbols/types/instances/ifaces/users + fingerprints), rebuilt at the end of `bind()` (see [EmperorPenguin Incremental](33_EmperorPenguinIncremental.md))
+- `IncrementalSession.penguin` — the incremental compile session: per-file snapshots, epoch switch, the two-lane didChange transaction (see [EmperorPenguin Incremental](33_EmperorPenguinIncremental.md))
 - `EmperorPenguinCompiler.penguin` — the compiler's top-level entry point (`compile_sources`)
 - `BoundTreePrinter.penguin` — Bound Tree debug printing
 
@@ -282,7 +286,7 @@ SemanticError
 
 `SemanticModel` is the semantic analysis engine that converts the AST into the Bound Tree. Each pass is an independent collaborator class holding a `model: mut Option<SemanticModel>` back-reference (the Option wrapper breaks the circular dependency of class-field default construction) and exposing a single `run()` entry point; `SemanticModel` wires up all pass instances in its constructor.
 
-`bind()` runs `MetaRewriter.run_prepass(unit)` before the passes (the metaprogramming pre-pass: collecting `#fun`/`#class`, `#define`/`#if`/`#while` splicing, JIT engine seeding). Newly specialized definitions produced by Pass 3 are replayed through the subsequent passes on demand by the core `catch_up_def`, ensuring generic instances go through Passes 4-8.
+`bind()` runs `MetaRewriter.run_prepass(unit)` before the passes (the metaprogramming pre-pass: collecting `#fun`/`#class`, file-scoped `#define`/`#if`/`#while` splicing, JIT engine seeding). Newly specialized definitions produced by Pass 3 are replayed through the subsequent passes on demand by the core `catch_up_def`, ensuring generic instances go through Passes 4-8. The orchestration enters Passes 4+5 and Passes 8+9 through the merged `BindA5Pass` entry points (`run_symbols_and_constructors`, `run_bodies_and_validate`) — the single-def replay walks `BindA5Pass` exposes are what the incremental fast lane reuses. After the passes (and the port-topology check), `bind()` rebuilds the `GlobalIndex` over the finished result — the reverse index the incremental session consumes (see [EmperorPenguin Incremental](33_EmperorPenguinIncremental.md)).
 
 ### Pass 1: Build Scopes (`BuildScopesPass.run(unit, result)`)
 
@@ -297,7 +301,7 @@ Walks index-aligned parallel pairs of the AST and Bound Tree, resolving `TypeSpe
 
 ### Pass 3: Monomorphize (`MonomorphizePass.run(unit, result)`)
 
-An iterative fixpoint for generic specialization (classes, enums, functions, up to 10 rounds): instantiation collection, name mangling (`mangle_specialization`), `#specializing` conditional-impl injection, and fixing up the `this` parameter types of specialized methods. Newly specialized defs are replayed through Passes 4-8 by `catch_up_def`.
+An iterative fixpoint for generic specialization (classes, enums, functions, up to 10 rounds). `MonomorphizePass` is the driver plus the B1 record table `b1_adjudicated` (which request path adjudicated each instance); the work is split by concern: **MonoCollect** walks the bound tree + AST and accumulates instantiation REQUESTS (pure traversal), **MonoAdjudicate** is the single point that decides each request (guard checks, already-exists dedup, construction, the B1 record write), **MonoSpecialize** builds the specialized defs (name mangling via `mangle_specialization`, `this` parameter type fixups), and **MonoSpecializing** executes `#specializing` blocks and injects their impl fragments. Newly specialized defs are replayed through Passes 4-8 by `catch_up_def`.
 
 ### Pass 4: Bind Symbols (`BindSymbolsPass.run(result)`)
 
@@ -307,7 +311,7 @@ Binds parameter symbols for functions and methods, and completes symbol informat
 
 Generates default constructors for classes, and processes `is_new` explicit constructors and field initialization.
 
-### Pass 6: Interfaces (`InterfacesPass.run(unit, result)`)
+### Pass 6: Interface Layout (`IfaceLayoutPass.run(unit, result)`)
 
 Builds interface vtables (for classes and enums), processes `impl` and `impl...for` blocks, and merges vtables inherited from interfaces.
 
@@ -319,7 +323,7 @@ Classifies ICopy value types / IRef reference types based on interface implement
 
 Converts AST expressions/statements into bound expressions/statements; it is the core pass for type checking and symbol reference resolution. `BindBodiesPass` (8a, statement/function-body binding and the `current_unit` lifecycle) dispatches to two collaborators:
 
-- `BindExpressionsPass` (8b): literals, identifiers, binary/unary/logical operations, member access, function calls (virtual/generic calls), if/while, code blocks, cast/new, try-bind, port syntax desugaring
+- `BindExpressionsPass` (8b, a thin driver): the body lives in the per-concern split modules — `BindExprLiteral` (literals/identifiers, binary/unary/logical operations), `BindExprMember` (member access), `BindExprCall` (function calls, virtual/generic calls), `BindExprCastNew` (cast/new, try-bind), `BindExprLambda` (lambdas/closures), `BindExprCoroutine` (async/wait coroutine expressions), `BindExprGenerator` (generators), `BindExprLinear` (in `SemanticBindExprOwnership.penguin`; ownership/linear-type paths), plus control-flow expressions
 - `BindMetaCallsPass` (8c): `#fun` meta-call binding and JIT result splicing, the `#sizeof` intrinsic, unique-name trampolines, template instantiation routing
 
 ### Pass 9: Validate Control Flow (`ValidateControlFlowPass.run(result)`)

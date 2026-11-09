@@ -4,7 +4,7 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 
 ## The Markdown Test Suite (`Tests/`)
 
-727 cases in 42 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (3005 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
+762 cases in 41 category directories (`Tests/<Category>/<Name>.md`), driven by `Tests/PenguinTestRunner.csproj` — a plain `net10.0` console exe whose entire implementation is **`Tests/Program.cs` (3038 lines, no test SDK)**. Format reference: `Tests/Readme.md`.
 
 ### Case format
 
@@ -27,7 +27,8 @@ PenguinLang verifies every compiler against every other compiler. The infrastruc
 * Stream expectations: `EQUALS` (byte-exact), `ESCAPE` (C-unescape then compare), `MATCH` (mostly-literal anchored pattern with `\d`/`\s`/`\w`/`.*` holes — used for LSP `Content-Length` counts), `CONTAINS`, `DISCARD`.
 * Exit expectations: an integer, `NONZERO`, or `ANY`.
 * `ExpectedStdout: EQUALS \`...\`` literals may span lines until the closing backtick; `${VAR}` env expansion applies to Args/Env/Stdin and expectations (`${PENGUIN_ROOT}`, `${WORKDIR}`).
-* `BabyPenguin` runs as a single compile+run process — one exit code checked against both stages; `Compile.Args` are ignored (always `-q`). Emperor backends honor `Compile.Args` (e.g. `--enable-coroutine`, stdlib files).
+* `BabyPenguin` runs as a single compile+run process — one exit code checked against both stages; `Compile.Args` are mostly Emperor flags, but `--define`/`-D` is a shared surface — the BabyPenguin backend forwards just those so CLI-define tests run on both implementations. Emperor backends honor `Compile.Args` (e.g. `--enable-coroutine`, stdlib files).
+* `Tests/IncrementalTest/` drives two-compile transactions from one case: `Compile.Args` carries `--incremental --edit=${WORKDIR}/source.penguin=<replacement file>` — the Emperor backends compile once, apply the edit, and re-compile the session (see [EmperorPenguin Incremental](33_EmperorPenguinIncremental.md)).
 
 ### Runner architecture (`Tests/Program.cs`)
 

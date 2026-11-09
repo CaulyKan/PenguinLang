@@ -39,5 +39,6 @@
   - [EmperorPenguin Async](impl-notes/30_EmperorPenguinAsync.md)
   - [EmperorPenguin MetaProgramming](impl-notes/31_EmperorPenguinMetaProgramming.md)
   - [测试框架](impl-notes/32_TestFramework.md)
+  - [EmperorPenguin 增量编译](impl-notes/33_EmperorPenguinIncremental.md)
 
 - [测试报告](test-report.md)

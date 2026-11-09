@@ -4,7 +4,7 @@
 
 本文档定义 EmperorPenguin IR 到 LLVM IR 的 lowering（降低）策略，包括所有类型的内存布局、数据结构表示方式，以及每条 IR 指令到 LLVM IR 的转换规则。
 
-**实现位置**: `EmperorPenguin/src/llvm/LLVMEmitter.penguin`（由 `LLVMCompiler.penguin` 串联 IRGenerator 调用）
+**实现位置**: `EmperorPenguin/src/llvm/`——13 个文件。`LLVMEmitter.penguin` 是驱动器：持有全部共享发射状态（needs_* 表、布局表、sb 缓冲、memo 哈希）并拥有各协作器实例；`LLVMCompiler.penguin`（`build_ll`）把它串联在 IRGenerator 之后。按关注点拆分的协作器：`LLVMPlan.penguin`（EmitPlan——发射前预扫描）、`LLVMData.penguin`（共享数据类：布局、字符串字面量/寄存器映射、GC 帧槽、sret 省略记录）、`LLVMTypes.penguin`（布局构建、类型映射/定尺寸）、`LLVMGCScan.penguin`（发射前扫描：写链、别名赋值、sret 省略、可变寄存器、帧槽分类）、`LLVMInstructions.penguin`（逐指令分派、标量/聚合发射器）、`LLVMObjects.penguin`（成员访问、NEW/NEW_ENUM、枚举模式操作、装箱/拆箱）、`LLVMValues.penguin`（entry alloca、临时名、值解析/矫正）、`LLVMCalls.penguin`（直接/void/间接/虚调用、实参矫正、funval 单例）、`LLVMMetadata.penguin`（类型定义、class/enum metadata 全局常量、GC 引用映射程序）、`LLVMDebug.penguin`（DWARF 调试信息）、`LLVMGlobals.penguin`（字符串字面量、全局变量、extern 声明）、`LLVMUtil.penguin`（纯辅助函数）
 
 **输出格式**: LLVM IR 文本（`.ll` 文件），平台无关；链接（clang + C 运行时归档）由编译器外部的 `emperor`/`emperor_penguin.bat` 驱动脚本完成
 
@@ -1305,26 +1305,24 @@ EmperorPenguin Bound Tree + IRModule
   - 结果写入 BoundClassDefinition.is_value_class
        ↓
 LLVMEmitter.lower(module, unit):
-Pass 1: 收集字符串字面量
-  - 扫描所有函数的 CONST 指令与全局变量初始化器
-  - 汇总去重，编号为 @str_N
+预扫描: EmitPlan.precollect（LLVMPlan.penguin）
+  - 在任何函数体发射之前对模块做单遍扫描，把所有跨函数的计划状态收进显式的
+    EmitPlan：needs_* 运行时声明布尔、字符串表、extern 面、逐函数参数签名表
+    （前向引用的调用点据此解析被调参数类型）、类型布局闭包
+    （build_layout_tables）以及惰性 ensure 的 metadata 表
+    （array/type-id/interface-id/funval——按发射顺序预触发）
+  - 发射顺序也在此决定：函数按 LLVM 符号名字典序 stable-sort，使函数段及
+    一切依附它的顺序相关副作用（tmp/cond/debug 计数器、惰性 ensure 的表）
+    与模块构造顺序（输入文件顺序、特化发现顺序）无关
        ↓
-Pass 2: 构建布局表（build_layout_tables）
-  - 遍历所有 class/enum/interface 定义
-  - 布局统一为 { ptr metadata, fields... }（enum: { ptr, i64 tag, [N x i8] payload }）:
-    - IRef class: 堆分配，按字节偏移 GEP
-    - ICopy class: 栈分配，按 struct 索引 GEP（field 0 为 metadata）
-  - 汇总每个类型的接口 vtable 槽位
-       ↓
-Pass 3: 发射函数（emit_functions + emit_main）
-  - 遍历每个 IRFunction，逐条转换 IRInstruction → LLVM instruction
+Pass 1: 发射函数（emit_functions + emit_main，消费 plan）
+  - 按 plan 的发射顺序遍历每个 IRFunction，逐条转换 IRInstruction → LLVM instruction
   - 根据 ICopy/IRef 分类选择正确的 lowering 路径:
     - NEW: 堆分配（alloc_impl + memset）vs entry-block alloca
     - RDMBR/WRMBR: 字节偏移 GEP vs struct 索引 GEP
     - ASSIGN: 指针复制 vs struct 复制
     - CALL_VIRT: 经 _emperor_vtable_lookup 查 interface_map
   - 多处定义的寄存器由 scan_mutable_regs 以 entry-block alloca 支撑（无 phi 节点）
-  - 函数体先发射，以确定所需的运行时 declare 集合
        ↓
 最终组合
   - 类型定义（%class./%enum. struct，按布局完成顺序 = 类型嵌套拓扑序）
